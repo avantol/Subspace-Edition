@@ -81,10 +81,6 @@ void UI_Constructor::processRxActivity() {
             shouldDisplay = true;
 
             if (!m_messageBuffer[prevOffset].compound.isEmpty()) {
-                // qCDebug(mainwindow_js8) << "should display compound too
-                // because at this point it hasn't been displayed" <<
-                // m_messageBuffer[prevOffset].compound.last().call;
-
                 // [BUILD 358 cppos] Prefer the entry that ON-AIR
                 // precedes this fragment; arrival-order .last() only
                 // as fallback (standard decoder / no position).
@@ -93,8 +89,29 @@ void UI_Constructor::processRxActivity() {
                 auto lastCompound = (ciE >= 0) ? cmpsE.at(ciE)
                                                : cmpsE.last();
 
-                // fixup compound call incremental text
-                d.text = QString("%1: %2").arg(lastCompound.call).arg(d.text);
+                // [oneprefix #176, 2026-09-06] The sender prefix
+                // belongs to the frame that OPENS the display line,
+                // not to every frame: this ran per frame while the
+                // compound entry sat pending (it is only consumed
+                // later, at buffer close), so an N-frame @GROUP
+                // broadcast printed "CALL: " up to N times on one
+                // line (field: "WM8Q: WM8Q: WM8Q: WM8Q: @PUBLIC",
+                // "KJ5MIW: KJ5MIW: KJ5MIW: @SITREP"). Prepend ONLY
+                // when no display block is open for this offset --
+                // the same 10 Hz bucket triple displayTextForFreq
+                // itself consults; when the line is already open
+                // (usually by the compound frame's own display), the
+                // sender is already on it.
+                int const lowKey = d.offset / 10 * 10;
+                bool const lineOpen =
+                    m_rxFrameBlockNumbers.contains(d.offset) ||
+                    m_rxFrameBlockNumbers.contains(lowKey) ||
+                    m_rxFrameBlockNumbers.contains(lowKey + 10);
+                if (!lineOpen) {
+                    d.text = QString("%1: %2")
+                                 .arg(lastCompound.call)
+                                 .arg(d.text);
+                }
                 d.utcTimestamp =
                     qMin(d.utcTimestamp, lastCompound.utcTimestamp);
             }

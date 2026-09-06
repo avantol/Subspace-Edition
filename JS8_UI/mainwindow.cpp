@@ -10894,6 +10894,14 @@ void UI_Constructor::processCompoundActivity() {
             << "buffered compound command ready" << buffer.cmd.from
             << buffer.cmd.to << buffer.cmd.cmd;
 
+        // [oneprefix #176, 2026-09-06] Mark the flushed command as
+        // buffered, exactly as processBufferedActivity does. This
+        // flush path left the flag false, so the overheard-on-offset
+        // display gate ("!d.isBuffered") re-printed the assembled
+        // line ON TOP of the typeahead that already painted it --
+        // the "whole line twice, identical timestamp+offset" symptom
+        // (WD4KAV 2026-08-24 04:59Z capture).
+        buffer.cmd.isBuffered = true;
         m_rxCommandQueue.append(buffer.cmd);
         m_messageBuffer.remove(freq);
 
