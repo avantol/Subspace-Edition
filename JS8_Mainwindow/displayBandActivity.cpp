@@ -36,10 +36,18 @@ QString UI_Constructor::mostLikelyCallAtOffset(int offset,
                                                int submode) const {
     int const threshold =
         submode >= 0 ? JS8::Submode::rxThreshold(submode) : 10;
+    // [orphan15, operator ruling 2026-09-07] A station only claims an
+    // unattributed frame by offset if it was heard RECENTLY: last
+    // message older than 15 minutes disqualifies it. Keeps a long-gone
+    // station's stale offset from swallowing fresh fragments.
+    static constexpr qint64 kMaxAgeSecs = 15 * 60;
+    QDateTime const now = DriftingDateTime::currentDateTimeUtc();
     QString best;
     int bestDist = threshold + 1;
     for (auto it = m_callActivity.constBegin();
          it != m_callActivity.constEnd(); ++it) {
+        if (it.value().utcTimestamp.secsTo(now) > kMaxAgeSecs)
+            continue;
         int const dist = qAbs(it.value().offset - offset);
         if (dist <= threshold && dist < bestDist) {
             bestDist = dist;
