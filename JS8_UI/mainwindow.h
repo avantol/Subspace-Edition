@@ -651,7 +651,10 @@ class UI_Constructor : public QMainWindow {
     void checkVersion(bool alertOnUpToDate);
     void checkStartupWarnings();
     void selectCallsign(QString call, int submode = -1);
-    void clearSelection();
+    // [unkrow] keepBandRow: drop the callsign selection but leave the
+    // band activity row highlighted (clicking an UNKNOWN callsign-mode
+    // row selects the row itself; there is no station to select)
+    void clearSelection(bool keepBandRow = false);
     void autoSwitchMode(int submode);
     void clearCallsignSelected();  // legacy — calls clearSelection()
     void refreshTextDisplay();

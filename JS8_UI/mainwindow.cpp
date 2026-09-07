@@ -8701,7 +8701,10 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
                << "speedText=" << (speedItem ? speedItem->text() : "null");
 
     // [bandcall] In callsign mode the row IS the station -- no
-    // positional mapping or text parsing needed.
+    // positional mapping or text parsing needed. [unkrow] A blank
+    // Callsign cell is an unknown row: no station to select, but
+    // the ROW selection stays (its identity is the offset), so the
+    // operator can watch it and its frames stay aging-exempt.
     if (bandListByCall()) {
         QString rowCall;
         if (auto *ci = ui->tableWidgetRXAll->item(row, BACallsign))
@@ -8709,7 +8712,7 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
         if (!rowCall.isEmpty())
             selectCallsign(rowCall, rowSubmode);
         else
-            clearSelection();
+            clearSelection(true /* keepBandRow */);
         return;
     }
 
@@ -8815,12 +8818,17 @@ void UI_Constructor::on_tableWidgetRXAll_cellDoubleClicked(int row, int col) {
         QString rowCall;
         if (auto *ci = ui->tableWidgetRXAll->item(row, BACallsign))
             rowCall = ci->data(Qt::UserRole).toString();
-        if (rowCall.isEmpty())
-            return;
+        // [unkrow] A blank Callsign cell is an UNKNOWN row: its
+        // history is the unattributed frames of its own offset
+        // bucket (rowCall empty matches empty attribution below,
+        // restricted to that bucket).
+        bool const unknownRow = rowCall.isEmpty();
 
         QList<ActivityDetail> mine;
         for (auto it = m_bandActivity.constBegin();
              it != m_bandActivity.constEnd(); ++it) {
+            if (unknownRow && it.key() != offset)
+                continue;
             QString lastCall;
             for (auto const &d : it.value()) {
                 QString const c = frameFromCall(d.text);
@@ -8833,7 +8841,7 @@ void UI_Constructor::on_tableWidgetRXAll_cellDoubleClicked(int row, int col) {
                     lastCall.isEmpty()
                         ? mostLikelyCallAtOffset(d.offset, d.submode)
                         : lastCall;
-                if (!effective.isEmpty() && effective == rowCall)
+                if (effective == rowCall)
                     mine.append(d);
             }
         }
@@ -10486,7 +10494,7 @@ void UI_Constructor::refreshOutgoingPlaceholder() {
     }
 }
 
-void UI_Constructor::clearSelection() {
+void UI_Constructor::clearSelection(bool keepBandRow) {
     // Restore HB if it was paused for this QSO (Build 122 set m_hbPaused
     // when entering selectCallsign() with heartbeat_qso_pause enabled).
     // The historical restore lived in callsignSelectedChanged(), but that
@@ -10505,7 +10513,8 @@ void UI_Constructor::clearSelection() {
 
     ui->tableWidgetRXAll->blockSignals(true);
     ui->tableWidgetCalls->blockSignals(true);
-    ui->tableWidgetRXAll->clearSelection();
+    if (!keepBandRow)
+        ui->tableWidgetRXAll->clearSelection();
     ui->tableWidgetCalls->clearSelection();
     ui->tableWidgetRXAll->blockSignals(false);
     ui->tableWidgetCalls->blockSignals(false);

@@ -24,7 +24,7 @@ QString version() {
 }
 
 QString program_title() {
-    return QString{"%1 \"oneprefix\" (v4.1.0.473) by WM8Q"}
+    return QString{"%1 \"unkrow\" (v4.1.0.473) by WM8Q"}
         .arg(QCoreApplication::applicationName());
 }
 

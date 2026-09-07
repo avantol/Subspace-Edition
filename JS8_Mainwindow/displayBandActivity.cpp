@@ -140,9 +140,15 @@ void UI_Constructor::displayBandActivity() {
                 // the selected offset in offset mode, the selected
                 // station's frames in callsign mode.
                 bool const agingExempt =
-                    listByCall ? (!selectedCall.isEmpty() &&
-                                  attrib[i] == selectedCall)
-                               : isOffsetSelected;
+                    listByCall
+                        ? ((!selectedCall.isEmpty() &&
+                            attrib[i] == selectedCall) ||
+                           // [unkrow] selected UNKNOWN row: its
+                           // bucket's unattributed frames are exempt
+                           (selectedCall.isEmpty() &&
+                            key == selectedOffset &&
+                            attrib[i].isEmpty()))
+                        : isOffsetSelected;
                 if (!agingExempt && activityAging &&
                     item.utcTimestamp.secsTo(now) / 60 >= activityAging) {
                     shouldDisplay = false;
@@ -315,9 +321,13 @@ void UI_Constructor::displayBandActivity() {
         // [bandcall] Callsign-mode station buckets: every VISIBLE
         // attributed frame, merged across offsets AND submode classes
         // (operator ruling: no separate Subspace line in this mode),
-        // ordered by timestamp. Unattributed orphans are dropped, as
-        // they are in the per-offset subdivision.
+        // ordered by timestamp. [unkrow 2026-09-07] Unattributed
+        // frames are no longer dropped: they collect into one
+        // "unknown" row per offset bucket (blank Callsign cell,
+        // operator ruling) so a station whose header never decoded
+        // is still visible.
         QMap<QString, QList<ActivityDetail>> callItems;
+        QMap<int, QList<ActivityDetail>> unknownItems;
         if (listByCall) {
             for (int key : keys) {
                 auto const &items = filtered[key];
@@ -326,8 +336,9 @@ void UI_Constructor::displayBandActivity() {
                     if (!items[i].shouldDisplay)
                         continue;
                     if (attrib[i].isEmpty())
-                        continue;
-                    callItems[attrib[i]].append(items[i]);
+                        unknownItems[key].append(items[i]);
+                    else
+                        callItems[attrib[i]].append(items[i]);
                 }
             }
             for (auto &list : callItems)
@@ -643,22 +654,36 @@ void UI_Constructor::displayBandActivity() {
             // newest visible frame; message text is its frames joined
             // chronologically across offsets and classes.
 
-            QStringList callKeys = callItems.keys(); // alphabetical
+            // [unkrow] Row sources: known stations (call, -1), then
+            // "unknown" offset buckets (blank call, bucket key). The
+            // BASELINE order -- calls alphabetical, unknowns after
+            // them by ascending offset -- IS the "Callsign" sort:
+            // unknowns sink to the end ascending, and the plain
+            // reverse puts them on top descending (operator ruling).
+            QList<QPair<QString, int>> rows;
+            for (auto const &c : callItems.keys())
+                rows.append(qMakePair(c, -1));
+            for (int k : unknownItems.keys())
+                rows.append(qMakePair(QString(), k));
 
-            auto const compareCall = [&callItems](QString const &lhsKey,
-                                                  QString const &rhsKey,
-                                                  auto &&detail) {
-                return detail(callItems[lhsKey].last(),
-                              callItems[rhsKey].last());
+            auto const rowItems =
+                [&](QPair<QString, int> const &r)
+                -> QList<ActivityDetail> const & {
+                return r.second < 0 ? callItems[r.first]
+                                    : unknownItems[r.second];
+            };
+            auto const compareRow = [&](QPair<QString, int> const &l,
+                                        QPair<QString, int> const &r,
+                                        auto &&detail) {
+                return detail(rowItems(l).last(), rowItems(r).last());
             };
 
-            // Baseline is alphabetical (QMap key order) == the
-            // "Callsign" sort. Other sorts compare each station's
-            // newest visible frame.
+            // Other sorts compare each row's newest visible frame;
+            // "call" (and unknown values) keep the baseline.
             if (sort.by == "offset")
-                std::stable_sort(callKeys.begin(), callKeys.end(),
-                                 [&](QString const &l, QString const &r) {
-                                     return compareCall(
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [&](auto const &l, auto const &r) {
+                                     return compareRow(
                                          l, r,
                                          [](ActivityDetail const &a,
                                             ActivityDetail const &b) {
@@ -666,27 +691,28 @@ void UI_Constructor::displayBandActivity() {
                                          });
                                  });
             else if (sort.by == "timestamp")
-                std::stable_sort(callKeys.begin(), callKeys.end(),
-                                 [&](QString const &l, QString const &r) {
-                                     return compareCall(l, r,
-                                                        detailTimestamp);
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [&](auto const &l, auto const &r) {
+                                     return compareRow(l, r,
+                                                       detailTimestamp);
                                  });
             else if (sort.by == "snr")
-                std::stable_sort(callKeys.begin(), callKeys.end(),
-                                 [&](QString const &l, QString const &r) {
-                                     return compareCall(l, r, detailSNR);
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [&](auto const &l, auto const &r) {
+                                     return compareRow(l, r, detailSNR);
                                  });
             else if (sort.by == "submode")
-                std::stable_sort(callKeys.begin(), callKeys.end(),
-                                 [&](QString const &l, QString const &r) {
-                                     return compareCall(l, r,
-                                                        detailSubmode);
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [&](auto const &l, auto const &r) {
+                                     return compareRow(l, r,
+                                                       detailSubmode);
                                  });
 
             if (sort.reverse)
-                std::reverse(callKeys.begin(), callKeys.end());
+                std::reverse(rows.begin(), rows.end());
 
-            foreach (QString const &call, callKeys) {
+            for (auto const &rowSrc : rows) {
+                QString const call = rowSrc.first; // empty = unknown
                 QDateTime timestamp;
                 QStringList text;
                 QString age;
@@ -696,7 +722,7 @@ void UI_Constructor::displayBandActivity() {
                 int submode = -1;
                 int offset = -1;
 
-                foreach (ActivityDetail item, callItems[call]) {
+                foreach (ActivityDetail item, rowItems(rowSrc)) {
                     if (item.isLowConfidence) {
                         item.text = QString("[%1]").arg(item.text);
                     }
@@ -718,6 +744,11 @@ void UI_Constructor::displayBandActivity() {
                     offset = item.offset;
                 }
 
+                // [unkrow] An unknown row's identity is its offset
+                // BUCKET key (stable across frame-level drift).
+                if (rowSrc.second >= 0)
+                    offset = rowSrc.second;
+
                 auto joined = Varicode::rstrip(text.join(""));
                 if (joined.isEmpty()) {
                     continue;
@@ -734,9 +765,19 @@ void UI_Constructor::displayBandActivity() {
                     groupData.append(m);
                 }
 
+                // Selection identity: callsign for station rows; the
+                // offset bucket for unknown rows (only when no
+                // station is selected).
+                bool const selected =
+                    rowSrc.second < 0
+                        ? (!selectedCall.isEmpty() &&
+                           call == selectedCall)
+                        : (selectedCall.isEmpty() &&
+                           selectedOffset == rowSrc.second);
+
                 addRow(call, offset, tdrift, age, timestamp, snr,
                        snrSuspect, submode, joined, groupData,
-                       text.last(), call == selectedCall);
+                       text.last(), selected);
             }
         }
 
