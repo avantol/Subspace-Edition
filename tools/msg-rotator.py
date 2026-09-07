@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from js8client import Js8Client, Js8Timeout  # noqa: E402
+from js8client import Js8Client, Js8Error, Js8Timeout  # noqa: E402
 
 NORMAL = 0
 FT2 = 16
@@ -121,7 +121,13 @@ class Rotator:
                     self.js8.request("EVENTS.KEEPALIVE",
                                      reply_type="EVENTS.PONG",
                                      timeout=10)
-                except Js8Timeout:
+                except Js8Error:
+                    # Catches BOTH flavors of a dead connection:
+                    # Js8Timeout (no PONG) and the base Js8Error
+                    # ("disconnected while waiting" -- socket dropped,
+                    # e.g. app restart or another API client taking
+                    # the single TCP slot). Field 2026-09-06: the
+                    # disconnect flavor escaped as a raw traceback.
                     log("keepalive lost — exiting for supervisor "
                         "restart")
                     raise SystemExit(1)
@@ -338,6 +344,14 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nmsg-rotator: stopped")
         return 0
+    except Js8Error as e:
+        # ONE owner for "the connection died" wherever it surfaces
+        # (send, mode set, busy probe, keepalive): clean exit 1 for
+        # the supervisor, never a raw traceback (field 2026-09-06:
+        # a socket drop mid-keepalive escaped as a traceback).
+        print(f"msg-rotator: connection lost ({e}) — exiting for "
+              "supervisor restart", file=sys.stderr, flush=True)
+        return 1
     finally:
         rot.js8.close()
 
