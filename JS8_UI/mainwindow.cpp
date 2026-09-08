@@ -11965,8 +11965,25 @@ void UI_Constructor::noteSuperSpotterSeen() {
     m_settings->setValue("SuperSpotterSeen", true);
     if (ui->actionModeSubspaceDecode)
         ui->actionModeSubspaceDecode->setVisible(true);
+    updateWindowTitle();
     qWarning() << "[SSDETECT] SuperSpotter client signature seen --"
                << "Subspace-decode menu switch unlocked permanently";
+}
+
+// [magtitle, operator 2026-09-08] The ONE window-title writer. On a
+// Magnet-detected station the version segment reads
+// "(v4.x.y.z - MAGNET)" -- parenthesized exactly so -- both at
+// startup (persisted latch) and live at first detection.
+void UI_Constructor::updateWindowTitle() {
+    QString title = program_title();
+#ifdef JS8_ENABLE_FT2
+    if (m_superSpotterSeen) {
+        static QRegularExpression const verRe(
+            QStringLiteral(R"(\((v[0-9][0-9.]*)\))"));
+        title.replace(verRe, QStringLiteral("(\\1 - MAGNET)"));
+    }
+#endif
+    setWindowTitle(title);
 }
 
 // [TODO #113/#120 2026-07-24 l2watch] Real watchdog for the two decode

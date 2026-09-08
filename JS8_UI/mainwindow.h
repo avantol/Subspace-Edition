@@ -1770,6 +1770,7 @@ class UI_Constructor : public QMainWindow {
     void borrowSubspaceDecodeForArq();          // unsolicited-traffic path
     void serviceSubspaceDecodeBorrow();         // 1 Hz predicate check
     void noteSuperSpotterSeen();                // detector latch (persists)
+    void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }
     void updateModeStatusLabel();               // mode + RX-off truth
 

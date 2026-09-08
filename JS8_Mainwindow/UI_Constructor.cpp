@@ -985,7 +985,13 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         }
     });
 
-    setWindowTitle(program_title());
+    // [magtitle] One title authority -- appends " - MAGNET" inside
+    // the version parens when the SuperSpotter latch is set. The
+    // persisted latch is read later in this constructor (the L2
+    // setup block), which calls updateWindowTitle again -- so a
+    // latched station briefly paints the plain title, then the
+    // MAGNET one, before the window is even shown.
+    updateWindowTitle();
     ui->labVersion->setText("Subspace Edition v" + version());
     // Link label spacing — leave at .ui defaults
     buildColumnLabelMap();
@@ -1249,6 +1255,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     m_superSpotterSeen =
         m_settings->value("SuperSpotterSeen", false).toBool();
     ui->actionModeSubspaceDecode->setVisible(m_superSpotterSeen);
+    // [magtitle] Persisted latch changes the version segment to
+    // "(vX - MAGNET)"; re-paint now that the flag is known.
+    updateWindowTitle();
     bool const ssDecode =
         m_settings->value("SubspaceDecodeEnabled", true).toBool();
     m_l2Enabled = ssDecode;
