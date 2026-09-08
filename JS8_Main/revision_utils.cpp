@@ -24,7 +24,7 @@ QString version() {
 }
 
 QString program_title() {
-    return QString{"%1 \"ssdetect3\" (v4.1.0.473) by WM8Q"}
+    return QString{"%1 \"ssborrow\" (v4.1.0.473) by WM8Q"}
         .arg(QCoreApplication::applicationName());
 }
 

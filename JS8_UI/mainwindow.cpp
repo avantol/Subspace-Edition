@@ -3915,6 +3915,12 @@ void UI_Constructor::guiUpdate() {
         displayDialFrequency();
         updateHBButtonDisplay();
         updateCQButtonDisplay();
+#ifdef JS8_ENABLE_FT2
+        // [ssdetect borrow] return borrowed Subspace decode when the
+        // ARQ session predicate goes false -- ANY ending (complete,
+        // cancel, halt, timeout) restores identically.
+        serviceSubspaceDecodeBorrow();
+#endif
 
         // once per second...but not when we're transmitting, unless it's in the
         // first second...
@@ -6535,6 +6541,8 @@ void UI_Constructor::updateModeStatusLabel() {
 #ifdef JS8_ENABLE_FT2
     if (!m_l2Enabled) {
         modeText += QStringLiteral(" (Subspace RX OFF)");
+    } else if (m_ssDecodeBorrowed) {
+        modeText += QStringLiteral(" (Subspace RX on for ARQ)");
     }
 #endif
     mode_label.setText(modeText);
@@ -11891,6 +11899,10 @@ void UI_Constructor::setSubspaceDecodeEnabled(bool enabled,
         }
     }
 
+    // An explicit set (either direction) ends any borrow: the
+    // operator's choice is now whatever this call says.
+    m_ssDecodeBorrowed = false;
+
     if (m_l2Enabled != enabled) {
         m_l2Enabled = enabled;
         qWarning() << "[SSDETECT] Subspace decode"
@@ -11920,6 +11932,38 @@ void UI_Constructor::setSubspaceDecodeEnabled(bool enabled,
 // switch is unlocked PERMANENTLY (persisted). Disclosed to Magnet
 // management so a future SuperSpotter doesn't change the burst
 // without warning us.
+// [borrow] Unsolicited inbound ARQ while the operator's choice is
+// OFF: run the scanner for the session WITHOUT touching the
+// persisted choice or the menu checkmark. The 1 Hz service below
+// returns to OFF when the session predicate goes false -- keyed on
+// the predicate itself, not on end events, so completion, cancel,
+// halt, and TIMEOUT all restore identically.
+void UI_Constructor::borrowSubspaceDecodeForArq() {
+    if (m_l2Enabled)
+        return; // already hearing -- nothing to borrow
+    m_ssDecodeBorrowed = true;
+    m_l2Enabled = true;
+    qWarning() << "[SSDETECT] Subspace decode BORROWED for inbound"
+               << "ARQ session (operator choice stays OFF)";
+    l2TryDecode("ssdetect-borrow");
+    updateModeStatusLabel();
+}
+
+void UI_Constructor::serviceSubspaceDecodeBorrow() {
+    if (!m_ssDecodeBorrowed)
+        return;
+    bool const active =
+        m_chunkedArq && (m_chunkedArq->hasActiveChunkSends() ||
+                         m_chunkedArq->hasActiveRxTransfer());
+    if (active)
+        return;
+    m_ssDecodeBorrowed = false;
+    m_l2Enabled = false;
+    qWarning() << "[SSDETECT] Subspace decode borrow RETURNED"
+               << "(ARQ session over) -- operator OFF restored";
+    updateModeStatusLabel();
+}
+
 void UI_Constructor::noteSuperSpotterSeen() {
     if (m_superSpotterSeen)
         return;

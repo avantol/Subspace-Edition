@@ -1758,7 +1758,17 @@ class UI_Constructor : public QMainWindow {
     // API SPEED=16, ARQ/auto-route) force-re-enables (operator
     // ruling 2026-09-08).
     bool m_superSpotterSeen = false;            // menu unlocked (persisted)
+    // [borrow] Unsolicited ARQ traffic BORROWS decoding while the
+    // operator's persisted choice is OFF: scanner runs, checkmark
+    // stays unchecked, and the 1 Hz service returns to OFF when the
+    // session predicate (active chunk sends / rx transfer) goes
+    // false for ANY reason incl. timeout. Deliberate enables
+    // (menu / lightning / mode entry / API SPEED=16) are sticky and
+    // end the borrow by making the choice ON.
+    bool m_ssDecodeBorrowed = false;            // never persisted
     void setSubspaceDecodeEnabled(bool enabled, QString const &reason);
+    void borrowSubspaceDecodeForArq();          // unsolicited-traffic path
+    void serviceSubspaceDecodeBorrow();         // 1 Hz predicate check
     void noteSuperSpotterSeen();                // detector latch (persists)
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }
     void updateModeStatusLabel();               // mode + RX-off truth
