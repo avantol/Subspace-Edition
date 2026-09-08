@@ -151,8 +151,9 @@ void UI_Constructor::onChunkedWantsResponseTx(QString const &text) {
         // draft (stopTx path). Back-to-back responses keep the lock
         // (this save is skipped while a restore is pending).
         ui->extFreeTextMsgEdit->setReadOnly(true);
-        statusBar()->showMessage(
-            tr("Sending ARQ reply — outgoing text locked"), 3000);
+        // [operator 2026-09-08] Status message removed -- "outgoing
+        // text locked" wasn't strictly true; the read-only box is
+        // its own indication.
         qCWarning(chunkedarq_js8)
             << "[ARQ-RX] outgoing-text save: chars="
             << m_arqResponseSavedText.size()
