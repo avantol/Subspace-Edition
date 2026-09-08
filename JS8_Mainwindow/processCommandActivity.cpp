@@ -1942,9 +1942,23 @@ void UI_Constructor::processCommandActivity() {
             // forms get the response. Standard menu still sends
             // "QUERY ARQ?" so the existing flow is unchanged.
             else if (cmd == "ARQ?" || cmd == "ARQ") {
+                int level = ChunkedArq::ARQ_PROTOCOL_LEVEL;
+#ifdef JS8_ENABLE_FT2
+                // [ssdetect arqcap 2026-09-08] With Subspace RX
+                // disabled, do not advertise level >= 3: that arms
+                // the peer's V3 NATIVE transport, whose raw frames
+                // ride ONLY the Subspace speed we cannot hear (and
+                // being non-text, they can never trigger the borrow
+                // hook -- the session would die in NACK-silence).
+                // Level 2 = V2 text ARQ, proven at legacy speeds
+                // incl. Turbo. A BORROWED session counts as enabled
+                // and advertises full capability.
+                if (!m_l2Enabled)
+                    level = qMin(level, 2);
+#endif
                 reply = QString("%1 YES %2")
                             .arg(replyPath)
-                            .arg(ChunkedArq::ARQ_PROTOCOL_LEVEL);
+                            .arg(level);
                 // [BUILD 341 arqReplyAck] Dispatched like an ACK —
                 // caller's speed, draft save/restore, direct TX; see
                 // the arqProtocolReply declaration.
