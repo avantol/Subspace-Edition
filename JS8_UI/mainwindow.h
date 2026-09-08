@@ -502,6 +502,7 @@ class UI_Constructor : public QMainWindow {
     void on_actionModeJS8Slow_triggered();
     void on_actionModeJS8Ultra_triggered();
     void on_actionModeFT2_triggered();
+    void on_actionModeSubspaceDecode_toggled(bool checked); // [ssdetect]
     void on_actionHeartbeatAcknowledgements_toggled(bool checked);
     void on_actionModeMultiDecoder_toggled(bool checked);
     void on_actionModeReplicatorProtocol_toggled(bool checked);
@@ -1747,6 +1748,20 @@ class UI_Constructor : public QMainWindow {
     void   l2DecodeWatchdogCheck();             // detect + recover stuck latches
     void l2DecodeDone();                        // called when async decode finishes
     void l2TryDecode(char const *source);       // attempt to start an L2 decode
+
+    // [ssdetect] Subspace-decode switch, unlocked only for
+    // SuperSpotter deployments (probe-burst signature seen once,
+    // sticky forever). ONE authority for enable/disable: sets
+    // m_l2Enabled, kicks/halts the scan chain, syncs the menu
+    // action, and shows status-bar truth. Entering Subspace mode by
+    // ANY route (lightning button, Mode menu, click auto-switch,
+    // API SPEED=16, ARQ/auto-route) force-re-enables (operator
+    // ruling 2026-09-08).
+    bool m_superSpotterSeen = false;            // menu unlocked (persisted)
+    void setSubspaceDecodeEnabled(bool enabled, QString const &reason);
+    void noteSuperSpotterSeen();                // detector latch (persists)
+    bool subspaceDecodeEnabled() const { return m_l2Enabled; }
+    void updateModeStatusLabel();               // mode + RX-off truth
 
     // L2 known-frame suppression: pass last decoded frame's raw bits to
     // the decoder so it skips re-decoding the same content

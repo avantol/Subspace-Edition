@@ -919,8 +919,19 @@ if(type == "STATION.SET_SPOT") {
             else if (speed == Varicode::JS8CallSlow)
                 ui->actionModeJS8Slow->setChecked(true);
             else if (speed == Varicode::JS8CallUltra
-                  || speed == Varicode::JS8CallFT2)
+                  || speed == Varicode::JS8CallFT2) {
                 ui->actionModeFT2->setChecked(true);
+#ifdef JS8_ENABLE_FT2
+                // [ssdetect ruling 2026-09-08] API demand for
+                // Subspace (exactly what SuperSpotter's Expect
+                // engine sends) overrides a disabled decoder,
+                // visibly: decode re-enables and the menu switch
+                // re-checks; the operator may turn it off again.
+                if (!m_l2Enabled)
+                    setSubspaceDecodeEnabled(
+                        true, QStringLiteral("API MODE.SET_SPEED 16"));
+#endif
+            }
             setupJS8();
         }
         sendNetworkMessage("MODE.SET_SPEED", "",
@@ -1063,6 +1074,22 @@ if(type == "STATION.SET_SPOT") {
         raise();
         return;
     }
+
+#ifdef JS8_ENABLE_FT2
+    // [ssdetect] SuperSpotter client signature: its selection-probe
+    // burst sends API types that DO NOT EXIST (js8spotter.py
+    // 9557-9561 in 2.9 / 8397-8401 in 2.6); no other client emits
+    // nonexistent types. First sighting permanently unlocks the
+    // Subspace-decode menu switch. Disclosed to Magnet management
+    // (do not change the burst without telling us; successor is an
+    // explicit client-ID message).
+    if (type == "RX.GET_SELECTED_CALL" || type == "RX.GET_SELECTED" ||
+        type == "TX.GET_SELECTED_CALL" ||
+        type == "STATION.GET_SELECTED_CALL") {
+        noteSuperSpotterSeen();
+        return;
+    }
+#endif
 
     qCDebug(mainwindow_js8) << "Unable to process networkMessage:" << type;
 }

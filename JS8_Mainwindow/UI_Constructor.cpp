@@ -1242,7 +1242,22 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // to be visible at this point), or pass -DJS8_DISABLE_L2_ASYNC=1
     // via CMake. Touch this file and rebuild to re-evaluate.
 #ifndef JS8_DISABLE_L2_ASYNC
-    m_l2Enabled = true;
+    // [ssdetect] Startup honors the persisted switch. The switch's
+    // menu item exists only on stations that have ever seen the
+    // SuperSpotter client signature; everyone else always starts
+    // (and stays) enabled with no visible surface.
+    m_superSpotterSeen =
+        m_settings->value("SuperSpotterSeen", false).toBool();
+    ui->actionModeSubspaceDecode->setVisible(m_superSpotterSeen);
+    bool const ssDecode =
+        m_settings->value("SubspaceDecodeEnabled", true).toBool();
+    m_l2Enabled = ssDecode;
+    ui->actionModeSubspaceDecode->blockSignals(true);
+    ui->actionModeSubspaceDecode->setChecked(ssDecode);
+    ui->actionModeSubspaceDecode->blockSignals(false);
+    if (!ssDecode)
+        qWarning() << "[SSDETECT] Subspace decode starts DISABLED "
+                      "(persisted operator choice)";
     m_l2DecodeTimer.start(2000);  // watchdog only — normal path is l2DecodeDone → l2TryDecode
 #else
     qWarning() << "[FT2-L2] async decode DISABLED at compile time "

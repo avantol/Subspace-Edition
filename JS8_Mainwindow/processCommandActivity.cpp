@@ -599,6 +599,11 @@ void UI_Constructor::processCommandActivity() {
                     qWarning() << "[ARQ-RX] multi-mode RX override latched ON"
                                << "via inbound chunked-DATA from" << d.from;
                 }
+                // [ssdetect] An incoming ARQ contact must be fully
+                // decodable: force the Subspace-decode switch on.
+                if (!m_l2Enabled)
+                    setSubspaceDecodeEnabled(
+                        true, QStringLiteral("inbound ARQ traffic"));
                 // [BUILD 316] Auto-match submode to sender, always.
                 // Previously had a per-case table (first-chunk vs subseq,
                 // subspace-involved vs both-legacy, "at minimum sender's

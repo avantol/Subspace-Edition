@@ -1571,6 +1571,15 @@ void UI_Constructor::setSubmode(int submode) {
         return;
     }
     m_nSubMode = submode;
+#ifdef JS8_ENABLE_FT2
+    // [ssdetect ruling 2026-09-08] Entering Subspace by ANY route
+    // (lightning button, Mode menu, click auto-switch, API) — this
+    // is the one mode chokepoint — re-enables decoding and
+    // re-checks the menu switch.
+    if (submode == Varicode::JS8CallFT2 && !m_l2Enabled)
+        setSubspaceDecodeEnabled(true,
+                                 QStringLiteral("Subspace mode entry"));
+#endif
     ui->actionModeJS8Normal->setChecked(submode == Varicode::JS8CallNormal);
     ui->actionModeJS8Fast->setChecked(submode == Varicode::JS8CallFast);
     ui->actionModeJS8Turbo->setChecked(submode == Varicode::JS8CallTurbo);
@@ -1587,14 +1596,7 @@ void UI_Constructor::setSubmode(int submode) {
     // mode-flag summaries (+MULTI, +AUTO, +HAIL, +HB+ACK) stay on the
     // modeButton — only ARQ surfaces in both places, as the visibility
     // of the reliability mode is most safety-relevant for the operator.
-    QString modeText = (submode == Varicode::JS8CallFT2
-        ? QString::fromUtf8("\xe2\x9a\xa1 Subspace")
-        : JS8::Submode::name(submode));
-    if (ui->actionModeReplicatorProtocol &&
-        ui->actionModeReplicatorProtocol->isChecked()) {
-        modeText += QStringLiteral(" + ARQ");
-    }
-    mode_label.setText(modeText);
+    updateModeStatusLabel();
 
     // Update mode switch buttons — block signals to prevent re-triggering
     if (ui->modeBtnNormal) { ui->modeBtnNormal->blockSignals(true); ui->modeBtnNormal->setChecked(submode == Varicode::JS8CallNormal); ui->modeBtnNormal->blockSignals(false); }
@@ -6495,14 +6497,10 @@ void UI_Constructor::on_actionModeReplicatorProtocol_toggled(bool checked) {
     updateModeButtonText();
     // Also refresh the status-bar mode_label so its " + ARQ" suffix
     // toggles in sync (setSubmode is the other write site and only
-    // fires on actual submode change).
-    QString modeText = (m_nSubMode == Varicode::JS8CallFT2
-        ? QString::fromUtf8("\xe2\x9a\xa1 Subspace")
-        : JS8::Submode::name(m_nSubMode));
-    if (checked) {
-        modeText += QStringLiteral(" + ARQ");
-    }
-    mode_label.setText(modeText);
+    // fires on actual submode change). [ssdetect] One authority for
+    // the label now: updateModeStatusLabel (also carries the
+    // Subspace-RX-off truth).
+    updateModeStatusLabel();
     // Repaint the ARQ button so its background reflects the new
     // toggle state combined with the current callsign selection
     // (blue when both hold, gray otherwise). updateButtonDisplay is
@@ -6522,6 +6520,35 @@ void UI_Constructor::on_actionModeJS8Slow_triggered() { setupJS8(); }
 void UI_Constructor::on_actionModeJS8Ultra_triggered() { setupJS8(); }
 
 void UI_Constructor::on_actionModeFT2_triggered() { setupJS8(); }
+
+// [ssdetect] Status-bar mode label: submode name, " + ARQ" when the
+// reliability mode is active, and the Subspace-RX-off truth so a
+// disabled decoder is never invisible (was inline in setSubmode).
+void UI_Constructor::updateModeStatusLabel() {
+    QString modeText = (m_nSubMode == Varicode::JS8CallFT2
+        ? QString::fromUtf8("\xe2\x9a\xa1 Subspace")
+        : JS8::Submode::name(m_nSubMode));
+    if (ui->actionModeReplicatorProtocol &&
+        ui->actionModeReplicatorProtocol->isChecked()) {
+        modeText += QStringLiteral(" + ARQ");
+    }
+#ifdef JS8_ENABLE_FT2
+    if (!m_l2Enabled) {
+        modeText += QStringLiteral(" (Subspace RX OFF)");
+    }
+#endif
+    mode_label.setText(modeText);
+}
+
+// [ssdetect] The unlocked menu switch (visible only after the
+// SuperSpotter signature has been seen; see noteSuperSpotterSeen).
+void UI_Constructor::on_actionModeSubspaceDecode_toggled(bool checked) {
+#ifdef JS8_ENABLE_FT2
+    setSubspaceDecodeEnabled(checked, QStringLiteral("menu"));
+#else
+    Q_UNUSED(checked);
+#endif
+}
 
 void UI_Constructor::on_actionModeAutoreply_toggled(bool) {
     // update the HB ack option (needs autoreply on)
@@ -11825,6 +11852,70 @@ void UI_Constructor::l2DecodeDone() {
     m_l2StuckWarned = false;
     // Immediately start next decode — no waiting for timer.
     l2TryDecode("chain");
+}
+
+// [ssdetect, operator ruling 2026-09-08] ONE authority for the
+// Subspace-decode switch. The menu item that drives it exists only
+// on stations where the SuperSpotter client signature has been seen
+// (noteSuperSpotterSeen); the general public never sees any of
+// this. Disable is REFUSED (forced back on) whenever Subspace
+// decode is load-bearing: operator in Subspace mode, active ARQ
+// either direction, auto-route run, or the sticky ARQ multi-mode
+// override — mode discipline over convenience.
+void UI_Constructor::setSubspaceDecodeEnabled(bool enabled,
+                                              QString const &reason) {
+    if (!enabled) {
+        bool const loadBearing =
+            m_nSubMode == Varicode::JS8CallFT2 ||
+            m_arqMultiModeOverride ||
+            m_reach.active ||
+            (m_chunkedArq && (m_chunkedArq->hasActiveChunkSends() ||
+                              m_chunkedArq->hasActiveRxTransfer()));
+        if (loadBearing) {
+            qWarning() << "[SSDETECT] disable REFUSED (Subspace is"
+                       << "load-bearing) reason:" << reason;
+            enabled = true;
+        }
+    }
+
+    if (m_l2Enabled != enabled) {
+        m_l2Enabled = enabled;
+        qWarning() << "[SSDETECT] Subspace decode"
+                   << (enabled ? "ENABLED" : "DISABLED")
+                   << "reason:" << reason;
+        if (enabled)
+            l2TryDecode("ssdetect-enable");
+    }
+
+    m_settings->setValue("SubspaceDecodeEnabled", enabled);
+
+    if (ui->actionModeSubspaceDecode &&
+        ui->actionModeSubspaceDecode->isChecked() != enabled) {
+        ui->actionModeSubspaceDecode->blockSignals(true);
+        ui->actionModeSubspaceDecode->setChecked(enabled);
+        ui->actionModeSubspaceDecode->blockSignals(false);
+    }
+
+    updateModeStatusLabel();
+}
+
+// [ssdetect] Detector latch: the SuperSpotter client is identified
+// by its probe burst of API types that DO NOT EXIST
+// (RX.GET_SELECTED_CALL / RX.GET_SELECTED / TX.GET_SELECTED_CALL /
+// STATION.GET_SELECTED_CALL — js8spotter.py 9557-9561 in 2.9; no
+// other client sends nonexistent types). Once seen, the Mode-menu
+// switch is unlocked PERMANENTLY (persisted). Disclosed to Magnet
+// management so a future SuperSpotter doesn't change the burst
+// without warning us.
+void UI_Constructor::noteSuperSpotterSeen() {
+    if (m_superSpotterSeen)
+        return;
+    m_superSpotterSeen = true;
+    m_settings->setValue("SuperSpotterSeen", true);
+    if (ui->actionModeSubspaceDecode)
+        ui->actionModeSubspaceDecode->setVisible(true);
+    qWarning() << "[SSDETECT] SuperSpotter client signature seen --"
+               << "Subspace-decode menu switch unlocked permanently";
 }
 
 // [TODO #113/#120 2026-07-24 l2watch] Real watchdog for the two decode

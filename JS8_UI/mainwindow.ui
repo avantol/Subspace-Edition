@@ -2277,6 +2277,7 @@ background-color: #22ff22;
     <addaction name="actionModeJS8Fast"/>
     <addaction name="actionModeJS8Turbo"/>
     <addaction name="actionModeFT2"/>
+    <addaction name="actionModeSubspaceDecode"/>
     <addaction name="separator"/>
     <addaction name="actionModeMultiDecoder"/>
     <addaction name="separator"/>
@@ -2607,6 +2608,20 @@ background-color: #22ff22;
    </property>
    <property name="text">
     <string>JS8 (&amp;Subspace, 3.75 sec, 150 Hz, ~64 WPM)</string>
+   </property>
+  </action>
+  <action name="actionModeSubspaceDecode">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Enable Decoding of Subspace speed</string>
    </property>
   </action>
   <action name="actionModeJS8HB">

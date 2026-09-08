@@ -1126,6 +1126,12 @@ void UI_Constructor::autoRouteBegin(QString const &target) {
     m_autoRouteActive = true;
     m_autoRouteCancel = false;
     m_autoRouteTarget = target;
+    // [ssdetect] An auto-route run must be fully decodable: force
+    // the Subspace-decode switch on for the duration (and beyond --
+    // operator turns it back off if wanted).
+    if (!m_l2Enabled)
+        setSubspaceDecodeEnabled(true,
+                                 QStringLiteral("auto-route begin"));
     // [autoroute] Take the Last Tx status label over for the mode --
     // SAME cache/valid mechanism as the ARQ progress override (build
     // 252): the valid flag silences the per-frame writer, and ARQ
