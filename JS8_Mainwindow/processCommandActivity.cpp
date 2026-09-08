@@ -1953,6 +1953,12 @@ void UI_Constructor::processCommandActivity() {
                 // Level 2 = V2 text ARQ, proven at legacy speeds
                 // incl. Turbo. A BORROWED session counts as enabled
                 // and advertises full capability.
+                // [operator 2026-09-08] The peer CACHES this answer
+                // for its whole session and never re-asks, so the
+                // advertisement must hold for the duration -- never
+                // reply 4 off a momentary enable (delayed deaf-trap);
+                // the reverse staleness (peer keeps V2 after we
+                // re-enable) is merely unoptimal and accepted.
                 if (!m_l2Enabled)
                     level = qMin(level, 2);
 #endif
