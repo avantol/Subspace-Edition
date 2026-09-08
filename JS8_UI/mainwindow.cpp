@@ -11864,16 +11864,29 @@ void UI_Constructor::l2DecodeDone() {
 // override — mode discipline over convenience.
 void UI_Constructor::setSubspaceDecodeEnabled(bool enabled,
                                               QString const &reason) {
+    if (!enabled && m_nSubMode == Varicode::JS8CallFT2) {
+        // [ssdetect ruling 2026-09-08] De-selecting Subspace decoding
+        // while Subspace speed is the current mode auto-switches to
+        // Normal first (a mode we can no longer hear is not a mode to
+        // sit in). setSubmode refuses during an active TX; if it
+        // could not switch, the disable is refused too.
+        setSubmode(Varicode::JS8CallNormal);
+        if (m_nSubMode == Varicode::JS8CallFT2) {
+            qWarning() << "[SSDETECT] disable REFUSED (mode switch to"
+                       << "Normal blocked, likely TX active) reason:"
+                       << reason;
+            enabled = true;
+        }
+    }
+
     if (!enabled) {
         bool const loadBearing =
-            m_nSubMode == Varicode::JS8CallFT2 ||
-            m_arqMultiModeOverride ||
             m_reach.active ||
             (m_chunkedArq && (m_chunkedArq->hasActiveChunkSends() ||
                               m_chunkedArq->hasActiveRxTransfer()));
         if (loadBearing) {
-            qWarning() << "[SSDETECT] disable REFUSED (Subspace is"
-                       << "load-bearing) reason:" << reason;
+            qWarning() << "[SSDETECT] disable REFUSED (active ARQ or"
+                       << "auto-route) reason:" << reason;
             enabled = true;
         }
     }
