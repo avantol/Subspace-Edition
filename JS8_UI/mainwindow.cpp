@@ -6695,19 +6695,13 @@ void UI_Constructor::setupJS8() {
 
     // Update mode switch buttons and status bar label
     // Block signals to prevent setChecked() from re-triggering setSubmode()
-    // 2026-06-07 (arq-statusfix): preserve the " + ARQ" suffix the
-    // setSubmode + toggle handlers carry. This setupJS8 path was the
-    // third mode_label write site and was missing the suffix — it
-    // overwrote the indicator at startup and on mode change, so even
-    // when ARQ was persisted-on, the status line stayed bare.
-    QString modeText = (m_nSubMode == Varicode::JS8CallFT2
-        ? QString::fromUtf8("\xe2\x9a\xa1 Subspace")
-        : JS8::Submode::name(m_nSubMode));
-    if (ui->actionModeReplicatorProtocol &&
-        ui->actionModeReplicatorProtocol->isChecked()) {
-        modeText += QStringLiteral(" + ARQ");
-    }
-    mode_label.setText(modeText);
+    // 2026-06-07 (arq-statusfix): this setupJS8 path was the third
+    // mode_label write site and was missing the " + ARQ" suffix.
+    // [ssdetect labelall 2026-09-08] SAME family struck again: it
+    // then predated the Subspace-RX-off suffix and overwrote it on
+    // every mode change (field: "Normal" shown with decode off).
+    // Now ALL label writes go through the ONE authority.
+    updateModeStatusLabel();
     // Speed-mode buttons use canChangeSpeed (NO arqBusy gate) so the
     // operator can switch speed BETWEEN chunks during an ARQ session
     // to adapt to changing band conditions mid-super-message
