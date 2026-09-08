@@ -1579,9 +1579,14 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
             info.country = country;
         // THEIRS only: on a report of MY signal `f` is the frequency
         // they heard US on, which is not a fact about them.
-        if (!senderIsMe && spotFreqHz > 0)
+        // [freqclock 2026-09-08] Braces were missing, so freqWhen was
+        // stamped UNCONDITIONALLY -- every reports-me or freq-less
+        // spot refreshed the clock while the value stayed stale, the
+        // exact value+clock split [maptruth #13] exists to prevent.
+        if (!senderIsMe && spotFreqHz > 0) {
             info.freqHz = spotFreqHz;
             info.freqWhen = when;   // [maptruth #13] value + clock
+        }
         if (!senderIsMe)
             info.sawAsSender = true;   // it was the SENDER of a spot
     }
@@ -3971,6 +3976,20 @@ void SpotMapWindow::mouseMoveEvent(QMouseEvent *event) {
             // record. The fresh negative above outranks it (a known
             // relayer currently declining reads "Relay disabled?").
             tip += QStringLiteral("\n") + tr("Relay enabled");
+        }
+        // [qsyhover 2026-09-08, operator] Last hover line when the
+        // station's PSKR-reported transmit frequency falls OUTSIDE
+        // our current passband [dial, dial+2400]: name the dial that
+        // would reach it, in MHz. freqHz is a STATION fact (the
+        // frequency THEY transmit on, theirs-only by the ingest
+        // guard), so reports of our own signal never trigger this.
+        if (best->spot.freqHz > 0 && m_dialHz > 0) {
+            qint64 const audio = best->spot.freqHz - m_dialHz;
+            if (audio < 0 || audio > 2400) {
+                tip += QStringLiteral("\n") +
+                       tr("QSY: %1").arg(
+                           best->spot.freqHz / 1e6, 0, 'f', 3);
+            }
         }
         // [hovertime 2026-08-22, operator: "cut the hover info timeout
         // to 50%"] Qt's default when no time is given is
