@@ -2277,9 +2277,9 @@ background-color: #22ff22;
     <addaction name="actionModeJS8Fast"/>
     <addaction name="actionModeJS8Turbo"/>
     <addaction name="actionModeFT2"/>
-    <addaction name="actionModeSubspaceDecode"/>
     <addaction name="separator"/>
     <addaction name="actionModeMultiDecoder"/>
+    <addaction name="actionModeSubspaceDecode"/>
     <addaction name="separator"/>
     <addaction name="actionModeAutoreply"/>
     <addaction name="actionModeJS8HB"/>
