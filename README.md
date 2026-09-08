@@ -1,34 +1,7 @@
-# JS8 Subspace Edition "Tranya" (3.75 sec Tx period, async protocol)
-Subspace Edition adds a new "Subspace" mode to JS8 for faster communication, spectral efficiency, and freedom from time accuracy requirements.
+# JS8 Subspace Edition "Tranya" (64 WPM, async protocol, auto-routing mesh network)
+See the [Releases page](https://github.com/avantol/Subspace-Edition/releases/latest) for complete information, including features and downloads.
 
-Installers are available for Windows, Mac OS, Linux, and Raspberry Pi, at the <a href="https://github.com/avantol/Subspace-Edition/releases/latest">Release page</a>.
-
-Subspace Edition is an experiment in combining the robustness of FT8 (a weak-signal mode by K1JT) with a messaging and network protocol layer for weak signal communication. The open source software is designed for connecting amateur radio operators who are operating under weak signal conditions and offers real-time keyboard-to-keyboard messaging, store-and-forward messaging, and automatic station announcements.
-
-Now there are 5 modes for JS8: Slow, Normal, Fast, Turbo, and **Subspace**.
-
-The cycle time for "Subspace" mode is 3.75 seconds. If that sounds familiar, it's similar in some ways to the transport layer in Decodium FT2, except greatly enhanced for use in the Subspace Edition, where reliability is at the top of the list for message traffic.
-
-Subspace mode eliminates any need to keep your PC's clock adjusted, it's **100% independent of clock time**, do no "drift" issue... ever.
- 
-Subspace mode is only ~150 Hz wide, compared to JS8-60 mode requiring ~250 Hz.... this makes a huge difference keeping the audio passband clear of QRM: 17 simultaneous QSOs possible as opposed to 10 in the 2500 Hz audio passband.
-
-<img src="https://github.com/avantol/Subspace-Edition/blob/master/Tranya.JPG"></img>
-
-> Technical sidebar:
-> I use carefully selected levels of search depth to "sync up" quickly to the received signal as soon as sound is received, instead of waiting until the message is complete. The process does not depend on clock time at all. Two problems solved!
-> 
-> There is only a slight loss of sensitivity in signal detection (1 S-unit) compared to "Normal" mode, the time saved by our early sync technique is used to produce a signal more likely to be correctly decoded. Another win!
-> 
-> (Many thanks to Martino IU8LMC for his initial ideas from the L2 async protocol).
-> 
-> Subspace mode is 5 characters/sec , 4x "Normal mode", good to about -16dB receive SNR.
-> 
-> Spectral efficiency: 0.162 bits/sec/Hz, compared to 0.091 bits/sec/Hz for JS8-60 mode... 78% better at conserving bandwidth.
-
-An accurate time source is not strictly necessary for Subspace Mode. The typical NTP server has good enough accuracy, as it helps with the standard (slower) modes.
-
-See the [Subspace Edition discussion group](https://groups.io/g/Subspace/topics) for full details, and to comment, ask questions, or to suggest something. We look forward to hearing from you!
+See the [Subspace Edition discussion group](https://groups.io/g/Subspace/topics) for "how-to" information, and to comment, ask questions, or to suggest something. We look forward to hearing from you!
 
 # Privacy Policy for Subspace Edition (Microsoft Store Version)
 Effective Date: April 2024
