@@ -1103,9 +1103,11 @@ if(type == "STATION.SET_SPOT") {
     // burst sends API types that DO NOT EXIST (js8spotter.py
     // 9557-9561 in 2.9 / 8397-8401 in 2.6); no other client emits
     // nonexistent types. First sighting permanently unlocks the
-    // Subspace-decode menu switch. Disclosed to Magnet management
-    // (do not change the burst without telling us; successor is an
-    // explicit client-ID message).
+    // Subspace-decode menu switch. No coordination with the
+    // maintainer needed (operator ruling 2026-09-08): if a future
+    // SuperSpotter drops this burst, the 701-form text signature in
+    // the TX handlers keys on their CORE wire format and still
+    // latches every deployment shape, pure servers included.
     if (type == "RX.GET_SELECTED_CALL" || type == "RX.GET_SELECTED" ||
         type == "TX.GET_SELECTED_CALL" ||
         type == "STATION.GET_SELECTED_CALL") {
