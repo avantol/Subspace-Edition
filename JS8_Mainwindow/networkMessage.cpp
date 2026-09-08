@@ -587,6 +587,20 @@ if(type == "STATION.SET_SPOT") {
     }
     /** @brief TX.SET_TEXT: Updates the TX text buffer with new content. */
     if (type == "TX.SET_TEXT") {
+#ifdef JS8_ENABLE_FT2
+        // [ss701] Second SuperSpotter signature (operator ruling
+        // 2026-09-08): the 701A/B/C split forms exist ONLY in the
+        // @MAGNET ecosystem (upstream JS8Spotter ships a single
+        // MCF701), and a pure SERVING station -- whose Expect
+        // auto-replies never emit the probe burst -- must pass the
+        // form ID through the TX injection API to answer a pull.
+        // API-INJECTED text only; received RF proves nothing about
+        // the local client.
+        if (message.value().contains(QLatin1String("F!701A")) ||
+            message.value().contains(QLatin1String("F!701B")) ||
+            message.value().contains(QLatin1String("F!701C")))
+            noteSuperSpotterSeen();
+#endif
         addMessageText(message.value(), true);
         sendNetworkMessage("TX.TEXT",
                            ui->extFreeTextMsgEdit->toPlainText().right(1024),
@@ -652,6 +666,15 @@ if(type == "STATION.SET_SPOT") {
             return;
         }
         auto text = message.value();
+#ifdef JS8_ENABLE_FT2
+        // [ss701] Same second signature as TX.SET_TEXT above -- the
+        // Expect auto-reply path sends the form text through HERE
+        // (SET_TEXT "" first, full text only in SEND_MESSAGE).
+        if (text.contains(QLatin1String("F!701A")) ||
+            text.contains(QLatin1String("F!701B")) ||
+            text.contains(QLatin1String("F!701C")))
+            noteSuperSpotterSeen();
+#endif
         if (!text.isEmpty()) {
             auto priStr = message.params().value("PRIORITY", "HIGH")
                               .toString().toUpper();
