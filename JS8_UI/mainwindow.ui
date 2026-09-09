@@ -2178,6 +2178,7 @@ background-color: #22ff22;
      <string>&amp;Help</string>
     </property>
     <addaction name="actionCopyright_Notice"/>
+    <addaction name="actionLicense"/>
     <addaction name="separator"/>
     <addaction name="actionAbout"/>
     <addaction name="separator"/>
@@ -2337,6 +2338,11 @@ background-color: #22ff22;
   <action name="actionCopyright_Notice">
    <property name="text">
     <string>&amp;Copyright notice</string>
+   </property>
+  </action>
+  <action name="actionLicense">
+   <property name="text">
+    <string>&amp;License (GPLv3)</string>
    </property>
   </action>
   <action name="actionUser_Guide">

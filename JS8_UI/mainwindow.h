@@ -470,6 +470,7 @@ class UI_Constructor : public QMainWindow {
     void on_actionAdd_Log_Entry_triggered();
     void on_actionOpen_log_directory_triggered();
     void on_actionCopyright_Notice_triggered();
+    void on_actionLicense_triggered();   // [conveylicense] Help | License
     void on_actionUser_Guide_triggered();
     void on_actionSubspace_Guide_triggered();
     bool decode(qint32 k);

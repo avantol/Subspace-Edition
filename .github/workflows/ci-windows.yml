@@ -93,7 +93,11 @@ jobs:
       shell: msys2 {0}
       run: |
         cp build/JS8Call.exe build/JS8Call/
-        cp build/JS8Call/LICENSE build/JS8Call/ 2>/dev/null || true
+        # [conveylicense] This copied build/JS8Call/LICENSE onto itself
+        # -- a no-op, silenced by "2>/dev/null || true", so the Windows
+        # packages have NEVER carried the GPL text. Source is the repo
+        # root, and the failure is no longer swallowed.
+        cp LICENSE build/JS8Call/
         cp local/hamlib/bin/libhamlib-4.dll build/JS8Call/
         cp local/hamlib/bin/libusb-1.0.dll build/JS8Call/
 

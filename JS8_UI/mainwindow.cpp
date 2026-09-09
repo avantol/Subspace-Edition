@@ -20,12 +20,15 @@
 #include "JS8_Include/SettingsGroup.h"
 
 #include <QThread>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QInputDialog>
+#include <QPlainTextEdit>
 #include <QUrl>
 #include <QStandardPaths>
 #include <QToolButton>
+#include <QVBoxLayout>
 
 #ifdef JS8_ENABLE_FT2
 #include "JS8_Mode/DecodeFT2.h"
@@ -1890,6 +1893,51 @@ void UI_Constructor::on_actionCopyright_Notice_triggered() {
         "Further, the source code of Subspace Edition contains material Copyright (C) "
         "2018-2019 by Jordan Sherer, KN4CRD.\"");
     JS8MessageBox::warning_message(this, message);
+}
+
+/**
+ * @brief UI_Constructor::on_actionLicense_triggered
+ *        Display the GPLv3 license text, compiled into the binary.
+ *
+ * [conveylicense] GPLv3 section 4 requires giving recipients a COPY of
+ * the License along with the Program. The About dialog links
+ * gnu.org, and a link is not a copy; a file beside the executable
+ * does not reach a Store user either, because MSIX installs to
+ * C:\Program Files\WindowsApps\<package>, which is ACL-locked.
+ * Reading it from :/LICENSE is the one route that works in every
+ * packaging format we ship.
+ */
+void UI_Constructor::on_actionLicense_triggered() {
+    QFile file(QStringLiteral(":/LICENSE"));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        // Never silent: a missing license resource is a compliance
+        // defect, not a cosmetic one.
+        qWarning() << "[LICENSE] :/LICENSE resource missing";
+        JS8MessageBox::warning_message(
+            this, tr("The license text could not be loaded. It is "
+                     "available at https://www.gnu.org/licenses/gpl-3.0.txt"));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Subspace Edition - License (GPLv3)"));
+    dialog.resize(800, 600);
+
+    auto *const text = new QPlainTextEdit(&dialog);
+    text->setPlainText(QString::fromUtf8(file.readAll()));
+    text->setReadOnly(true);
+    text->setLineWrapMode(QPlainTextEdit::NoWrap);
+    text->moveCursor(QTextCursor::Start);
+
+    auto *const buttons =
+        new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    auto *const layout = new QVBoxLayout(&dialog);
+    layout->addWidget(text);
+    layout->addWidget(buttons);
+
+    dialog.exec();
 }
 
 /**

@@ -411,6 +411,23 @@ qt_add_resources(
 )
 
 #------------------------------------------------------------------------------#
+# GPLv3 license text, compiled in so Help | License can DISPLAY it.
+# GPLv3 section 4 requires giving recipients a copy of the License along
+# with the Program -- a hyperlink is not a copy. A file beside the
+# executable does not satisfy it for the Store build either: MSIX
+# installs to C:\Program Files\WindowsApps\<package>, which is
+# ACL-locked, so the user cannot browse to it. Compiled in, the text
+# reaches the user in every packaging format (Store, Inno, .deb, Raspi).
+#------------------------------------------------------------------------------#
+
+qt_add_resources(
+  ${TARGET} "license"
+  PREFIX "/"
+  FILES
+  LICENSE
+)
+
+#------------------------------------------------------------------------------#
 # Up and down arrow image resources, used in the main window by the
 # frequency controls.
 #------------------------------------------------------------------------------#
