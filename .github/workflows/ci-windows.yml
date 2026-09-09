@@ -124,6 +124,17 @@ jobs:
             done
         }
         walk_deps build/JS8Call/JS8Call.exe build/JS8Call/
+        # [sqltrim 2026-09-08] windeployqt copies EVERY SQL driver
+        # plugin the MSYS2 Qt install ships; GridDb opens QSQLITE
+        # only. Drop the rest BEFORE the plugin dep walk below, so
+        # their client libraries are never pulled into the bundle
+        # root either.
+        for drv in build/JS8Call/sqldrivers/*.dll; do
+            case "$(basename "$drv")" in
+                qsqlite.dll) ;;
+                *) rm -f "$drv" ;;
+            esac
+        done
         # Plugins copied by windeployqt have their own dependencies
         # too. EVERY plugin subdirectory, generically -- the previous
         # hand-list (7 dirs, written at Build 137) predated Qt Sql:
