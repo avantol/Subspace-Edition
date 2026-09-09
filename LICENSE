@@ -153,7 +153,7 @@ QT6 LIBARIES
 JS8Call is distributed with dynamically linked Qt libraries. The libraries are licensed under LGPLv3. The sourcecode for Qt can be downloaded from official Qt sources at `https://github.com/qt`
 
 FFmpeg
-This software uses code of [FFmpeg](http://ffmpeg.org/) licensed under the [LGPLv2.1](http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html) and its source can be downloaded [here](https://github.com/JS8Call-improved/JS8Call-improved/releases)
+Subspace Edition does NOT use or distribute FFmpeg. The notice carried here previously was inherited from JS8Call-Improved and no longer applies: audio is handled by miniaudio, Qt Multimedia is not linked, no av* libraries are bundled in any package, and no FFmpeg source is conveyed by this project.
 
                    GNU LESSER GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007

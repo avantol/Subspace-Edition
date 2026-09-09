@@ -55,12 +55,15 @@ jobs:
         path: ${{ github.workspace }}/local/libusb
         key: ${{ runner.os }}-${{ runner.arch }}-libusb1029
 
-    - name: Cache ffmpeg 7.1.3
-      id: cache-ffmpeg
-      uses: actions/cache/restore@v4
-      with:
-        path: ${{ github.workspace }}/local/ffmpeg
-        key: ${{ runner.os }}-${{ runner.arch }}-ffmpeg713
+    # [ffmpegdrop 2026-09-09] ffmpeg cache/build/save steps REMOVED.
+    # Nothing consumes it: CMakeLists never references ffmpeg/avcodec,
+    # our Qt components are Network SerialPort Sql Widgets (no
+    # Multimedia -- audio is miniaudio), and the configure line below
+    # never put local/ffmpeg on CMAKE_PREFIX_PATH, so it was
+    # unfindable even in principle. Leftover from the Qt6Multimedia
+    # era; it cost a full ffmpeg compile on every cache miss.
+    # Verified: no av*/ffmpeg DLLs in the Windows artifact, and the
+    # Linux binary links no avcodec/avformat/avutil.
 
     # Hamlib 4.7.0+ required for IC-7300 MK2 (new rig model, CI-V 0xB6)
     - name: Cache Hamlib 4.7.2
@@ -148,20 +151,8 @@ jobs:
         key: ${{ runner.os }}-${{ runner.arch }}-boost188
         path: ${{ github.workspace }}/local/boost
 
-    - name: Install ffmpeg 7.1.3
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      run: |
-        git clone --depth=1 --branch n7.1.3 https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg
-        mkdir -p /tmp/ffmpeg/build && cd /tmp/ffmpeg/build
-        ../configure --prefix=${GITHUB_WORKSPACE}/local/ffmpeg --enable-shared --enable-static --disable-doc --enable-network
-        make install
-
-    - name: Save ffmpeg cache
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
-      with:
-        key: ${{ runner.os }}-${{ runner.arch }}-ffmpeg713
-        path: ${{ github.workspace }}/local/ffmpeg
+    # [ffmpegdrop 2026-09-09] ffmpeg build + cache-save steps removed
+    # here too -- see the note beside the cache-restore step above.
 
     - name: Install Qt 6.9.3
       uses: jurplel/install-qt-action@v4

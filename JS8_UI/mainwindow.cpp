@@ -1926,7 +1926,11 @@ void UI_Constructor::on_actionLicense_triggered() {
     auto *const text = new QPlainTextEdit(&dialog);
     text->setPlainText(QString::fromUtf8(file.readAll()));
     text->setReadOnly(true);
-    text->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // [conveylicense] WRAP, do not scroll sideways: the GPL half of
+    // LICENSE is reflowed into paragraph-per-line form, longest line
+    // 2347 chars, so NoWrap ran it off the screen and made the text
+    // unreadable (operator, 2026-09-09).
+    text->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     text->moveCursor(QTextCursor::Start);
 
     auto *const buttons =
