@@ -19,6 +19,7 @@ xcuserdata/
 #### Qt Creator patch ####
 .qtcreator/
 build/
+build-*/
 CMakeLists.txt.user
 ## end Qt Creator patch ##
 #### VS Code ####

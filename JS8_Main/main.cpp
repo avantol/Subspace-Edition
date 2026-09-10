@@ -179,33 +179,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (parser.isSet(output_option)) {
-            new TraceFile(parser.value(output_option));
-        } else {
-            // Check DiagnosticLogging setting directly from QSettings
-            // (Configuration object not yet created at this point).
-            // Use StoragePaths so the lookup stays on the historical
-            // "JS8Call" path regardless of the runtime branding.
-            auto configDir = StoragePaths::settingsDirectory();
-            QSettings settings(configDir + "/JS8Call.ini", QSettings::IniFormat);
-            settings.beginGroup("Configuration");
-            bool diagEnabled = settings.value("DiagnosticLogging", false).toBool();
-            settings.endGroup();
-            if (diagEnabled) {
-                auto timestamp = QDateTime::currentDateTimeUtc()
-                    .toString("yyyyMMdd_HHmmss");
-                auto logPath = configDir + "/js8call-diag-" + timestamp + "Z.log";
-                new TraceFile(logPath);
-                qWarning() << "[DIAG] Diagnostic logging enabled:" << logPath;
-            }
-        }
-
-        qWarning() << "[DIAG] Build:" << program_title();
-        qWarning() << "[DIAG] OS:" << QSysInfo::prettyProductName()
-                   << "kernel:" << QSysInfo::kernelType()
-                   << QSysInfo::kernelVersion()
-                   << "arch:" << QSysInfo::currentCpuArchitecture();
-
         QStandardPaths::setTestModeEnabled(parser.isSet(test_option));
 
         // support for multiple instances running from a single installation
@@ -229,25 +202,53 @@ int main(int argc, char *argv[]) {
             multiple = true;
         }
 
-        // [multiinst 2026-08-19] ONE authority for the per-instance
-        // file suffix: "" for the default instance (legacy filenames,
-        // Build 154 continuity), "-<rig>" under --rig-name (spaces
-        // sanitized to '-'; \ / , already rejected above), plus
-        // "-test" in test mode. Feeds BOTH the settings filename and
-        // the instance lock below — the continuity hardcodes had
-        // frozen both to the default names, which broke --rig-name
-        // entirely (second instance hit the shared lock; field
-        // 2026-08-19).
-        {
-            QString suffix;
-            QString rig = parser.value(rig_option);
-            rig.replace(QRegularExpression{R"(\s+)"},
-                        QStringLiteral("-"));
-            if (!rig.isEmpty()) suffix += QLatin1Char('-') + rig;
-            if (parser.isSet(test_option))
-                suffix += QStringLiteral("-test");
-            MultiSettings::setInstanceSuffix(suffix);
+        // [oneinstance TODO #226] The instance is fully identified at
+        // this point, and applicationName is the ONLY thing that
+        // carries it -- exactly as upstream does. Everything
+        // downstream (data directory, settings file, lock file,
+        // grid DB, trace log, crash directory) resolves through
+        // StoragePaths::pathApplicationName(), which strips the
+        // display brand and keeps the instance part. The Build 370
+        // parallel suffix mechanism is gone.
+        //
+        // NO MIGRATION of the files builds 370-478 wrote under that
+        // other format ("JS8Call-arq.ini") -- operator ruling
+        // 2026-09-10. A --rig-name instance starts clean on the
+        // upstream names; the old files are simply left on disk.
+        // The DEFAULT instance is untouched either way.
+
+        // Diagnostic logging is set up HERE, not before the instance
+        // is known: a named instance must read ITS OWN ini and write
+        // its diag log beside it. It also has to follow
+        // setTestModeEnabled above, which moves every path.
+        if (parser.isSet(output_option)) {
+            new TraceFile(parser.value(output_option));
+        } else {
+            // Read DiagnosticLogging straight from QSettings; no
+            // Configuration object exists yet.
+            QSettings settings(StoragePaths::settingsFileName(),
+                               QSettings::IniFormat);
+            settings.beginGroup("Configuration");
+            bool diagEnabled = settings.value("DiagnosticLogging", false).toBool();
+            settings.endGroup();
+            if (diagEnabled) {
+                auto timestamp = QDateTime::currentDateTimeUtc()
+                    .toString("yyyyMMdd_HHmmss");
+                auto logPath = StoragePaths::settingsDirectory() +
+                               "/js8call-diag-" + timestamp + "Z.log";
+                new TraceFile(logPath);
+                qWarning() << "[DIAG] Diagnostic logging enabled:" << logPath;
+            }
         }
+
+        qWarning() << "[DIAG] Build:" << program_title();
+        qWarning() << "[DIAG] Instance:"
+                   << StoragePaths::pathApplicationName()
+                   << "data:" << StoragePaths::dataLocation();
+        qWarning() << "[DIAG] OS:" << QSysInfo::prettyProductName()
+                   << "kernel:" << QSysInfo::kernelType()
+                   << QSysInfo::kernelVersion()
+                   << "arch:" << QSysInfo::currentCpuArchitecture();
 
         // now we have the application name we can open the settings
         MultiSettings multi_settings{parser.value(cfg_option)};
@@ -258,15 +259,14 @@ int main(int argc, char *argv[]) {
         Q_ASSERT(temp_dir.exists()); // sanity check
 
         // disallow multiple instances with same instance key.
-        // Hardcoded "JS8Call.lock" rather than derived from
-        // applicationName() — same continuity rationale as the
-        // JS8Call.ini settings filename. The applicationName was
-        // renamed to "Subspace Edition" for branding, but a
-        // filename with a space ("Subspace Edition.lock") is a
-        // shell-quoting hazard and gives no user-visible benefit
-        // (the lock file is purely internal).
+        // [oneinstance TODO #226] Derived from pathApplicationName(),
+        // like every other per-instance name. The original concern
+        // that motivated the hardcode -- "Subspace Edition.lock" --
+        // is handled at the source: pathApplicationName() maps the
+        // display brand back to "JS8Call", so the default instance is
+        // still exactly "JS8Call.lock".
         QLockFile instance_lock{temp_dir.absoluteFilePath(
-            "JS8Call" + MultiSettings::instanceSuffix() + ".lock")};
+            StoragePaths::pathApplicationName() + ".lock")};
         instance_lock.setStaleLockTime(0);
         while (!instance_lock.tryLock()) {
             if (QLockFile::LockFailedError == instance_lock.error()) {

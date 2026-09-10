@@ -24,8 +24,16 @@ QString version() {
 }
 
 QString program_title() {
-    return QString{"%1 \"Tranya\" (v4.1.0.478) by WM8Q"}
+#ifdef JS8_ASAN_BUILD
+    // [asan] A sanitizer build must be unmistakable in the title -- it
+    // is 2x slower and holds 2-3x the memory, so any timing or
+    // resident-size number read from it means something different.
+    return QString{"%1 \"Tranya\" (v4.1.0.479 ASAN) by WM8Q"}
         .arg(QCoreApplication::applicationName());
+#else
+    return QString{"%1 \"Tranya\" (v4.1.0.479) by WM8Q"}
+        .arg(QCoreApplication::applicationName());
+#endif
 }
 
 QString program_version() {

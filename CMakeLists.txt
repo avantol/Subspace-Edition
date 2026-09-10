@@ -490,6 +490,42 @@ set (CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -Wall -Wextra")
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -fexceptions -frtti")
 
 #------------------------------------------------------------------------------#
+# [asan] Diagnostic build: AddressSanitizer + UndefinedBehaviorSanitizer.
+# OFF by default -- never in a release build.
+#
+#   cmake -S . -B build-asan -DENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+#   cmake --build build-asan -j$(nproc)
+#
+# Use a SEPARATE build directory: the flags differ from the release
+# build and mixing them in one tree causes confusing partial rebuilds.
+#
+# The binary marks itself -- JS8_ASAN_BUILD makes program_title() append
+# " ASAN" -- so an instrumented build can never be mistaken for a normal
+# one in the window title.
+#
+# COST: roughly 2x CPU and 2-3x RSS. That matters here, because the
+# Subspace scanner already saturates a core on the bench Mini, and a
+# build that cannot keep up with real-time decode may not reproduce
+# the behaviour being investigated.
+#------------------------------------------------------------------------------#
+
+option(ENABLE_ASAN "Build with Address/UB sanitizers (diagnostic only)" OFF)
+
+if (ENABLE_ASAN)
+  message(STATUS "ASAN build: address + undefined sanitizers ENABLED")
+  # TARGET-scoped on purpose. add_compile_options()/add_link_options()
+  # only affect targets created AFTER the call, and this block sits far
+  # below add_executable() -- using them produced a binary with the ASAN
+  # title marker but NO instrumentation at all (verified 2026-09-10:
+  # zero __asan symbols, no libasan linked). target_* applies to an
+  # already-defined target, so it cannot fail that way.
+  target_compile_options(${TARGET} PRIVATE
+    -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+  target_link_options(${TARGET} PRIVATE -fsanitize=address,undefined)
+  target_compile_definitions(${TARGET} PRIVATE JS8_ASAN_BUILD)
+endif ()
+
+#------------------------------------------------------------------------------#
 # In order to execute the macdeployqt and windeployqt commands, we'll need
 # to know where they live, which is the same location as the qmake binary.
 #------------------------------------------------------------------------------#

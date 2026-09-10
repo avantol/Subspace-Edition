@@ -11,6 +11,7 @@
 #include "JS8_Main/Geodesic.h"
 #include "JS8_Network/MqttClient.h"
 #include "JS8_Main/MultiSettings.h"
+#include "JS8_Main/StoragePaths.h"
 #include <QFileInfo>
 #include "JS8_UI/Configuration.h"
 
@@ -115,8 +116,8 @@ SpotMapWindow::SpotMapWindow(QSettings *settings,
     {
         QString const dir =
             QFileInfo{m_settings->fileName()}.absolutePath();
-        if (m_gridDb.open(dir + QStringLiteral("/JS8Call") +
-                          MultiSettings::instanceSuffix() +
+        if (m_gridDb.open(dir + QLatin1Char('/') +
+                          StoragePaths::pathApplicationName() +
                           QStringLiteral("-grids.db"))) {
             m_gridByCall = m_gridDb.loadAll();
             // [#168 part 3] Restore happens in setStation(), not

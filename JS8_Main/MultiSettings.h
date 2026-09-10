@@ -60,18 +60,14 @@ class QMenu;
 //
 
 class MultiSettings : public QObject {
-  public:
-    // [multiinst 2026-08-19] Per-instance file suffix ("" default,
-    // "-<rig>" under --rig-name, +"-test" under --test-mode). MUST be
-    // set BEFORE the MultiSettings instance is constructed (main.cpp
-    // does). The DEFAULT instance keeps the exact legacy filenames
-    // (JS8Call.ini) — the Build 154 continuity rationale — while
-    // rig-named instances get their own settings, restoring the
-    // upstream multi-instance behavior the continuity hardcode broke
-    // (field 2026-08-19: --rig-name=arq hit the shared lock + would
-    // have shared the ini).
-    static void setInstanceSuffix(QString const &suffix);
-    static QString instanceSuffix();
+    // [oneinstance TODO #226] The per-instance file suffix that used
+    // to live here is GONE. It was a second authority for "which
+    // instance am I", in a second format ("-arq" vs the
+    // applicationName's " - arq"), and the data directory followed
+    // neither. There is now exactly one authority, the same one
+    // upstream uses: QCoreApplication::applicationName(), read
+    // through StoragePaths::pathApplicationName(). The settings file
+    // is StoragePaths::settingsFileName().
 
     Q_OBJECT
 

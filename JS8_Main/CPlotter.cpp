@@ -192,8 +192,27 @@ void CPlotter::drawData(WF::SWide swide, WF::State const state) {
 
     QPainter p(&m_WaterfallPixmap);
 
+    // [penrun TODO #224] Only change the pen when the color actually
+    // changes. setPen(QColor) builds a temporary QPen, which heap-
+    // allocates its private data, so the unconditional form cost one
+    // allocation per pixel column per waterfall line. Measured over a
+    // 71-minute heaptrack capture that was 13.4 million allocations,
+    // the largest remaining allocation site in the program after the
+    // polish guard (TODO #223). Adjacent columns share a color for
+    // most of the width -- the noise floor is one flat color -- so the
+    // guard removes the great majority of them. Pure churn, not
+    // retention: this is CPU and allocator pressure, not RSS growth.
+
+    auto lastIndex = -1;
+
     for (auto x = 0; x < m_w; ++x) {
-        p.setPen(m_colors[m_scaler1D(swide[x])]);
+        auto const index = m_scaler1D(swide[x]);
+
+        if (index != lastIndex) {
+            lastIndex = index;
+            p.setPen(m_colors[index]);
+        }
+
         p.drawPoint(x, 0);
     }
 
@@ -882,8 +901,22 @@ void CPlotter::replot() {
                     auto const end =
                         std::min(width, static_cast<int>(v.size()));
 
+                    // [penrun TODO #224] Same pen guard as drawData;
+                    // this is the replot path, which repaints every
+                    // stored row at once. Local to the row: the pen
+                    // on entry belongs to whatever drew before us, so
+                    // -1 correctly forces the first setPen.
+
+                    auto lastIndex = -1;
+
                     for (auto x = 0; x < end; ++x) {
-                        p.setPen(colors[scaler(v[x])]);
+                        auto const index = scaler(v[x]);
+
+                        if (index != lastIndex) {
+                            lastIndex = index;
+                            p.setPen(colors[index]);
+                        }
+
                         p.drawPoint(x, y);
                     }
                 }

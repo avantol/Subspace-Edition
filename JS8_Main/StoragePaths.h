@@ -31,6 +31,12 @@ QString locateConfig(QString const &fileName);
 // callers (e.g. the early-startup diag-log emitter).
 QString settingsDirectory();
 
+// Full path of THIS instance's settings file:
+// settingsDirectory()/<pathApplicationName()>.ini. The single
+// authority -- MultiSettings and the early diagnostic-log emitter
+// both resolve the .ini through this ([oneinstance] TODO #226).
+QString settingsFileName();
+
 // applicationName() with the "Subspace Edition" display brand
 // substituted back to "JS8Call". Multi-instance rig/test suffixes
 // are preserved. Use this whenever the runtime brand is being baked
