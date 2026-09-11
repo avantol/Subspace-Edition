@@ -3057,12 +3057,26 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
             d.call.compare(myC, Qt::CaseInsensitive) != 0) {
             QString const band = m_config.bands()->find(
                 static_cast<Radio::Frequency>(d.dial));
+            // [passband #218] d.dial + d.offset IS this station's
+            // transmit frequency, measured by us, first-hand. It was
+            // already being computed here (d.dial picks the band two
+            // lines up) and then discarded. Recording it is what lets
+            // the passband filter judge on our own evidence instead of
+            // on PSKR reports from other people's receivers.
             m_spotMapWindow->addHearingReport(
-                band, d.call, m_callActivity.value(d.call).grid, {}, {});
+                band, d.call, m_callActivity.value(d.call).grid, {}, {},
+                /*reportedToMeSnr=*/-99, QDateTime{}, /*heardSnr=*/-99,
+                /*source=*/QString{},
+                /*hearerRfHz=*/d.dial + d.offset);
             // [#168] Carry the SNR WE measured. It was being dropped,
             // so every "we hear X" edge stored -99 -- the map knew who
             // we could hear but never how well, which is exactly the
             // hop-1 question relay selection asks (2026-08-21).
+            //
+            // [passband #218] NO frequency here: the hearer on this
+            // call is US. d.dial + d.offset is THEIR transmit
+            // frequency, not ours, and this record is about our own
+            // station.
             m_spotMapWindow->addHearingReport(
                 band, myC, m_config.my_grid(), {d.call}, {QString()},
                 /*reportedToMeSnr=*/-99, QDateTime{},

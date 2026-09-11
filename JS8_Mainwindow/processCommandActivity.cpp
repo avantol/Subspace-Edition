@@ -167,9 +167,26 @@ void UI_Constructor::processCommandActivity() {
             }
             if (hearerGrid.isEmpty())
                 hearerGrid = hearGridFor(hearer);
+            // [passband #218] The transmit frequency we measured
+            // belongs to the station that actually SENT this frame,
+            // d.from -- nobody else. Four of this lambda's five
+            // callers pass d.from as the hearer, and for those
+            // d.dial + d.offset is first-hand evidence of where that
+            // station transmits. The fifth passes a THIRD PARTY named
+            // inside someone else's HEARING list: we never heard that
+            // station, so we know nothing about its frequency and
+            // must record nothing. Testing hearer against d.from here
+            // encodes that rule once, at the one place it matters,
+            // instead of trusting five call sites to remember it.
+            qint64 const hearerRfHz =
+                hearer.compare(d.from, Qt::CaseInsensitive) == 0
+                    ? d.dial + d.offset
+                    : 0;
             m_spotMapWindow->addHearingReport(band, hearer, hearerGrid,
                                               heard, grids,
-                                              reportedToMeSnr);
+                                              reportedToMeSnr,
+                                              QDateTime{}, -99,
+                                              QString{}, hearerRfHz);
         };
         // [hbdots] PRESENCE for every on-air sender — heartbeats and
         // all other frames put a hollow dot at the station's grid in
@@ -275,10 +292,14 @@ void UI_Constructor::processCommandActivity() {
                 if (ok)
                     reportedSnr = v;
             }
+            // [passband #218] This frame was addressed to us, so we
+            // decoded d.from directly and d.dial + d.offset is its
+            // transmit frequency, measured first-hand.
             m_spotMapWindow->addOnAirSpotOfMe(
                 m_config.bands()->find(
                     static_cast<Radio::Frequency>(d.dial)),
-                d.from, hearGridFor(d.from), reportedSnr);
+                d.from, hearGridFor(d.from), reportedSnr,
+                /*callRfHz=*/d.dial + d.offset);
             // [hbdots] The reported value also colors this station's
             // All-view dot (the ONLY sanctioned color source there).
             if (reportedSnr > -99)
@@ -302,10 +323,24 @@ void UI_Constructor::processCommandActivity() {
                 }
                 if (auto const gs = Varicode::parseGrids(gridPart);
                     !gs.isEmpty() && m_spotMapWindow) {
+                    // [passband #218] Same rule as the feedHearing
+                    // lambda: the frequency we measured belongs to
+                    // whoever actually transmitted this frame. When a
+                    // *DE* tail reattributes the grid to an
+                    // originator further back, that station is one we
+                    // never heard, so it gets no frequency. Without
+                    // the tail gridOwner IS d.from and the
+                    // measurement applies.
                     m_spotMapWindow->addHearingReport(
                         m_config.bands()->find(
                             static_cast<Radio::Frequency>(d.dial)),
-                        gridOwner, gs.last(), {}, {});
+                        gridOwner, gs.last(), {}, {},
+                        /*reportedToMeSnr=*/-99, QDateTime{},
+                        /*heardSnr=*/-99, /*source=*/QString{},
+                        /*hearerRfHz=*/
+                        gridOwner.compare(d.from, Qt::CaseInsensitive) == 0
+                            ? d.dial + d.offset
+                            : 0);
                 }
             }
         }

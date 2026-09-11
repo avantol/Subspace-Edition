@@ -124,4 +124,34 @@ inline hour_minute_second decode_time(int nutc){
   return result;
 }
 
+// [passband #218] THE ONE AUTHORITY for the receive passband width,
+// in Hz of audio offset above our dial.
+//
+// Anything asking "is that station's transmit frequency inside the
+// passband we are actually listening to?" measures against this, and
+// nothing carries a width of its own. Before this existed the same
+// source file held two different hardcoded widths that had drifted
+// apart -- 2400 Hz in the spots-map hover line and 2500 Hz in the QSY
+// double-click -- which is exactly the situation that cannot be
+// allowed once the number starts REJECTING stations.
+//
+// 2800 Hz by operator ruling 2026-09-10: the @MAGNET group redefined
+// it and we accept 2800 for all usages.
+//
+// BOUNDARIES ARE INCLUSIVE: an offset of 0 and an offset of
+// JS8_PASSBAND_WIDTH_HZ both count as inside.
+inline constexpr int JS8_PASSBAND_WIDTH_HZ = 2800;
+
+// [passband #218] How long a station's observed transmit frequency
+// stays believable, in seconds. 60 minutes by operator ruling
+// 2026-09-10, chosen to match the map's own maximum age.
+//
+// Past this the frequency becomes UNKNOWN -- deliberately NOT "last
+// known". Stations QSY, and a stale number would let us reject a
+// station we can hear perfectly well. Unknown is exempt everywhere:
+// unknown stations stay visible on the map and stay eligible as relay
+// candidates. Only a frequency we currently believe AND that falls
+// outside the passband causes a rejection.
+inline constexpr int JS8_FREQ_STALE_SECS = 60 * 60;
+
 #endif // COMMONS_H

@@ -6,6 +6,7 @@
 #include "SpotMapWindow.h"
 
 #include "JS8_Include/SettingsGroup.h"
+#include "JS8_Include/commons.h"
 #include "JS8_Main/Bands.h"
 #include "JS8_Main/DriftingDateTime.h"
 #include "JS8_Main/Geodesic.h"
@@ -700,7 +701,8 @@ void SpotMapWindow::setBand(QString const &band) {
 // [onairspot] See header — my-view spots from on-air evidence.
 void SpotMapWindow::addOnAirSpotOfMe(QString const &band,
                                      QString const &call,
-                                     QString const &grid, int const snr) {
+                                     QString const &grid, int const snr,
+                                     qint64 const callRfHz) {
     // [oneobs 2026-08-22] A frame addressed to us IS an observation:
     // "call heard WM8Q". Record it as one, and the dot for `call` plus
     // the line to my triangle both fall out of that single record. The
@@ -712,7 +714,8 @@ void SpotMapWindow::addOnAirSpotOfMe(QString const &band,
     m_infoByBand[band][call.toUpper()].sawAsSender = true;
     addHearingReport(band, call, grid, {m_myCall.toUpper()}, {m_myGrid},
                      /*reportedToMeSnr=*/snr, QDateTime{},
-                     /*heardSnr=*/snr, QStringLiteral("radio"));
+                     /*heardSnr=*/snr, QStringLiteral("radio"),
+                     /*hearerRfHz=*/callRfHz);
     journalStation(band, call);   // [maptruth #11] AFTER the update
 }
 
@@ -727,10 +730,25 @@ void SpotMapWindow::addHearingReport(QString const &band,
                                      int const reportedToMeSnr,
                                      QDateTime const &heardWhen,
                                      int const heardSnr,
-                                     QString const &source) {
+                                     QString const &source,
+                                     qint64 const hearerRfHz) {
     if (band.isEmpty() || hearer.isEmpty())
         return;
     auto const now = DriftingDateTime::currentDateTimeUtc();
+
+    // [passband #218] Record the hearer's own transmit frequency when
+    // the caller knew it first-hand. Radio evidence OUTRANKS PSKR: a
+    // station we just decoded is provably inside our passband at that
+    // instant, so a radio observation always overwrites, while a PSKR
+    // one never overwrites a radio one that is still current. The
+    // freshness test uses the SAME 60-minute window the filter does,
+    // so "still current" means one thing in one place.
+    if (hearerRfHz > 0) {
+        StationInfo &si = m_infoByBand[band][hearer.toUpper()];
+        si.freqHz = hearerRfHz;
+        si.freqWhen = now;
+        si.freqFromRadio = true;
+    }
     auto const resolve = [&](QString const &grid, float *az, float *dist) {
         *az = 0.0f;
         *dist = -1.0f;
@@ -931,6 +949,15 @@ void SpotMapWindow::restoreStationsFromDisk() {
         StationInfo &info = m_infoByBand[r.band][r.call.toUpper()];
         if (!r.country.isEmpty())
             info.country = r.country;
+        // [passband #218] Restored frequencies carry NO observation
+        // clock -- the stations table has the value but not its
+        // freqWhen -- so freqWhen stays invalid here and the filter
+        // reads them as UNKNOWN, hence exempt. That is the correct
+        // conservative reading: a value persisted across a restart
+        // could be any age up to the window, and the staleness ruling
+        // says an expired frequency becomes unknown rather than "last
+        // known". It also means a restored station is never rejected
+        // until we hear it again or a fresh PSKR spot names it.
         if (r.freqHz > 0)
             info.freqHz = r.freqHz;
         if (!r.rxOnly)
@@ -1584,9 +1611,25 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
         // stamped UNCONDITIONALLY -- every reports-me or freq-less
         // spot refreshed the clock while the value stayed stale, the
         // exact value+clock split [maptruth #13] exists to prevent.
+        // [passband #218] PSKR must not clobber FRESH first-hand
+        // evidence. A frequency we measured ourselves proves the
+        // station was inside our passband at that moment; a PSKR spot
+        // is a report from someone else's receiver. So a radio-sourced
+        // value that is still inside the freshness window wins, and
+        // PSKR fills in only when there is no radio value or the radio
+        // value has aged out (at which point it is "unknown" anyway,
+        // by the staleness ruling).
         if (!senderIsMe && spotFreqHz > 0) {
-            info.freqHz = spotFreqHz;
-            info.freqWhen = when;   // [maptruth #13] value + clock
+            bool const freshRadio =
+                info.freqFromRadio && info.freqWhen.isValid() &&
+                info.freqWhen.secsTo(
+                    DriftingDateTime::currentDateTimeUtc()) <
+                    JS8_FREQ_STALE_SECS;
+            if (!freshRadio) {
+                info.freqHz = spotFreqHz;
+                info.freqWhen = when;   // [maptruth #13] value + clock
+                info.freqFromRadio = false;
+            }
         }
         if (!senderIsMe)
             info.sawAsSender = true;   // it was the SENDER of a spot
@@ -3979,14 +4022,21 @@ void SpotMapWindow::mouseMoveEvent(QMouseEvent *event) {
             tip += QStringLiteral("\n") + tr("Relay enabled");
         }
         // [qsyhover 2026-09-08, operator] Last hover line when the
-        // station's PSKR-reported transmit frequency falls OUTSIDE
-        // our current passband [dial, dial+2400]: name the dial that
-        // would reach it, in MHz. freqHz is a STATION fact (the
-        // frequency THEY transmit on, theirs-only by the ingest
-        // guard), so reports of our own signal never trigger this.
+        // station's transmit frequency falls OUTSIDE our current
+        // passband: name the dial that would reach it, in MHz.
+        // freqHz is a STATION fact (the frequency THEY transmit on,
+        // theirs-only by the ingest guard), so reports of our own
+        // signal never trigger this.
+        //
+        // [passband #218] Width now comes from JS8_PASSBAND_WIDTH_HZ,
+        // not a local 2400. NOTE THE ORDERING RULING: this whole hover
+        // line is to be REMOVED once the passband filter lands, since
+        // nothing out-of-passband will be on the map to hover over --
+        // but not before, or the information is lost while
+        // out-of-passband stations are still displayed.
         if (best->spot.freqHz > 0 && m_dialHz > 0) {
             qint64 const audio = best->spot.freqHz - m_dialHz;
-            if (audio < 0 || audio > 2400) {
+            if (audio < 0 || audio > JS8_PASSBAND_WIDTH_HZ) {
                 tip += QStringLiteral("\n") +
                        tr("QSY: %1").arg(
                            best->spot.freqHz / 1e6, 0, 'f', 3);
@@ -4051,10 +4101,13 @@ void SpotMapWindow::mouseDoubleClickEvent(QMouseEvent *event) {
             if (!best->spot.reportsMe && best->spot.freqHz > 0 &&
                 m_dialHz > 0) {
                 qint64 const audio = best->spot.freqHz - m_dialHz;
-                // QSY window: above 1000 Hz (HB sub-band convention)
-                // and at most 2500 Hz (Andy 2026-07-17 — stay inside
-                // the usable passband).
-                if (audio > 1000 && audio <= 2500) {
+                // QSY window: above 1000 Hz (HB sub-band convention --
+                // a SEPARATE rule that stays as it is), and inside the
+                // passband at the top.
+                // [passband #218] The upper bound was a local 2500;
+                // it is now JS8_PASSBAND_WIDTH_HZ, the one authority.
+                // Inclusive at the top, per the boundary ruling.
+                if (audio > 1000 && audio <= JS8_PASSBAND_WIDTH_HZ) {
                     showToast(tr("Moved to %1's frequency (%2 Hz)")
                                   .arg(best->spot.receiverCall)
                                   .arg(audio));

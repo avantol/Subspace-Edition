@@ -77,8 +77,13 @@ class SpotMapWindow final : public QWidget {
     // report). The on-air equivalent of a PSK Reporter spot of me —
     // feeds the MY view so the map works identically with no
     // internet. snr -99 = frame carried no report (position-only).
+    // [passband #218] callRfHz: that station's transmit frequency as
+    // WE measured it (d.dial + d.offset), 0 when unknown. The frame
+    // was addressed to us, so we heard this station directly and the
+    // measurement is first-hand.
     void addOnAirSpotOfMe(QString const &band, QString const &call,
-                          QString const &grid, int snr);
+                          QString const &grid, int snr,
+                          qint64 callRfHz = 0);
     // heardCalls may be empty = pure PRESENCE (e.g. a heartbeat with
     // its grid): the station gets a hollow dot in the All view.
     // reportedToMeSnr: an SNR value this station REPORTED TO US (its
@@ -203,6 +208,22 @@ class SpotMapWindow final : public QWidget {
     // edges ([#161] age-bearing replies) — invalid = now; an edge's
     // `when` only ever moves FORWARD. heardSnr: third-party SNR for
     // the heard edges (-99 = none).
+    //
+    // [passband #218] hearerRfHz: the HEARER's absolute transmit
+    // frequency in Hz, when we know it first-hand — that is,
+    // d.dial + d.offset from a frame WE decoded. 0 means unknown and
+    // records nothing.
+    //
+    // It describes the HEARER only, never the heard calls: we heard
+    // the sender, we did not hear the stations it is telling us
+    // about. A caller that is relaying someone else's report must
+    // leave this 0 (see the Q-call answer site, which does).
+    //
+    // Our own decodes already compute this and publish it over the
+    // API as "FREQ" (processRxActivity.cpp), then threw it away here
+    // — so the stations we are CERTAIN we can hear were the ones with
+    // no recorded frequency, while PSKR-sourced ones had it. That was
+    // backwards, and it is the prerequisite for the passband filter.
     void addHearingReport(QString const &band, QString const &hearer,
                           QString const &hearerGrid,
                           QStringList const &heardCalls,
@@ -210,7 +231,8 @@ class SpotMapWindow final : public QWidget {
                           int reportedToMeSnr = -99,
                           QDateTime const &heardWhen = QDateTime{},
                           int heardSnr = -99,
-                          QString const &source = QString{});
+                          QString const &source = QString{},
+                          qint64 hearerRfHz = 0);
 
   public slots:
     void setBand(QString const &band);
@@ -618,6 +640,14 @@ class SpotMapWindow final : public QWidget {
         qint64 freqHz = 0;
         QDateTime freqWhen;   // when freqHz was observed
         bool sawAsSender = false;  // observed transmitting => not rxOnly
+        // [passband #218] TRUE when freqHz came from a frame WE
+        // decoded, FALSE when it came from a PSKR spot. First-hand
+        // evidence outranks second-hand: a station we just decoded is
+        // PROVABLY inside our passband at that instant, whereas a
+        // PSKR report is an internet fact about someone else's
+        // receiver. A radio observation therefore overwrites a PSKR
+        // one, and a PSKR one never overwrites a fresh radio one.
+        bool freqFromRadio = false;
     };
     QHash<QString, QHash<QString, StationInfo>> m_infoByBand;
     // [mqttgrid] call -> locator harvested from EVERY MQTT message
