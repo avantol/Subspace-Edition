@@ -163,16 +163,30 @@ class SpotMapWindow final : public QWidget {
     // us -- which is why the relay side treats this as a filter that
     // can only exclude, never qualify.
     //
-    // staleSecs is the freshness window and it DIFFERS BY CALLER
-    // (operator ruling 2026-09-11): the map passes the default,
-    // JS8_FREQ_STALE_SECS (60 min, display retention); the relay
-    // first-hop rejection passes JS8_FREQ_STALE_ROUTE_SECS (15 min,
-    // the bar for EXCLUDING a live candidate). One implementation,
-    // one parameter, two named constants -- never a third window
-    // hardcoded at a call site.
+    // Judged over the station's SET of recently observed frequencies
+    // (StationInfo::freqSeen): In if ANY fresh, admissible entry lies
+    // in the passband; Out if there are fresh admissible entries but
+    // none do; Unknown if there are none. The three parameters differ
+    // by caller and nothing else does:
+    //   staleSecs    freshness window. Map: JS8_FREQ_STALE_SECS
+    //                (60 min, display retention). Relay first hop:
+    //                JS8_FREQ_STALE_ROUTE_SECS (15 min, the bar for
+    //                EXCLUDING a live candidate). Never a third window
+    //                hardcoded at a call site.
+    //   includeRx    whether LISTENING observations count. Map: yes
+    //                (a reporter that heard someone at f is known at
+    //                f -- operator ruling 2026-09-11). Relay: no --
+    //                ruling (c) asks whether WE can hear THEM, which
+    //                only their transmit frequency answers.
+    //   pskrAllowed  whether internet-sourced entries count. Map:
+    //                m_showPskr (with PSKR display off the map judges
+    //                on radio evidence only, per effectiveWhen()).
+    //                Relay: always -- its book uses PSKR regardless.
     enum class Passband { In, Out, Unknown };
     Passband passbandVerdict(QString const &band, QString const &call,
-                             int staleSecs = JS8_FREQ_STALE_SECS) const;
+                             int staleSecs = JS8_FREQ_STALE_SECS,
+                             bool includeRx = true,
+                             bool pskrAllowed = true) const;
 
     // [reachport2] Whole-band adjacency for the executor's route book
     // (one snapshot per attempt), and the persistent tier at the
@@ -679,16 +693,38 @@ class SpotMapWindow final : public QWidget {
         qint64 freqHz = 0;
         QDateTime freqWhen;   // when freqHz was observed
         bool sawAsSender = false;  // observed transmitting => not rxOnly
-        // [passband #218] TRUE when freqHz came from a frame WE
-        // decoded, FALSE when it came from a PSKR spot. Precedence is
-        // NEWEST OBSERVATION WINS, ties to radio: a radio write is
-        // stamped at decode time and always overwrites; a PSKR spot
-        // overwrites only when its observation time is strictly newer
-        // than what is held. This flag's other job is the map's PSKR
-        // display toggle: with internet evidence hidden, a
-        // PSKR-sourced frequency must not hide a radio-heard dot.
+        // freqHz/freqWhen/freqFromRadio above are the DISPLAY copy --
+        // the newest known TRANSMIT frequency, for hover offsets, the
+        // QSY double-click and the on-disk freq_hz column. The
+        // passband verdict does NOT read them. It reads this:
         bool freqFromRadio = false;
+        // [passband #218 evidence, operator ruling 2026-09-11] Every
+        // frequency this station was RECENTLY OBSERVED AT, as a SET.
+        // A PSKR spot names two stations and one frequency: the
+        // sender was TRANSMITTING at f (tx=true), the reporter was
+        // LISTENING at f (tx=false) -- both are facts about where that
+        // station is, and the first cut kept only the first, which
+        // left every reporter Unknown and visible across the whole
+        // band. A set, not a single slot, because a skimmer reports
+        // all over the band: with "newest wins" it would blink in and
+        // out as its latest spot moved; with a set it is In wherever
+        // it has recently listened and Out elsewhere. The set also
+        // retires the radio-vs-PSKR precedence rule: both observations
+        // are simply true, and freshness prunes.
+        struct FreqSeen {
+            qint64 hz = 0;
+            QDateTime when;
+            bool radio = false;   // from a frame WE decoded
+            bool tx = false;      // transmitting there (else listening)
+        };
+        QVector<FreqSeen> freqSeen;
     };
+    // Record one observation into the set: same hz refreshes its
+    // clock (forward-only), else appends; entries older than
+    // JS8_FREQ_STALE_SECS are pruned on the way in. A frequency of 0
+    // or an invalid clock records nothing.
+    void noteFreq(QString const &band, QString const &call, qint64 hz,
+                  QDateTime const &when, bool radio, bool tx);
     QHash<QString, QHash<QString, StationInfo>> m_infoByBand;
     // [mqttgrid] call -> locator harvested from EVERY MQTT message
     // (sender sc/sl and reporter rc/rl) — fallback grid source for

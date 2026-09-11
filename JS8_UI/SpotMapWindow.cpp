@@ -694,11 +694,41 @@ void SpotMapWindow::setDialFrequency(qint64 const hz) {
     requestReplot();
 }
 
+// [passband #218 evidence] One observation into the station's set.
+void SpotMapWindow::noteFreq(QString const &band, QString const &call,
+                             qint64 const hz, QDateTime const &when,
+                             bool const radio, bool const tx) {
+    if (band.isEmpty() || call.isEmpty() || hz <= 0 || !when.isValid())
+        return;
+    auto &seen = m_infoByBand[band][call.toUpper()].freqSeen;
+    auto const now = DriftingDateTime::currentDateTimeUtc();
+    // Prune on the way in, so the set never grows past one window's
+    // worth of distinct frequencies. A skimmer's worst case is one
+    // entry per distinct offset it reported in the last hour.
+    seen.erase(std::remove_if(seen.begin(), seen.end(),
+                              [&](StationInfo::FreqSeen const &f) {
+                                  return f.when.secsTo(now) >=
+                                         JS8_FREQ_STALE_SECS;
+                              }),
+               seen.end());
+    for (auto &f : seen) {
+        if (f.hz == hz) {
+            if (when > f.when)
+                f.when = when;   // forward-only
+            f.radio = f.radio || radio;
+            f.tx = f.tx || tx;
+            return;
+        }
+    }
+    seen.append(StationInfo::FreqSeen{hz, when, radio, tx});
+}
+
 // [passband #218] See the header for the three-way contract. Every
-// ruling from TODO_notes.md item-218 is a line here, in order:
+// ruling from TODO_notes.md item-218 is a line here, in order.
 SpotMapWindow::Passband
 SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
-                               int const staleSecs) const {
+                               int const staleSecs, bool const includeRx,
+                               bool const pskrAllowed) const {
     // Our own dial unknown (no rig control, or CAT not read yet):
     // the filter disables itself entirely, or it would reject
     // everything.
@@ -708,24 +738,29 @@ SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
     if (bandIt == m_infoByBand.constEnd())
         return Passband::Unknown;
     auto const it = bandIt->constFind(call.toUpper());
-    if (it == bandIt->constEnd() || it->freqHz <= 0)
+    if (it == bandIt->constEnd())
         return Passband::Unknown;
-    // No observation clock (a value restored from disk carries none)
-    // is treated the same as an expired one: we cannot vouch for it.
-    if (!it->freqWhen.isValid())
-        return Passband::Unknown;
-    // Staleness: past the caller's window the frequency becomes
-    // UNKNOWN, not "last known". Stations QSY; a stale number must
-    // never reject a station we can hear perfectly well. The window
-    // is 60 min for the map and 15 min for routing (see the header).
-    if (it->freqWhen.secsTo(DriftingDateTime::currentDateTimeUtc()) >=
-        staleSecs)
-        return Passband::Unknown;
-    // Boundaries inclusive: offset 0 and offset WIDTH are both in.
-    qint64 const audio = it->freqHz - m_dialHz;
-    return (audio >= 0 && audio <= JS8_PASSBAND_WIDTH_HZ)
-               ? Passband::In
-               : Passband::Out;
+    auto const now = DriftingDateTime::currentDateTimeUtc();
+    bool anyFresh = false;
+    for (auto const &f : it->freqSeen) {
+        // Admissibility: the caller's freshness window (past it a
+        // frequency is UNKNOWN, not "last known" -- stations QSY, and
+        // a stale number must never reject a station we can hear
+        // perfectly well); listening-only evidence only if the
+        // caller wants it; internet evidence only if allowed.
+        if (f.when.secsTo(now) >= staleSecs)
+            continue;
+        if (!f.tx && !includeRx)
+            continue;
+        if (!f.radio && !pskrAllowed)
+            continue;
+        anyFresh = true;
+        // Boundaries inclusive: offset 0 and offset WIDTH are both in.
+        qint64 const audio = f.hz - m_dialHz;
+        if (audio >= 0 && audio <= JS8_PASSBAND_WIDTH_HZ)
+            return Passband::In;   // any one hit is enough
+    }
+    return anyFresh ? Passband::Out : Passband::Unknown;
 }
 
 void SpotMapWindow::setBand(QString const &band) {
@@ -792,9 +827,11 @@ void SpotMapWindow::addHearingReport(QString const &band,
     // so "still current" means one thing in one place.
     if (hearerRfHz > 0) {
         StationInfo &si = m_infoByBand[band][hearer.toUpper()];
-        si.freqHz = hearerRfHz;
+        si.freqHz = hearerRfHz;       // display copy (newest transmit)
         si.freqWhen = now;
         si.freqFromRadio = true;
+        noteFreq(band, hearer, hearerRfHz, now, /*radio=*/true,
+                 /*tx=*/true);        // the verdict's evidence
     }
     auto const resolve = [&](QString const &grid, float *az, float *dist) {
         *az = 0.0f;
@@ -1678,6 +1715,21 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
                 info.freqFromRadio = false;
             }
         }
+        // [passband #218 evidence, operator ruling 2026-09-11] ONE
+        // spot, TWO facts. The sender was TRANSMITTING at f (theirs
+        // only -- when the sender is me, f is where they heard ME,
+        // not a fact about anyone's transmitter). The REPORTER was
+        // LISTENING at f -- always a fact about the reporter, me as
+        // sender included. The first cut recorded only the first and
+        // left every reporter -- most of the map -- with no frequency
+        // at all, hence visible from one band edge to the other.
+        if (spotFreqHz > 0) {
+            if (!senderIsMe)
+                noteFreq(band, sender, spotFreqHz, when,
+                         /*radio=*/false, /*tx=*/true);
+            noteFreq(band, receiverCall, spotFreqHz, when,
+                     /*radio=*/false, /*tx=*/false);
+        }
         if (!senderIsMe)
             info.sawAsSender = true;   // it was the SENDER of a spot
     }
@@ -2162,7 +2214,11 @@ void SpotMapWindow::redraw() {
     // inferred.
     int dotSeen = 0, dotPskr = 0, dotHidden = 0, dotNoClock = 0,
         dotOldPskr = 0, dotOldRadio = 0, dotDrawnPskr = 0,
-        dotOutOfBand = 0;   // [passband #218]
+        dotOutOfBand = 0,   // [passband #218]
+        dotFreqUnknown = 0; // [passband #218] drawn with NO frequency
+                            // evidence at all -- the exempt class;
+                            // if this is large, the map is not being
+                            // filtered much, and that is why
     // [passband #218] Stations the passband filter dropped THIS
     // paint. The line layer must skip every edge touching one: the
     // ruling is that an out-of-passband station is not on the map at
@@ -2409,12 +2465,10 @@ void SpotMapWindow::redraw() {
             if (r.distance < 0.0f)
                 continue;               // nowhere to draw it
             // [oneobs] Station facts an observation cannot carry.
-            bool freqFromRadio = false;   // [passband #218]
             if (auto const in = infoBand.constFind(it.key());
                 in != infoBand.constEnd()) {
                 r.country = in->country;
                 r.freqHz = in->freqHz;
-                freqFromRadio = in->freqFromRadio;
                 if (in->sawAsSender)
                     sawAsSender.insert(it.key());
             }
@@ -2478,13 +2532,22 @@ void SpotMapWindow::redraw() {
             // 2026-09-11 before this guard existed. Routing does not
             // consult the toggle and is untouched: its book always
             // uses PSKR edges.
-            bool const judgeFreq = m_showPskr || freqFromRadio;
-            if (judgeFreq &&
-                passbandVerdict(m_currentBand, it.key()) ==
-                    Passband::Out) {
+            // (The PSKR-toggle rule now lives INSIDE the verdict as
+            // pskrAllowed, so a PSKR-only frequency cannot hide a dot
+            // while internet evidence is hidden.)
+            switch (passbandVerdict(m_currentBand, it.key(),
+                                    JS8_FREQ_STALE_SECS,
+                                    /*includeRx=*/true,
+                                    /*pskrAllowed=*/m_showPskr)) {
+            case Passband::Out:
                 ++dotOutOfBand;                          // [dotlog]
                 passbandDropped.insert(it.key());        // lines too
                 continue;
+            case Passband::Unknown:
+                ++dotFreqUnknown;                        // [dotlog]
+                break;
+            case Passband::In:
+                break;
             }
             if (r.pskr)
                 ++dotDrawnPskr;                          // [dotlog]
@@ -2765,6 +2828,7 @@ void SpotMapWindow::redraw() {
         << " tooOldRadio=" << dotOldRadio
         << " outOfBand=" << dotOutOfBand              // [passband #218]
         << " | drawn=" << render.size()
+        << " ofWhichFreqUnknown=" << dotFreqUnknown  // [passband #218]
         << " ofWhichPskr=" << dotDrawnPskr
         << " | window=" << m_viewWindowSecs << "s showPskr=" << m_showPskr;
     }

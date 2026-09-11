@@ -873,8 +873,12 @@ void UI_Constructor::reachStart(QString const &target, int maxMoves,
     if (m_spotMapWindow) {
         for (auto it = g_book.firstHops.begin();
              it != g_book.firstHops.end();) {
+            // Transmit evidence only (ruling c: can WE hear THEM);
+            // PSKR always allowed (the book uses it regardless of the
+            // map's display toggle).
             if (m_spotMapWindow->passbandVerdict(
-                    m_reach.band, *it, JS8_FREQ_STALE_ROUTE_SECS) ==
+                    m_reach.band, *it, JS8_FREQ_STALE_ROUTE_SECS,
+                    /*includeRx=*/false, /*pskrAllowed=*/true) ==
                 SpotMapWindow::Passband::Out) {
                 reachLog(QStringLiteral(
                              "    first hop %1 REJECTED: known to be "
