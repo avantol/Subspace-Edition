@@ -2244,6 +2244,9 @@ void SpotMapWindow::redraw() {
     // so the filter carries its own exclusion. Field 2026-09-11:
     // dots vanished on a dial change and their lines stayed.
     QSet<QString> passbandDropped;
+    int dotUntethered = 0;  // [passband #218 tether] Unknown-frequency
+                            // dots dropped because no drawable edge
+                            // ties them to this dial
     QElapsedTimer buildTimer;   // [paintlog] render-set cost
     buildTimer.start();
     QHash<QString, QPointF> allPos;   // call -> (azimuth, distance)
@@ -2472,6 +2475,52 @@ void SpotMapWindow::redraw() {
 
         m_lastBuildMs = buildTimer.elapsed();
 
+        // [passband #218 tether, operator ruling 2026-09-11] A station
+        // with NO frequency of its own is on the map at this dial
+        // only by ABSENCE of evidence. If every connection it has is
+        // to stations we know are elsewhere, nothing ties it to this
+        // dial and it has no reason to show ("then it has no reason
+        // to show, right?"). So: an Unknown dot is drawn only when at
+        // least one of its DRAWABLE edges tethers it here -- inside
+        // the view window, not hidden by the PSKR toggle, other end
+        // not Out (my own triangle counts as an end). Computed once
+        // per paint, BEFORE the dot pass, from the same edge store
+        // and the same gates the line pass applies, so a dot and its
+        // lines can never disagree. The verdict is memoised for THIS
+        // paint only; it is still never cached across paints.
+        QHash<QString, Passband> verdictMemo;
+        auto const verdictOf = [&](QString const &call) {
+            auto v = verdictMemo.constFind(call);
+            if (v != verdictMemo.constEnd())
+                return *v;
+            auto const r = passbandVerdict(m_currentBand, call,
+                                           JS8_FREQ_STALE_SECS,
+                                           /*includeRx=*/true,
+                                           /*pskrAllowed=*/m_showPskr);
+            verdictMemo.insert(call, r);
+            return r;
+        };
+        QSet<QString> tethered;
+        {
+            auto const &hearers0 = m_hearingByBand.value(m_currentBand);
+            for (auto h = hearers0.constBegin(); h != hearers0.constEnd();
+                 ++h) {
+                for (auto ed = h.value().heard.constBegin();
+                     ed != h.value().heard.constEnd(); ++ed) {
+                    if (ed.value().when < cutoff)
+                        continue;                    // outside window
+                    if (!m_showPskr &&
+                        ed.value().source == QStringLiteral("mqtt"))
+                        continue;                    // toggle hides it
+                    if (verdictOf(h.key()) == Passband::Out ||
+                        verdictOf(ed.key()) == Passband::Out)
+                        continue;                    // an end is Out
+                    tethered.insert(h.key());
+                    tethered.insert(ed.key());
+                }
+            }
+        }
+
         // ---- 3. ONE visibility rule ----------------------------------
         auto const &infoBand = m_infoByBand.value(m_currentBand);
         for (auto it = reg.begin(); it != reg.end(); ++it) {
@@ -2549,15 +2598,19 @@ void SpotMapWindow::redraw() {
             // (The PSKR-toggle rule now lives INSIDE the verdict as
             // pskrAllowed, so a PSKR-only frequency cannot hide a dot
             // while internet evidence is hidden.)
-            switch (passbandVerdict(m_currentBand, it.key(),
-                                    JS8_FREQ_STALE_SECS,
-                                    /*includeRx=*/true,
-                                    /*pskrAllowed=*/m_showPskr)) {
+            switch (verdictOf(it.key())) {
             case Passband::Out:
                 ++dotOutOfBand;                          // [dotlog]
                 passbandDropped.insert(it.key());        // lines too
                 continue;
             case Passband::Unknown:
+                // [tether] no frequency of its own: drawn only if a
+                // drawable edge ties it to this dial (see above).
+                if (!tethered.contains(it.key())) {
+                    ++dotUntethered;                     // [dotlog]
+                    passbandDropped.insert(it.key());    // lines too
+                    continue;
+                }
                 ++dotFreqUnknown;                        // [dotlog]
                 break;
             case Passband::In:
@@ -2841,6 +2894,7 @@ void SpotMapWindow::redraw() {
         << " tooOldPskr=" << dotOldPskr
         << " tooOldRadio=" << dotOldRadio
         << " outOfBand=" << dotOutOfBand              // [passband #218]
+        << " untethered=" << dotUntethered            // [passband #218]
         << " | drawn=" << render.size()
         << " ofWhichFreqUnknown=" << dotFreqUnknown  // [passband #218]
         << " ofWhichPskr=" << dotDrawnPskr
