@@ -135,6 +135,35 @@ class SpotMapWindow final : public QWidget {
     };
     QVector<StationView> activeStations(QString const &band) const;
 
+    // [passband #218] THE ONE verdict on whether we can hear a
+    // station where it transmits. Three answers, and the difference
+    // between Out and Unknown is the whole design:
+    //
+    //   In      -- its transmit frequency is known, current, and
+    //              inside [our dial, our dial + JS8_PASSBAND_WIDTH_HZ]
+    //              (inclusive both ends).
+    //   Out     -- known, current, and outside that window. This is
+    //              the ONLY answer that ever hides a dot or rejects a
+    //              relay first hop.
+    //   Unknown -- no frequency on record, or the record is older
+    //              than JS8_FREQ_STALE_SECS, or OUR OWN DIAL is
+    //              unknown (no CAT, not read yet). Exempt everywhere:
+    //              stays visible, stays eligible. RX-only and monitor
+    //              stations live here permanently by construction --
+    //              they never transmit, so nothing can name their
+    //              frequency.
+    //
+    // Evaluated FRESH on every call and never cached: the answer
+    // changes the moment we QSY, and a cached verdict would keep
+    // hiding a station we just tuned onto. Uses only the station's
+    // absolute transmit frequency; their dial is never inferred.
+    // In-passband proves we can hear THEM, never that they can hear
+    // us -- which is why the relay side treats this as a filter that
+    // can only exclude, never qualify.
+    enum class Passband { In, Out, Unknown };
+    Passband passbandVerdict(QString const &band,
+                             QString const &call) const;
+
     // [reachport2] Whole-band adjacency for the executor's route book
     // (one snapshot per attempt), and the persistent tier at the
     // python's 24 h horizon -- the RAM store prunes at 1 h, which is

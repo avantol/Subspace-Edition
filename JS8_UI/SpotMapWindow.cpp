@@ -681,6 +681,39 @@ void SpotMapWindow::setDialFrequency(qint64 const hz) {
     m_dialHz = hz;
 }
 
+// [passband #218] See the header for the three-way contract. Every
+// ruling from TODO_notes.md item-218 is a line here, in order:
+SpotMapWindow::Passband
+SpotMapWindow::passbandVerdict(QString const &band,
+                               QString const &call) const {
+    // Our own dial unknown (no rig control, or CAT not read yet):
+    // the filter disables itself entirely, or it would reject
+    // everything.
+    if (m_dialHz <= 0)
+        return Passband::Unknown;
+    auto const bandIt = m_infoByBand.constFind(band);
+    if (bandIt == m_infoByBand.constEnd())
+        return Passband::Unknown;
+    auto const it = bandIt->constFind(call.toUpper());
+    if (it == bandIt->constEnd() || it->freqHz <= 0)
+        return Passband::Unknown;
+    // No observation clock (a value restored from disk carries none)
+    // is treated the same as an expired one: we cannot vouch for it.
+    if (!it->freqWhen.isValid())
+        return Passband::Unknown;
+    // Staleness: past the window the frequency becomes UNKNOWN, not
+    // "last known". Stations QSY; a stale number must never reject a
+    // station we can hear perfectly well.
+    if (it->freqWhen.secsTo(DriftingDateTime::currentDateTimeUtc()) >=
+        JS8_FREQ_STALE_SECS)
+        return Passband::Unknown;
+    // Boundaries inclusive: offset 0 and offset WIDTH are both in.
+    qint64 const audio = it->freqHz - m_dialHz;
+    return (audio >= 0 && audio <= JS8_PASSBAND_WIDTH_HZ)
+               ? Passband::In
+               : Passband::Out;
+}
+
 void SpotMapWindow::setBand(QString const &band) {
     if (band == m_currentBand)
         return;
@@ -2114,7 +2147,8 @@ void SpotMapWindow::redraw() {
     // names the one that emptied the map instead of leaving it to be
     // inferred.
     int dotSeen = 0, dotPskr = 0, dotHidden = 0, dotNoClock = 0,
-        dotOldPskr = 0, dotOldRadio = 0, dotDrawnPskr = 0;
+        dotOldPskr = 0, dotOldRadio = 0, dotDrawnPskr = 0,
+        dotOutOfBand = 0;   // [passband #218]
     QElapsedTimer buildTimer;   // [paintlog] render-set cost
     buildTimer.start();
     QHash<QString, QPointF> allPos;   // call -> (azimuth, distance)
@@ -2397,6 +2431,21 @@ void SpotMapWindow::redraw() {
                 (r.pskr ? dotOldPskr : dotOldRadio)++;   // [dotlog]
                 continue;
             }
+            // [passband #218] ALWAYS in effect, no toggle (operator
+            // ruling): a station KNOWN to be transmitting outside the
+            // passband we are listening to is not drawn. Only the
+            // Out verdict drops -- Unknown (no frequency, stale
+            // frequency, RX-only station, or our own dial unknown)
+            // is drawn as before. Evaluated here at paint time, every
+            // paint, so a QSY re-judges every dot on the next frame.
+            // Dropping the dot also drops its lines, since the
+            // connections layer only draws edges whose endpoints
+            // were plotted (endpointMissing in LINELOG).
+            if (passbandVerdict(m_currentBand, it.key()) ==
+                Passband::Out) {
+                ++dotOutOfBand;                          // [dotlog]
+                continue;
+            }
             if (r.pskr)
                 ++dotDrawnPskr;                          // [dotlog]
             render.append(r);
@@ -2674,6 +2723,7 @@ void SpotMapWindow::redraw() {
         << " noClock=" << dotNoClock
         << " tooOldPskr=" << dotOldPskr
         << " tooOldRadio=" << dotOldRadio
+        << " outOfBand=" << dotOutOfBand              // [passband #218]
         << " | drawn=" << render.size()
         << " ofWhichPskr=" << dotDrawnPskr
         << " | window=" << m_viewWindowSecs << "s showPskr=" << m_showPskr;
@@ -4021,27 +4071,14 @@ void SpotMapWindow::mouseMoveEvent(QMouseEvent *event) {
             // relayer currently declining reads "Relay disabled?").
             tip += QStringLiteral("\n") + tr("Relay enabled");
         }
-        // [qsyhover 2026-09-08, operator] Last hover line when the
-        // station's transmit frequency falls OUTSIDE our current
-        // passband: name the dial that would reach it, in MHz.
-        // freqHz is a STATION fact (the frequency THEY transmit on,
-        // theirs-only by the ingest guard), so reports of our own
-        // signal never trigger this.
-        //
-        // [passband #218] Width now comes from JS8_PASSBAND_WIDTH_HZ,
-        // not a local 2400. NOTE THE ORDERING RULING: this whole hover
-        // line is to be REMOVED once the passband filter lands, since
-        // nothing out-of-passband will be on the map to hover over --
-        // but not before, or the information is lost while
-        // out-of-passband stations are still displayed.
-        if (best->spot.freqHz > 0 && m_dialHz > 0) {
-            qint64 const audio = best->spot.freqHz - m_dialHz;
-            if (audio < 0 || audio > JS8_PASSBAND_WIDTH_HZ) {
-                tip += QStringLiteral("\n") +
-                       tr("QSY: %1").arg(
-                           best->spot.freqHz / 1e6, 0, 'f', 3);
-            }
-        }
+        // [passband #218] The "QSY: xx.xxx" hover line that lived
+        // here (qsyhover, Build 476) is GONE, by operator ruling and
+        // in the ruled ORDER: it named the dial that would reach a
+        // station transmitting outside our passband, and now that
+        // the passband filter drops such stations from the map there
+        // is nothing left to hover over. It was removed only AFTER
+        // the filter landed, on the same branch, so no build ever
+        // showed out-of-passband stations without the line.
         // [hovertime 2026-08-22, operator: "cut the hover info timeout
         // to 50%"] Qt's default when no time is given is
         //     10000 + 40 * max(0, len - 100) ms
