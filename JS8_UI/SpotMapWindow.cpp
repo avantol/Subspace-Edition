@@ -678,7 +678,20 @@ void SpotMapWindow::setStation(QString const &callsign, QString const &grid) {
 }
 
 void SpotMapWindow::setDialFrequency(qint64 const hz) {
+    if (hz == m_dialHz)
+        return;   // guiUpdate pushes this once a second; no churn
     m_dialHz = hz;
+    // [passband #218] A dial change now changes what is DRAWN -- the
+    // passband verdict reads m_dialHz at paint time -- so it must
+    // request a paint, exactly like an incoming report does. Before
+    // the filter the dial only fed hover text and the double-click,
+    // and no repaint was needed. Without this the map re-judged the
+    // dots only when the next report happened to arrive: on-air
+    // stations within seconds, PSKR-only stations when the next batch
+    // landed 60-90 s later, at whatever dial the operator had reached
+    // by then. Field 2026-09-11: dots vanished on a click up and did
+    // not return on the click down -- "the map seems really random".
+    requestReplot();
 }
 
 // [passband #218] See the header for the three-way contract. Every
