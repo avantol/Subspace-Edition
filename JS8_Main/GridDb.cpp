@@ -280,6 +280,25 @@ bool GridDb::ensureSchema() {
             "ALTER TABLE stations ADD COLUMN freq_radio INTEGER"
             " DEFAULT 0"));
     }
+    // [passband #218 freqclock, operator ruling 2026-09-11] A
+    // frequency without a clock is worthless: the verdict already
+    // ignores it, and the display copy (hover offset, QSY double-
+    // click) can only show a number nobody can vouch for -- rows
+    // written by builds before the dial stamp may carry a mid-retune
+    // value. Clear them. Runs at EVERY open rather than once when the
+    // column is added: idempotent and harmless (a row gains a real
+    // clock the first time its station is observed again), and a
+    // one-shot would never have fired on a DB whose column already
+    // existed from an earlier build of this branch.
+    {
+        QSqlQuery u{m_db};
+        if (u.exec(QStringLiteral("UPDATE stations SET freq_hz = 0"
+                                  " WHERE freq_when = 0 AND freq_hz > 0"))
+            && u.numRowsAffected() > 0)
+            qCWarning(griddb_js8)
+                << "[GRIDDB] cleared" << u.numRowsAffected()
+                << "clockless station frequencies";
+    }
     q.prepare(QStringLiteral(
         "INSERT INTO meta (k, v) VALUES ('schema_version', ?)"
         " ON CONFLICT(k) DO UPDATE SET v = excluded.v"));
