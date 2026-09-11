@@ -865,10 +865,16 @@ void UI_Constructor::reachStart(QString const &target, int maxMoves,
     // ranking. In-passband earns no bonus either: hearing them
     // proves nothing about them hearing us. The book rebuilds before
     // every move, so a QSY between moves re-judges every anchor.
+    //
+    // FRESHNESS WINDOW IS THE ROUTING ONE, 15 minutes (operator ruling
+    // 2026-09-11), not the map's 60: excluding a live candidate needs
+    // fresher evidence than showing a last-known dot does. Older than
+    // that the verdict is Unknown and the anchor stays in.
     if (m_spotMapWindow) {
         for (auto it = g_book.firstHops.begin();
              it != g_book.firstHops.end();) {
-            if (m_spotMapWindow->passbandVerdict(m_reach.band, *it) ==
+            if (m_spotMapWindow->passbandVerdict(
+                    m_reach.band, *it, JS8_FREQ_STALE_ROUTE_SECS) ==
                 SpotMapWindow::Passband::Out) {
                 reachLog(QStringLiteral(
                              "    first hop %1 REJECTED: known to be "

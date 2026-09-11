@@ -154,4 +154,19 @@ inline constexpr int JS8_PASSBAND_WIDTH_HZ = 2800;
 // outside the passband causes a rejection.
 inline constexpr int JS8_FREQ_STALE_SECS = 60 * 60;
 
+// [passband #218] The SAME question asked for ROUTING, with a stricter
+// bar. Operator ruling 2026-09-11: for relay first-hop rejection, a
+// frequency older than 15 minutes is UNKNOWN (exempt), even though
+// the map keeps showing a last-known frequency for 60.
+//
+// Two different facts, so two constants, no conflict: the map window
+// is how long a frequency is worth DISPLAYING; this one is how fresh
+// evidence must be before it may EXCLUDE a candidate from a live
+// attempt. Throwing away an anchor on a reading up to an hour old
+// would cost real moves on stations that may have QSY'd into our
+// passband long since (the same reason the direct route is never
+// screened at all). One implementation -- passbandVerdict() -- takes
+// the window as a parameter; only the number differs by caller.
+inline constexpr int JS8_FREQ_STALE_ROUTE_SECS = 15 * 60;
+
 #endif // COMMONS_H

@@ -684,8 +684,8 @@ void SpotMapWindow::setDialFrequency(qint64 const hz) {
 // [passband #218] See the header for the three-way contract. Every
 // ruling from TODO_notes.md item-218 is a line here, in order:
 SpotMapWindow::Passband
-SpotMapWindow::passbandVerdict(QString const &band,
-                               QString const &call) const {
+SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
+                               int const staleSecs) const {
     // Our own dial unknown (no rig control, or CAT not read yet):
     // the filter disables itself entirely, or it would reject
     // everything.
@@ -701,11 +701,12 @@ SpotMapWindow::passbandVerdict(QString const &band,
     // is treated the same as an expired one: we cannot vouch for it.
     if (!it->freqWhen.isValid())
         return Passband::Unknown;
-    // Staleness: past the window the frequency becomes UNKNOWN, not
-    // "last known". Stations QSY; a stale number must never reject a
-    // station we can hear perfectly well.
+    // Staleness: past the caller's window the frequency becomes
+    // UNKNOWN, not "last known". Stations QSY; a stale number must
+    // never reject a station we can hear perfectly well. The window
+    // is 60 min for the map and 15 min for routing (see the header).
     if (it->freqWhen.secsTo(DriftingDateTime::currentDateTimeUtc()) >=
-        JS8_FREQ_STALE_SECS)
+        staleSecs)
         return Passband::Unknown;
     // Boundaries inclusive: offset 0 and offset WIDTH are both in.
     qint64 const audio = it->freqHz - m_dialHz;

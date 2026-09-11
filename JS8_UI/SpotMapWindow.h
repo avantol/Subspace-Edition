@@ -21,6 +21,8 @@
  * caches keep running until app exit.
  */
 
+#include "JS8_Include/commons.h"   // [passband #218] JS8_FREQ_STALE_SECS default
+
 #include <QColor>
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -146,8 +148,8 @@ class SpotMapWindow final : public QWidget {
     //              the ONLY answer that ever hides a dot or rejects a
     //              relay first hop.
     //   Unknown -- no frequency on record, or the record is older
-    //              than JS8_FREQ_STALE_SECS, or OUR OWN DIAL is
-    //              unknown (no CAT, not read yet). Exempt everywhere:
+    //              than staleSecs, or OUR OWN DIAL is unknown (no
+    //              CAT, not read yet). Exempt everywhere:
     //              stays visible, stays eligible. RX-only and monitor
     //              stations live here permanently by construction --
     //              they never transmit, so nothing can name their
@@ -160,9 +162,17 @@ class SpotMapWindow final : public QWidget {
     // In-passband proves we can hear THEM, never that they can hear
     // us -- which is why the relay side treats this as a filter that
     // can only exclude, never qualify.
+    //
+    // staleSecs is the freshness window and it DIFFERS BY CALLER
+    // (operator ruling 2026-09-11): the map passes the default,
+    // JS8_FREQ_STALE_SECS (60 min, display retention); the relay
+    // first-hop rejection passes JS8_FREQ_STALE_ROUTE_SECS (15 min,
+    // the bar for EXCLUDING a live candidate). One implementation,
+    // one parameter, two named constants -- never a third window
+    // hardcoded at a call site.
     enum class Passband { In, Out, Unknown };
-    Passband passbandVerdict(QString const &band,
-                             QString const &call) const;
+    Passband passbandVerdict(QString const &band, QString const &call,
+                             int staleSecs = JS8_FREQ_STALE_SECS) const;
 
     // [reachport2] Whole-band adjacency for the executor's route book
     // (one snapshot per attempt), and the persistent tier at the
