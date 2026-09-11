@@ -1004,6 +1004,10 @@ void SpotMapWindow::journalStation(QString const &band,
     r.grid = m_gridByCall.value(c);
     r.country = info.country;
     r.freqHz = info.freqHz;
+    // [freqclock] the frequency's own clock and source ride with it
+    r.freqWhen = info.freqWhen.isValid() ? info.freqWhen.toSecsSinceEpoch()
+                                         : 0;
+    r.freqRadio = info.freqFromRadio;
     r.rxOnly = !info.sawAsSender;
     auto const now = DriftingDateTime::currentDateTimeUtc();
     r.anyWhen = now.toSecsSinceEpoch();
@@ -1033,17 +1037,27 @@ void SpotMapWindow::restoreStationsFromDisk() {
         StationInfo &info = m_infoByBand[r.band][r.call.toUpper()];
         if (!r.country.isEmpty())
             info.country = r.country;
-        // [passband #218] Restored frequencies carry NO observation
-        // clock -- the stations table has the value but not its
-        // freqWhen -- so freqWhen stays invalid here and the filter
-        // reads them as UNKNOWN, hence exempt. That is the correct
-        // conservative reading: a value persisted across a restart
-        // could be any age up to the window, and the staleness ruling
-        // says an expired frequency becomes unknown rather than "last
-        // known". It also means a restored station is never rejected
-        // until we hear it again or a fresh PSKR spot names it.
-        if (r.freqHz > 0)
+        // [passband #218 freqclock 2026-09-11] A restored frequency
+        // now carries its own clock and source, so it is real
+        // evidence again after a restart: the display copy is
+        // restored, and ONE transmit entry is seeded into the
+        // evidence set (noteFreq prunes anything past 60 min
+        // itself). Before this the row had the value but no date,
+        // the verdict could only say Unknown, and a station we
+        // decoded five minutes before restarting came back drawn at a
+        // dial it could not be heard on (KK6WVY at 7.0855, field).
+        // Listening evidence (reporters) is not persisted; PSKR
+        // refills it within a batch or two.
+        if (r.freqHz > 0) {
             info.freqHz = r.freqHz;
+            if (r.freqWhen > 0) {
+                info.freqWhen =
+                    QDateTime::fromSecsSinceEpoch(r.freqWhen, Qt::UTC);
+                info.freqFromRadio = r.freqRadio;
+                noteFreq(r.band, r.call, r.freqHz, info.freqWhen,
+                         r.freqRadio, /*tx=*/true);
+            }
+        }
         if (!r.rxOnly)
             info.sawAsSender = true;
         // THEIR REPORT OF OUR SIGNAL. This was written to disk and
