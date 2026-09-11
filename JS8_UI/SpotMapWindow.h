@@ -655,6 +655,13 @@ class SpotMapWindow final : public QWidget {
         // indistinguishable -- which silently breaks #159 offline
         // routing and hides whether a relay is reachable by RF at all.
         QString source;
+        // [passband #218 tether] TRUE while this edge is known only
+        // from the disk restore -- presence history from before this
+        // session, carrying no frequency evidence. A restored edge
+        // must not TETHER an unknown-frequency station to the current
+        // dial; only a live observation can. Cleared the moment a
+        // live report touches the edge.
+        bool fromDisk = false;
     };
     struct HearingEntry {
         QDateTime lastSeen;   // presence freshness (HBs, any frame)

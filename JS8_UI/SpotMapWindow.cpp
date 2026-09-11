@@ -904,6 +904,7 @@ void SpotMapWindow::addHearingReport(QString const &band,
         if (call.isEmpty() || call == hearer.toUpper())
             continue;
         HeardEdge &edge = e.heard[call];
+        edge.fromDisk = false;   // [tether] a live report touched it
         // [meshprobe 2026-08-22] What actually happens to an edge that
         // names US: does it move forward, or is it refused?
         if (!m_myCall.isEmpty() &&
@@ -1141,6 +1142,7 @@ void SpotMapWindow::restoreMeshFromDisk() {
         }
         if (edge.grid.isEmpty() && !r.heardGrid.isEmpty())
             edge.grid = r.heardGrid;
+        edge.fromDisk = true;   // [tether] history, not dial evidence
         ++restored;
     }
     // [#170(f)] NO BEARING RESOLUTION HERE ANY MORE.
@@ -2509,6 +2511,10 @@ void SpotMapWindow::redraw() {
                      ed != h.value().heard.constEnd(); ++ed) {
                     if (ed.value().when < cutoff)
                         continue;                    // outside window
+                    if (ed.value().fromDisk)
+                        continue;                    // history only:
+                                                     // a restored edge
+                                                     // never tethers
                     if (!m_showPskr &&
                         ed.value().source == QStringLiteral("mqtt"))
                         continue;                    // toggle hides it
