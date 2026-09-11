@@ -680,12 +680,13 @@ class SpotMapWindow final : public QWidget {
         QDateTime freqWhen;   // when freqHz was observed
         bool sawAsSender = false;  // observed transmitting => not rxOnly
         // [passband #218] TRUE when freqHz came from a frame WE
-        // decoded, FALSE when it came from a PSKR spot. First-hand
-        // evidence outranks second-hand: a station we just decoded is
-        // PROVABLY inside our passband at that instant, whereas a
-        // PSKR report is an internet fact about someone else's
-        // receiver. A radio observation therefore overwrites a PSKR
-        // one, and a PSKR one never overwrites a fresh radio one.
+        // decoded, FALSE when it came from a PSKR spot. Precedence is
+        // NEWEST OBSERVATION WINS, ties to radio: a radio write is
+        // stamped at decode time and always overwrites; a PSKR spot
+        // overwrites only when its observation time is strictly newer
+        // than what is held. This flag's other job is the map's PSKR
+        // display toggle: with internet evidence hidden, a
+        // PSKR-sourced frequency must not hide a radio-heard dot.
         bool freqFromRadio = false;
     };
     QHash<QString, QHash<QString, StationInfo>> m_infoByBand;

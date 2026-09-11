@@ -1645,21 +1645,21 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
         // stamped UNCONDITIONALLY -- every reports-me or freq-less
         // spot refreshed the clock while the value stayed stale, the
         // exact value+clock split [maptruth #13] exists to prevent.
-        // [passband #218] PSKR must not clobber FRESH first-hand
-        // evidence. A frequency we measured ourselves proves the
-        // station was inside our passband at that moment; a PSKR spot
-        // is a report from someone else's receiver. So a radio-sourced
-        // value that is still inside the freshness window wins, and
-        // PSKR fills in only when there is no radio value or the radio
-        // value has aged out (at which point it is "unknown" anyway,
-        // by the staleness ruling).
+        // [passband #218] NEWEST OBSERVATION WINS; ties go to radio.
+        // Compared on the two OBSERVATION times, never on "now" and
+        // never through a window. The first cut of this rule let a
+        // radio reading block PSKR for a full hour regardless of
+        // which was newer -- so a station we decoded 40 minutes ago
+        // at an out-of-passband offset stayed "Out" while a PSKR spot
+        // from a minute ago said it had moved in (audit 2026-09-11).
+        // A PSKR spot that is strictly newer than what we hold is
+        // better evidence about where the station is NOW, first-hand
+        // or not; one that is older (out-of-order batch, or older
+        // than our own decode) changes nothing. Radio writes, in
+        // addHearingReport(), are stamped at decode time and so are
+        // always the newest possible -- they always overwrite.
         if (!senderIsMe && spotFreqHz > 0) {
-            bool const freshRadio =
-                info.freqFromRadio && info.freqWhen.isValid() &&
-                info.freqWhen.secsTo(
-                    DriftingDateTime::currentDateTimeUtc()) <
-                    JS8_FREQ_STALE_SECS;
-            if (!freshRadio) {
+            if (!info.freqWhen.isValid() || when > info.freqWhen) {
                 info.freqHz = spotFreqHz;
                 info.freqWhen = when;   // [maptruth #13] value + clock
                 info.freqFromRadio = false;
@@ -2385,10 +2385,12 @@ void SpotMapWindow::redraw() {
             if (r.distance < 0.0f)
                 continue;               // nowhere to draw it
             // [oneobs] Station facts an observation cannot carry.
+            bool freqFromRadio = false;   // [passband #218]
             if (auto const in = infoBand.constFind(it.key());
                 in != infoBand.constEnd()) {
                 r.country = in->country;
                 r.freqHz = in->freqHz;
+                freqFromRadio = in->freqFromRadio;
                 if (in->sawAsSender)
                     sawAsSender.insert(it.key());
             }
@@ -2442,8 +2444,20 @@ void SpotMapWindow::redraw() {
             // Dropping the dot also drops its lines, since the
             // connections layer only draws edges whose endpoints
             // were plotted (endpointMissing in LINELOG).
-            if (passbandVerdict(m_currentBand, it.key()) ==
-                Passband::Out) {
+            //
+            // HONOURS THE PSKR DISPLAY TOGGLE, like every other
+            // consumer on this map (effectiveWhen() is the contract:
+            // with internet evidence hidden, the map judges on radio
+            // evidence only). A PSKR-sourced frequency therefore
+            // cannot hide a radio-heard dot while the toggle is off
+            // -- the operator saw exactly that happen at startup on
+            // 2026-09-11 before this guard existed. Routing does not
+            // consult the toggle and is untouched: its book always
+            // uses PSKR edges.
+            bool const judgeFreq = m_showPskr || freqFromRadio;
+            if (judgeFreq &&
+                passbandVerdict(m_currentBand, it.key()) ==
+                    Passband::Out) {
                 ++dotOutOfBand;                          // [dotlog]
                 continue;
             }
