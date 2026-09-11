@@ -2150,6 +2150,17 @@ void SpotMapWindow::redraw() {
     int dotSeen = 0, dotPskr = 0, dotHidden = 0, dotNoClock = 0,
         dotOldPskr = 0, dotOldRadio = 0, dotDrawnPskr = 0,
         dotOutOfBand = 0;   // [passband #218]
+    // [passband #218] Stations the passband filter dropped THIS
+    // paint. The line layer must skip every edge touching one: the
+    // ruling is that an out-of-passband station is not on the map at
+    // all, dot OR lines. This set is the only way to say so, because
+    // line endpoints come from allPos -- every station with a known
+    // position, drawn or not -- by design ([audit2]: a radio edge to
+    // a PSKR-hidden station is real evidence and must render). That
+    // design is right for the PSKR toggle and wrong for this filter,
+    // so the filter carries its own exclusion. Field 2026-09-11:
+    // dots vanished on a dial change and their lines stayed.
+    QSet<QString> passbandDropped;
     QElapsedTimer buildTimer;   // [paintlog] render-set cost
     buildTimer.start();
     QHash<QString, QPointF> allPos;   // call -> (azimuth, distance)
@@ -2459,6 +2470,7 @@ void SpotMapWindow::redraw() {
                 passbandVerdict(m_currentBand, it.key()) ==
                     Passband::Out) {
                 ++dotOutOfBand;                          // [dotlog]
+                passbandDropped.insert(it.key());        // lines too
                 continue;
             }
             if (r.pskr)
@@ -2789,7 +2801,8 @@ void SpotMapWindow::redraw() {
         // we decode those stations every cycle, so their spots never go
         // stale. One line per paint says which gate did it.
         int seenPskr = 0, seenRadio = 0, oldEdge = 0, noEnd = 0,
-            hidPskr = 0, drewPskr = 0, drewRadio = 0;
+            hidPskr = 0, drewPskr = 0, drewRadio = 0,
+            outOfBandEdge = 0;   // [passband #218]
         QPen const penRadio{QColor(90, 160, 255, 210), 1};   // on-air
         auto const &hearers = m_hearingByBand.value(m_currentBand);
         QString const myUp = m_myCall.toUpper();
@@ -2822,6 +2835,13 @@ void SpotMapWindow::redraw() {
                 // button hides. Radio lines are never affected by it.
                 if (isPskr && !m_showPskr) {
                     ++hidPskr;                       // [linelog]
+                    continue;
+                }
+                // [passband #218] No line to or from a station the
+                // filter dropped this paint -- it is not on the map.
+                if (passbandDropped.contains(h.key()) ||
+                    passbandDropped.contains(ed.key())) {
+                    ++outOfBandEdge;                 // [linelog]
                     continue;
                 }
                 QPointF from, to;
@@ -2871,6 +2891,7 @@ void SpotMapWindow::redraw() {
             << "[LINELOG] edges pskr=" << seenPskr << " radio=" << seenRadio
             << " | dropped: old=" << oldEdge << " pskrHidden=" << hidPskr
             << " endpointMissing=" << noEnd
+            << " outOfBand=" << outOfBandEdge     // [passband #218]
             << " | collected pskr=" << drewPskr << " radio="
             << drewRadio
             << " | window=" << m_viewWindowSecs << "s showPskr="
