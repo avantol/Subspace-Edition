@@ -1371,7 +1371,33 @@ void UI_Constructor::processCommandActivity() {
 
                 d.relayPath = calls.join('>');
 
-                reply = QString("%1 ACK").arg(d.relayPath);
+                // [ackquiet #222, option 2, operator 2026-09-11] The
+                // relay target's ACK is the ORIGIN's delivery
+                // confirmation for relayed FREE TEXT, and it has been
+                // sent for that case in every JS8Call since v1.0.0-rc1.
+                // It is already NOT sent when the relayed text is a
+                // recognised command (the command is answered instead,
+                // see the re-queue below) -- because the payload then
+                // generates its own reply. An @MAGNET MCForms 701 form
+                // is the same situation in free-text clothing: a form
+                // pull produces the form as its reply, and a form
+                // pushed to a GROUP would otherwise draw an ACK from
+                // every member at once. So: recognised-command
+                // treatment for the form, no ACK. Everything else --
+                // plain free text, any other payload -- keeps the ACK
+                // exactly as before. The form itself is still logged,
+                // displayed and delivered over the API the same way;
+                // only the confirmation frame is withheld.
+                if (isMagnetFormText(d.text)) {
+                    reply.clear();
+                    qCWarning(mainwindow_js8)
+                        << "[ACKQUIET #222] relay ACK withheld: payload"
+                        << "is an @MAGNET form, which answers itself"
+                        << "path=" << d.relayPath
+                        << "text=" << d.text.left(40);
+                } else {
+                    reply = QString("%1 ACK").arg(d.relayPath);
+                }
 
                 // check to see if the relay text contains a command that should
                 // be replied to instead of an ack.

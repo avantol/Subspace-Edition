@@ -596,9 +596,7 @@ if(type == "STATION.SET_SPOT") {
         // form ID through the TX injection API to answer a pull.
         // API-INJECTED text only; received RF proves nothing about
         // the local client.
-        if (message.value().contains(QLatin1String("F!701A")) ||
-            message.value().contains(QLatin1String("F!701B")) ||
-            message.value().contains(QLatin1String("F!701C")))
+        if (isMagnetFormText(message.value()))   // one authority (#222)
             noteSuperSpotterSeen();
 #endif
         addMessageText(message.value(), true);
@@ -670,9 +668,7 @@ if(type == "STATION.SET_SPOT") {
         // [ss701] Same second signature as TX.SET_TEXT above -- the
         // Expect auto-reply path sends the form text through HERE
         // (SET_TEXT "" first, full text only in SEND_MESSAGE).
-        if (text.contains(QLatin1String("F!701A")) ||
-            text.contains(QLatin1String("F!701B")) ||
-            text.contains(QLatin1String("F!701C")))
+        if (isMagnetFormText(text))              // one authority (#222)
             noteSuperSpotterSeen();
 #endif
         if (!text.isEmpty()) {
