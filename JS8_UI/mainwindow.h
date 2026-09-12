@@ -1906,6 +1906,13 @@ class UI_Constructor : public QMainWindow {
     bool isMyCallIncluded(QString const &text);
     bool isAllCallIncluded(QString const &text);
     bool isGroupCallIncluded(const QString &text);
+    // [ackquiet #222 / ss701] THE ONE authority for "this text carries
+    // an @MAGNET MCForms 701 form" (F!701A / F!701B / F!701C on the
+    // wire). Two consumers, one signature: the SuperSpotter detector
+    // (API-injected text, networkMessage.cpp) and the relay-target
+    // ACK suppression (processCommandActivity.cpp). If @MAGNET ever
+    // changes the form wire shape, this is the only line to touch.
+    static bool isMagnetFormText(QString const &text);
     QString callsignSelected(bool useInputText = false);
     bool isRecentOffset(int submode, int offset);
     void markOffsetRecent(int offset);

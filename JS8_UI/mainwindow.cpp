@@ -10710,6 +10710,16 @@ bool UI_Constructor::isAllCallIncluded(const QString &text) {
     return text.contains("@ALLCALL") || text.contains("@HB");
 }
 
+// [ackquiet #222 / ss701] See the header. Deliberately the SAME three
+// literals the SuperSpotter detector has keyed on since Build 474 --
+// we already carry the risk of @MAGNET changing this wire shape, and
+// carrying it in one place is the whole point.
+bool UI_Constructor::isMagnetFormText(QString const &text) {
+    return text.contains(QLatin1String("F!701A")) ||
+           text.contains(QLatin1String("F!701B")) ||
+           text.contains(QLatin1String("F!701C"));
+}
+
 bool UI_Constructor::isGroupCallIncluded(const QString &text) {
     return m_config.my_groups().contains(text);
 }
