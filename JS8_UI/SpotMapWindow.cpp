@@ -1559,13 +1559,11 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
     // is one PSKR spot on the current band: stamp it and prune the
     // trailing window here (arrival side), so the paint-side index
     // read stays const.
-    {
-        qint64 const nowMs = QDateTime::currentMSecsSinceEpoch();
-        m_pskrArrivals.append(nowMs);
-        while (!m_pskrArrivals.isEmpty() &&
-               m_pskrArrivals.first() < nowMs - PSKR_BUSY_WINDOW_MS)
-            m_pskrArrivals.removeFirst();
-    }
+    // [congest #236] The congestion arrival used to be recorded HERE,
+    // before the payload was parsed -- so every spot on the band
+    // counted, and a busy net at 7.107-7.117 read as congestion at
+    // 7.078. It is now recorded below, once the spot's frequency is
+    // known, and only for spots inside OUR passband.
     // Runtime schema verification: dump the first N messages after
     // each (re)subscribe so topic-level ordering and field names can
     // be confirmed live before trusting them.
@@ -1617,6 +1615,32 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
     // to it.
     qint64 const spotFreqHz =
         static_cast<qint64>(o.value(QStringLiteral("f")).toDouble(0));
+    // [congest #236, operator 2026-09-11] Band congestion counts only
+    // spots inside OUR passband -- the same one authority the map's
+    // passband verdict uses (m_dialHz, JS8_PASSBAND_WIDTH_HZ,
+    // inclusive). With our dial unknown (m_dialHz == 0) the filter
+    // disables itself and everything counts, as the verdict does. A
+    // spot with no frequency counts for nothing. pskrDataAvailable()
+    // reads the same list, so it now means "PSKR data for OUR
+    // passband", which is what the adaptive-wait busy metric
+    // (item-206/207) actually wants: PSKR measures a remote relay's
+    // local channel, and a relay that hears us works our passband.
+    // The on-air measure (m_congestionSlots) was always passband-
+    // local and is untouched. NOTE the PSKR threshold spin was tuned
+    // on band-wide counts and reads lower now -- re-tune in the field.
+    {
+        bool const inPassband =
+            spotFreqHz > 0 &&
+            (m_dialHz <= 0 ||
+             (spotFreqHz >= m_dialHz &&
+              spotFreqHz <= m_dialHz + JS8_PASSBAND_WIDTH_HZ));
+        qint64 const nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (inPassband)
+            m_pskrArrivals.append(nowMs);
+        while (!m_pskrArrivals.isEmpty() &&
+               m_pskrArrivals.first() < nowMs - PSKR_BUSY_WINDOW_MS)
+            m_pskrArrivals.removeFirst();
+    }
     // [BUILD 340] Country name for hover, only when the spotter's
     // DXCC differs from OURS — both codes ride the topic
     // (…/{sDXCC}/{rDXCC}); the NAME comes from the injected
