@@ -1791,8 +1791,28 @@ void UI_Constructor::processCommandActivity() {
 
             // we haven't replaced the from with the relay path, so we have to
             // use it for the ack if there is one
-            reply = QString("%1 ACK").arg(calls.length() > 1 ? d.relayPath
-                                                             : d.from);
+            //
+            // [ackquiet #222, MSG case, operator 2026-09-12] The MSG
+            // command's reply IS an ACK -- "your message is stored" --
+            // which is why the relay block's re-queue of a recognised
+            // command does not spare a MSG from acknowledgement the way
+            // it spares every other command. SuperSpotter's "Send as
+            // MSG" checkbox (off by default) puts an @MAGNET 701 form
+            // on exactly this path, direct or relayed. The form is a
+            // payload that answers itself, so: filed to the inbox and
+            // notified exactly as before, no ACK. Every other MSG keeps
+            // its ACK. Same one authority as the relay block.
+            if (isMagnetFormText(d.text)) {
+                reply.clear();
+                qCWarning(mainwindow_js8)
+                    << "[ACKQUIET #222] MSG ACK withheld: payload is an"
+                    << "@MAGNET form, which answers itself from="
+                    << d.from << "path=" << d.relayPath
+                    << "text=" << d.text.left(40);
+            } else {
+                reply = QString("%1 ACK").arg(calls.length() > 1 ? d.relayPath
+                                                                 : d.from);
+            }
 
 #define SHOW_ALERT_FOR_MSG 1
 #if SHOW_ALERT_FOR_MSG
