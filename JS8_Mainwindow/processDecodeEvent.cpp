@@ -296,6 +296,16 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 if (m_decoderBusyFreq != freq) {
                     freq = m_decoderBusyFreq;
                 }
+                // [dialstamp 2026-09-11] A Subspace decode carries the
+                // dial its OWN audio was snapshotted on (JS8.h,
+                // Event::Decoded::dial). That is the truth for this
+                // frame; m_decoderBusyFreq is the NORMAL decoder's
+                // cycle-start capture and could be up to a full period
+                // stale for a decode that arrived mid-cycle. Prefer
+                // the stamp whenever it is present; the fallback above
+                // still serves the normal decoder, which never stamps.
+                if (ev.dial > 0)
+                    freq = static_cast<decltype(freq)>(ev.dial);
 
                 auto date = DriftingDateTime::currentDateTimeUtc().toString(
                     "yyyy-MM-dd");

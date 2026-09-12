@@ -119,6 +119,17 @@ class GridDb final {
         // on" -- that is a property of the REPORT, not of the station
         // (operator, 2026-08-21: "which freq? theirs or mine?").
         qint64 freqHz = 0;
+        // [passband #218 freqclock 2026-09-11] The frequency's OWN
+        // clock and source, persisted beside it. Without them a
+        // restored frequency had no date, so the passband verdict
+        // could only call it Unknown -- and a station we decoded five
+        // minutes before a restart came back drawn at a dial it could
+        // not possibly be heard on (KK6WVY at 7.0855, field
+        // 2026-09-11). radio_when is the STATION's clock and cannot
+        // stand in: freq_hz "only improves", so it may be older or
+        // newer than the last radio sighting.
+        qint64 freqWhen = 0;  // 0 = unknown, verdict treats as Unknown
+        bool freqRadio = false; // from a frame WE decoded
         qint64 anyWhen = 0;   // freshest evidence of any source
         qint64 radioWhen = 0; // freshest RADIO evidence, 0 = none
         int snrToMe = -99;    // their report of MY signal

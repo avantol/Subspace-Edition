@@ -268,6 +268,37 @@ bool GridDb::ensureSchema() {
             "ALTER TABLE stations ADD COLUMN snr_when INTEGER"
             " DEFAULT 0"));
     }
+    // [passband #218 freqclock 2026-09-11] Same pattern: the
+    // frequency's own clock and source, added in place. A frequency
+    // without its date is the same lie snr_when was added to kill.
+    {
+        QSqlQuery a{m_db};
+        a.exec(QStringLiteral(
+            "ALTER TABLE stations ADD COLUMN freq_when INTEGER"
+            " DEFAULT 0"));
+        a.exec(QStringLiteral(
+            "ALTER TABLE stations ADD COLUMN freq_radio INTEGER"
+            " DEFAULT 0"));
+    }
+    // [passband #218 freqclock, operator ruling 2026-09-11] A
+    // frequency without a clock is worthless: the verdict already
+    // ignores it, and the display copy (hover offset, QSY double-
+    // click) can only show a number nobody can vouch for -- rows
+    // written by builds before the dial stamp may carry a mid-retune
+    // value. Clear them. Runs at EVERY open rather than once when the
+    // column is added: idempotent and harmless (a row gains a real
+    // clock the first time its station is observed again), and a
+    // one-shot would never have fired on a DB whose column already
+    // existed from an earlier build of this branch.
+    {
+        QSqlQuery u{m_db};
+        if (u.exec(QStringLiteral("UPDATE stations SET freq_hz = 0"
+                                  " WHERE freq_when = 0 AND freq_hz > 0"))
+            && u.numRowsAffected() > 0)
+            qCWarning(griddb_js8)
+                << "[GRIDDB] cleared" << u.numRowsAffected()
+                << "clockless station frequencies";
+    }
     q.prepare(QStringLiteral(
         "INSERT INTO meta (k, v) VALUES ('schema_version', ?)"
         " ON CONFLICT(k) DO UPDATE SET v = excluded.v"));
@@ -577,9 +608,15 @@ void GridDb::flush() {
         q.prepare(QStringLiteral(
             "INSERT INTO stations (band, call, grid, country, freq_hz,"
             " any_when, radio_when, snr_to_me, snr_when, reports_me,"
-            " rx_only)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " rx_only, freq_when, freq_radio)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(band, call) DO UPDATE SET"
+            // [freqclock] the clock and source travel WITH the value:
+            // they change exactly when freq_hz does, never alone.
+            " freq_when = CASE WHEN excluded.freq_hz > 0"
+            "                  THEN excluded.freq_when ELSE freq_when END,"
+            " freq_radio = CASE WHEN excluded.freq_hz > 0"
+            "                   THEN excluded.freq_radio ELSE freq_radio END,"
             // Freshest wins; a stale replay never moves a clock back.
             " any_when = MAX(any_when, excluded.any_when),"
             " radio_when = MAX(radio_when, excluded.radio_when),"
@@ -611,6 +648,8 @@ void GridDb::flush() {
             q.bindValue(8, r.snrToMeWhen);
             q.bindValue(9, r.reportsMe ? 1 : 0);
             q.bindValue(10, r.rxOnly ? 1 : 0);
+            q.bindValue(11, r.freqWhen);              // [freqclock]
+            q.bindValue(12, r.freqRadio ? 1 : 0);     // [freqclock]
             if (!q.exec())
                 qCDebug(griddb_js8) << "[GRIDDB] station FAILED:"
                                     << r.call << q.lastError().text();
@@ -694,7 +733,8 @@ GridDb::loadStations(qint64 notOlderThanSecs) const {
     q.prepare(QStringLiteral(
                   "SELECT band, call, grid, country, freq_hz,"
                   " any_when, radio_when, snr_to_me, snr_when,"
-                  " reports_me, rx_only FROM stations"
+                  " reports_me, rx_only, freq_when, freq_radio"
+                  " FROM stations"
                   " WHERE any_when >= ?%1 ORDER BY any_when")
                   .arg(noInternetSim()
                            ? QStringLiteral(" AND radio_when > 0")
@@ -718,6 +758,8 @@ GridDb::loadStations(qint64 notOlderThanSecs) const {
         r.snrToMeWhen = q.value(8).toLongLong();
         r.reportsMe = q.value(9).toInt() != 0;
         r.rxOnly = q.value(10).toInt() != 0;
+        r.freqWhen = q.value(11).toLongLong();        // [freqclock]
+        r.freqRadio = q.value(12).toInt() != 0;       // [freqclock]
         out.append(r);
     }
     qCWarning(griddb_js8) << "[GRIDDB] restored" << out.size()

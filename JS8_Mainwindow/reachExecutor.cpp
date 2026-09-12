@@ -849,6 +849,48 @@ void UI_Constructor::reachStart(QString const &target, int maxMoves,
         g_book.firstHops.insert(c);
     }
 
+    // [passband #218] NEGATIVE qualifier on the FIRST hop only
+    // (operator ruling): a station KNOWN to be transmitting outside
+    // our passband cannot anchor a chain, because we could not hear
+    // its forward and could not hear its answer. It is removed from
+    // firstHops and nowhere else -- it stays in the walk, so it may
+    // still appear as hop 2 or deeper. That is deliberate: whether a
+    // relay reaches the TARGET depends on their two dials relative to
+    // each other, which we never know, so this test can only speak
+    // to our own hop.
+    //
+    // Only the Out verdict rejects. Unknown -- no frequency, a stale
+    // one, a station named only in someone else's HEARING list, or
+    // our own dial not known -- has NO effect on eligibility or on
+    // ranking. In-passband earns no bonus either: hearing them
+    // proves nothing about them hearing us. The book rebuilds before
+    // every move, so a QSY between moves re-judges every anchor.
+    //
+    // FRESHNESS WINDOW IS THE ROUTING ONE, 15 minutes (operator ruling
+    // 2026-09-11), not the map's 60: excluding a live candidate needs
+    // fresher evidence than showing a last-known dot does. Older than
+    // that the verdict is Unknown and the anchor stays in.
+    if (m_spotMapWindow) {
+        for (auto it = g_book.firstHops.begin();
+             it != g_book.firstHops.end();) {
+            // Transmit evidence only (ruling c: can WE hear THEM);
+            // PSKR always allowed (the book uses it regardless of the
+            // map's display toggle).
+            if (m_spotMapWindow->passbandVerdict(
+                    m_reach.band, *it, JS8_FREQ_STALE_ROUTE_SECS,
+                    /*includeRx=*/false, /*pskrAllowed=*/true) ==
+                SpotMapWindow::Passband::Out) {
+                reachLog(QStringLiteral(
+                             "    first hop %1 REJECTED: known to be "
+                             "transmitting outside our passband")
+                             .arg(*it));
+                it = g_book.firstHops.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // #173 named-target screen (attempt.py:195-210): warn, never
     // refuse -- BOTH halves this time (audit item 37).
     auto const ts = g_book.stations.value(T);
