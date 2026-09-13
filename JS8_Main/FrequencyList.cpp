@@ -547,7 +547,7 @@ QVariant FrequencyList_v3::impl::headerData(int section,
             header = tr("Description");
             break;
         case group_column:
-            header = tr("Auto-route group");
+            header = tr("Group (optional)");
             break;
         }
     } else if (Qt::ToolTipRole == role && Qt::Horizontal == orientation &&

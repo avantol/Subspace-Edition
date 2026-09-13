@@ -1524,6 +1524,18 @@ Configuration::impl::impl(Configuration *self, QDir const &temp_directory,
         FrequencyList_v3::frequency_column, Qt::AscendingOrder);
     ui_->frequencies_table_view->setColumnHidden(
         FrequencyList_v3::frequency_mhz_column, true);
+    {
+        // [TODO #237] default width = the column title plus a little
+        // padding (the title is the model's, one authority)
+        auto const title =
+            next_frequencies_
+                .headerData(FrequencyList_v3::group_column, Qt::Horizontal)
+                .toString();
+        auto const header = ui_->frequencies_table_view->horizontalHeader();
+        ui_->frequencies_table_view->setColumnWidth(
+            FrequencyList_v3::group_column,
+            header->fontMetrics().horizontalAdvance(title) + 24);
+    }
 
     // delegates
     auto frequencies_item_delegate = new QStyledItemDelegate{this};

@@ -65,8 +65,8 @@ class FrequencyList_v3 final : public QSortFilterProxyModel {
         mode_column,
         frequency_column,
         frequency_mhz_column,
-        description_column,
         group_column,
+        description_column,
         SENTINAL
     };
 
