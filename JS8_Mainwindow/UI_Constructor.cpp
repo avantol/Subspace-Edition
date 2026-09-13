@@ -541,12 +541,18 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // not in the map/visible and does not come back.
     connect(this, &UI_Constructor::finished, this, [this]() {
         QStringList restore;
+        // [operator field-caught 2026-09-13, Linux] x()/y() + move()
+        // crept the windows upward by one title bar per restart: the
+        // window manager's frame extents are unknown when move() runs
+        // on a window that is not yet mapped. saveGeometry/
+        // restoreGeometry carry the frame margins and screen bounds
+        // themselves -- Qt's own answer to exactly this.
         for (auto const &w : m_stationMonitors)
             if (!w.isNull() && w->isVisible())
-                restore << QStringLiteral("%1;%2;%3")
-                               .arg(w->station())
-                               .arg(w->x())
-                               .arg(w->y());
+                restore << QStringLiteral("%1;%2")
+                               .arg(w->station(),
+                                    QString::fromLatin1(
+                                        w->saveGeometry().toBase64()));
         m_settings->beginGroup("StationMonitor");
         m_settings->setValue("Restore", restore);
         m_settings->endGroup();
@@ -565,11 +571,21 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         m_settings->endGroup();
         for (QString const &r : restore) {
             QStringList const parts = r.split(QLatin1Char(';'));
-            if (parts.size() != 3 || parts[0].isEmpty())
+            if (parts.size() < 2 || parts[0].isEmpty())
                 continue;
             openStationMonitor(parts[0]);
-            if (auto const w = m_stationMonitors.value(parts[0]))
+            auto const w = m_stationMonitors.value(parts[0]);
+            if (!w)
+                continue;
+            if (parts.size() == 2) {
+                // current form: station;<saveGeometry() base64>
+                w->restoreGeometry(
+                    QByteArray::fromBase64(parts[1].toLatin1()));
+            } else {
+                // pre-2026-09-13 form: station;x;y -- one last time,
+                // rewritten in the new form at exit
                 w->move(parts[1].toInt(), parts[2].toInt());
+            }
         }
     });
     m_spotMapWindow->setStation(m_config.my_callsign(), m_config.my_grid());
