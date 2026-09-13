@@ -50,6 +50,12 @@ class FrequencyList_v3 final : public QSortFilterProxyModel {
         Mode mode_;
         Region region_;
         QString description_;
+        // [TODO #237] Optional group auto-route polls INSTEAD of
+        // @ALLCALL while the dial sits on this entry. NOT part of the
+        // QDataStream item format (which is frozen by the metatype name
+        // stored in every user's settings file); persisted beside the
+        // list as the "AutoRouteGroups" map, see Configuration.cpp.
+        QString group_;
     };
     using FrequencyItems = QList<Item>;
     using BandSet = QSet<QString>;
@@ -60,6 +66,7 @@ class FrequencyList_v3 final : public QSortFilterProxyModel {
         frequency_column,
         frequency_mhz_column,
         description_column,
+        group_column,
         SENTINAL
     };
 
@@ -141,7 +148,8 @@ class FrequencyList_v3 final : public QSortFilterProxyModel {
 inline bool operator==(FrequencyList_v3::Item const &lhs,
                        FrequencyList_v3::Item const &rhs) {
     return lhs.frequency_ == rhs.frequency_ && lhs.region_ == rhs.region_ &&
-           lhs.mode_ == rhs.mode_ && lhs.description_ == rhs.description_;
+           lhs.mode_ == rhs.mode_ && lhs.description_ == rhs.description_ &&
+           lhs.group_ == rhs.group_;
 }
 
 QDataStream &operator<<(QDataStream &, FrequencyList_v3::Item const &);

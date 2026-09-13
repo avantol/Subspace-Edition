@@ -53,9 +53,21 @@ QDebug operator<<(QDebug debug, FrequencyList_v3::Item const &item) {
 }
 #endif
 
+// [TODO #237] The stream format is FROZEN at four fields: the metatype
+// name "FrequencyList_v3::Item" is written into every existing settings
+// file, so a fifth streamed field would misread every user's saved
+// list. group_ travels beside the list instead (Configuration.cpp,
+// "AutoRouteGroups").
 QDataStream &operator<<(QDataStream &os, FrequencyList_v3::Item const &item) {
     return os << item.frequency_ << item.mode_ << item.region_ << item.description_;
 }
+
+namespace {
+QString group_column_tooltip() {
+    return QObject::tr("Optional: Use this group for polling for available "
+                       "stations when using Auto-route");
+}
+} // namespace
 
 QDataStream &operator>>(QDataStream &is, FrequencyList_v3::Item &item) {
     return is >> item.frequency_ >> item.mode_ >> item.region_ >> item.description_;
@@ -420,6 +432,26 @@ QVariant FrequencyList_v3::impl::data(QModelIndex const &index,
                 break;
             }
             break;
+
+        case group_column:
+            switch (role) {
+            case SortRole:
+            case Qt::DisplayRole:
+            case Qt::EditRole:
+            case Qt::AccessibleTextRole:
+                item = frequency_item.group_;
+                break;
+
+            case Qt::ToolTipRole:
+            case Qt::AccessibleDescriptionRole:
+                item = group_column_tooltip();
+                break;
+
+            case Qt::TextAlignmentRole:
+                item = Qt::AlignCenter;
+                break;
+            }
+            break;
         }
     }
     return item;
@@ -477,6 +509,15 @@ bool FrequencyList_v3::impl::setData(QModelIndex const &model_index,
                 changed = true;
             }
         } break;
+
+        case group_column: {
+            auto group = value.toString().trimmed().toUpper();
+            if (group != item.group_) {
+                item.group_ = group;
+                Q_EMIT dataChanged(model_index, model_index, roles);
+                changed = true;
+            }
+        } break;
         }
     }
 
@@ -505,7 +546,13 @@ QVariant FrequencyList_v3::impl::headerData(int section,
         case description_column:
             header = tr("Description");
             break;
+        case group_column:
+            header = tr("Auto-route group");
+            break;
         }
+    } else if (Qt::ToolTipRole == role && Qt::Horizontal == orientation &&
+               group_column == section) {
+        header = group_column_tooltip();
     } else {
         header = QAbstractTableModel::headerData(section, orientation, role);
     }

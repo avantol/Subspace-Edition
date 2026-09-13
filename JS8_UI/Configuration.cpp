@@ -211,6 +211,9 @@ const char *const versionedFrequenciesSettingsKey =
 
 const char *const v2FrequenciesSettingsKey =
     "FrequenciesForRegionModes_01";
+
+// [TODO #237] per-entry auto-route group, keyed by frequency Hz text
+const char *const autoRouteGroupsSettingsKey = "AutoRouteGroups";
 }// namespace
 
 //
@@ -537,6 +540,10 @@ class Configuration::impl final : public QDialog {
     IARURegions regions_;
     IARURegions::Region region_;
     Modes modes_;
+    // [TODO #237] choices for the Frequencies table's group column:
+    // blank + My Groups, refreshed whenever the dialog opens
+    QStringListModel auto_route_groups_model_;
+    void refresh_auto_route_groups_model();
     FrequencyList_v3 frequencies_;
     FrequencyList_v3 next_frequencies_;
     StationList stations_;
@@ -1528,6 +1535,11 @@ Configuration::impl::impl(Configuration *self, QDir const &temp_directory,
     ui_->frequencies_table_view->setItemDelegateForColumn(
         FrequencyList_v3::mode_column,
         new ForeignKeyDelegate{&modes_, 0, this});
+    // [TODO #237] dropdown of blank + My Groups for the group column
+    refresh_auto_route_groups_model();
+    ui_->frequencies_table_view->setItemDelegateForColumn(
+        FrequencyList_v3::group_column,
+        new ForeignKeyDelegate{&auto_route_groups_model_, 0, this});
 
     // actions
     frequency_delete_action_ =
@@ -1949,6 +1961,7 @@ void Configuration::impl::initialize_models() {
     next_macros_.setStringList(macros_.stringList());
     next_frequencies_.frequency_list(frequencies_.frequency_list());
     next_stations_.station_list(stations_.station_list());
+    refresh_auto_route_groups_model(); // [TODO #237] groups may have changed
 
     //
     // setup notifications table view
@@ -2299,8 +2312,16 @@ void Configuration::impl::read_settings() {
     if (settings_->contains(versionedFrequenciesSettingsKey)) {
         auto const &v = settings_->value(versionedFrequenciesSettingsKey);
         if (v.isValid()) {
-            frequencies_.frequency_list(
-                v.value<FrequencyList_v3::FrequencyItems>());
+            auto items = v.value<FrequencyList_v3::FrequencyItems>();
+            // [TODO #237] per-entry auto-route group, stored beside
+            // the list (the item stream format is frozen, see
+            // FrequencyList.cpp). Key = frequency in Hz as text.
+            auto const groups =
+                settings_->value(autoRouteGroupsSettingsKey).toMap();
+            for (auto &it : items)
+                it.group_ = groups.value(QString::number(it.frequency_))
+                                .toString();
+            frequencies_.frequency_list(std::move(items));
         } else {
             frequencies_.reset_to_defaults();
         }
@@ -2618,6 +2639,14 @@ void Configuration::impl::write_settings() {
     settings_->setValue("Macros", macros_.stringList());
     settings_->setValue(versionedFrequenciesSettingsKey,
                         QVariant::fromValue(frequencies_.frequency_list()));
+    {
+        // [TODO #237] group per entry, beside the list (see load)
+        QVariantMap groups;
+        for (auto const &it : frequencies_.frequency_list())
+            if (!it.group_.isEmpty())
+                groups.insert(QString::number(it.frequency_), it.group_);
+        settings_->setValue(autoRouteGroupsSettingsKey, groups);
+    }
     settings_->setValue("stations",
                         QVariant::fromValue(stations_.station_list()));
     settings_->setValue("Rig", rig_params_.rig_name);
@@ -3916,6 +3945,13 @@ void Configuration::impl::on_add_macro_push_button_clicked(bool /* checked */) {
         next_macros_.setData(index, ui_->add_macro_line_edit->text().toUpper());
         ui_->add_macro_line_edit->clear();
     }
+}
+
+// [TODO #237] blank first so an entry can be cleared, then My Groups
+void Configuration::impl::refresh_auto_route_groups_model() {
+    QStringList choices{QString{}};
+    choices << my_groups_;
+    auto_route_groups_model_.setStringList(choices);
 }
 
 void Configuration::impl::delete_frequencies() {

@@ -274,10 +274,24 @@ class UI_Constructor : public QMainWindow {
     QString lookupCallInCompoundCache(QString const &call);
     void cacheActivity(QString key);
     void restoreActivity(QString key);
-    void clearActivity();
+    // [TODO #235 phase 1] keepOutgoingBox: a within-band move to or
+    // from a standard entry clears the tables but must not wipe the
+    // operator's half-typed message; a band change keeps clearing it.
+    void clearActivity(bool keepOutgoingBox = false);
     void clearBandActivity();
-    void clearRXActivity();
+    void clearRXActivity(bool keepOutgoingBox = false);
     void clearCallActivity();
+    // [TODO #235 phase 1] ONE authority for "on a standard frequency":
+    // the exact Hz of a JS8 entry in the Frequencies table, as text;
+    // empty when the dial is anywhere else.
+    QString standardEntryKey(Frequency dial) const;
+    // [TODO #235 phase 1] the ONE place the activity snapshot is taken,
+    // the tables cleared, and the snapshot restored, on every change of
+    // standard entry (within-band or with a band change).
+    void applyEntryTransition(QString const &entryKey, bool bandChanged);
+    // [TODO #237] the current entry's optional auto-route group, or
+    // empty when off-entry or none configured.
+    QString autoRouteGroupForDial() const;
     void createGroupCallsignTableRows(QTableWidget *table,
                                       const QString &selectedCall,
                                       bool &showIconColumn);
@@ -1052,6 +1066,7 @@ class UI_Constructor : public QMainWindow {
     Transceiver::TransceiverState m_rigState;
     Frequency m_lastDialFreq = 0;
     QString m_lastBand;
+    QString m_lastEntryKey; // [TODO #235 phase 1] see standardEntryKey
 
     Detector *m_detector;
     unsigned m_FFTSize = 0;
@@ -1789,11 +1804,11 @@ class UI_Constructor : public QMainWindow {
     qint64 m_l2DedupLastPurge = 0;
 #endif
 
+    // [TODO #235 phase 1] keyed by standard-entry Hz text (was band);
+    // the band table is NOT cached: it stays blank on return (rule 4)
     QMap<QString, QMap<QString, CallDetail>>
-        m_callActivityBandCache; // band -> call activity
-    QMap<QString, QMap<int, QList<ActivityDetail>>>
-        m_bandActivityBandCache;              // band -> band activity
-    QMap<QString, QString> m_rxTextBandCache; // band -> rx text
+        m_callActivityBandCache; // entry -> call activity
+    QMap<QString, QString> m_rxTextBandCache; // entry -> rx text
     QMap<QString, QMap<QString, QSet<QString>>>
         m_heardGraphOutgoingBandCache; // band -> heard in
     QMap<QString, QMap<QString, QSet<QString>>>

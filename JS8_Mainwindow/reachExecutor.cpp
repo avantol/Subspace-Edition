@@ -1803,8 +1803,25 @@ void UI_Constructor::reachNextMove() {
     // so collapsed trust or floor-grade booked routes escalate to
     // asking the band NATURALLY, and a strong fresh booked route
     // keeps the 98 seconds in hand.
-    if (!overBudget &&
-        !m_reach.triedAt.contains(QStringLiteral("shout"))) {
+    // [TODO #237] The current standard entry may name a group to poll
+    // INSTEAD of @ALLCALL (stock JS8Call's "Do not participate in the
+    // @ALLCALL group" silently drops our @ALLCALL shout at such
+    // stations, so the executor cannot tell "nobody heard the target"
+    // from "nobody listens"). Order: group shout first, keyed
+    // "shout@GROUP"; if the planner comes back here -- no usable
+    // relay candidate came of it (operator ruling 2026-09-13) -- the
+    // @ALLCALL shout follows under its own key, exactly as before.
+    QString shoutTarget = QStringLiteral("@ALLCALL");
+    QString shoutKey = QStringLiteral("shout");
+    {
+        QString const grp = autoRouteGroupForDial();
+        if (!grp.isEmpty() &&
+            !m_reach.triedAt.contains(QStringLiteral("shout") + grp)) {
+            shoutTarget = grp;
+            shoutKey = QStringLiteral("shout") + grp;
+        }
+    }
+    if (!overBudget && !m_reach.triedAt.contains(shoutKey)) {
         double const trust = bandTrust(m_reach.band, now);
         double const qAns = 0.29;              // measured answer rate
         double const backUnknown = 0.311 * 0.7;
@@ -1897,10 +1914,14 @@ void UI_Constructor::reachNextMove() {
                               QString::number(trust, 'f', 2),
                               10 * trust / 0.95, w);
             m_reach.kind = QStringLiteral("shout");
-            m_reach.triedAt.insert(QStringLiteral("shout"), now);
+            m_reach.triedAt.insert(shoutKey, now);
+            if (shoutTarget != QLatin1String("@ALLCALL"))
+                reachLog(QStringLiteral("    polling %1 (this entry's "
+                                        "auto-route group) before "
+                                        "@ALLCALL").arg(shoutTarget));
             reachExplain(&m);
-            reachSend(QStringLiteral("%1: @ALLCALL QUERY CALL %2?")
-                          .arg(me, T));
+            reachSend(QStringLiteral("%1: %2 QUERY CALL %3?")
+                          .arg(me, shoutTarget, T));
             return;
         }
         reachLog(QStringLiteral("    shout waits: composite %1/1000s "

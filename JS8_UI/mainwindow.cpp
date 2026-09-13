@@ -1630,7 +1630,15 @@ void UI_Constructor::updateCurrentBand() {
     auto dial_frequency = dialFrequency();
     auto const &band_name = m_config.bands()->find(dial_frequency);
 
-    if (m_lastBand == band_name) {
+    // [TODO #235 phase 1] Two transitions are watched here: the band
+    // (bandhalt, graph/map band, status) and the STANDARD ENTRY (the
+    // activity snapshot). A within-band move off or onto an entry is
+    // an entry transition with no band transition.
+    QString const entryKey = standardEntryKey(dial_frequency);
+    bool const bandChanged = m_lastBand != band_name;
+    if (!bandChanged) {
+        if (m_lastEntryKey != entryKey)
+            applyEntryTransition(entryKey, /*bandChanged=*/false);
         return;
     }
 
@@ -1664,13 +1672,10 @@ void UI_Constructor::updateCurrentBand() {
         m_congestionSlots.clear();
     }
 
-    cacheActivity(m_lastBand);
-
-    // clear activity on startup if asked or on when the previous band is not
-    // empty
-    if (m_config.reset_activity() || !m_lastBand.isEmpty()) {
-        clearActivity();
-    }
+    // [TODO #235 phase 1] the activity snapshot is keyed by standard
+    // entry, one authority: the band change rides the same transition
+    // (halt above, band bookkeeping below)
+    applyEntryTransition(entryKey, /*bandChanged=*/true);
 
     m_wideGraph->setBand(band_name);
     m_spotMapWindow->setBand(band_name);
@@ -1724,7 +1729,7 @@ void UI_Constructor::updateCurrentBand() {
 
     clearSelection();
     band_changed();
-    restoreActivity(m_lastBand);
+    // restore happened in applyEntryTransition (entry-keyed snapshot)
 }
 
 void UI_Constructor::displayDialFrequency() {
@@ -2979,6 +2984,19 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
 
     // don't log relay calls
     if (d.call.contains(">")) {
+        return;
+    }
+
+    // [TODO #235 phase 1, rule 9] The call list describes THIS dial.
+    // A decode stamped with another dial (a decoder cycle that began
+    // before a retune) must not land in the freshly cleared list; its
+    // SNR and offset were measured somewhere else. One choke point for
+    // every producer (decodes, commands, spots).
+    if (d.dial > 0 &&
+        static_cast<Frequency>(d.dial) != dialFrequency()) {
+        qCDebug(mainwindow_js8) << "[ENTRY] call" << d.call
+                                << "dropped: decode dial" << d.dial
+                                << "!= dial" << dialFrequency();
         return;
     }
 
@@ -4883,9 +4901,12 @@ void UI_Constructor::stopTx2() {
 
 void UI_Constructor::TxAgain() { auto_tx_mode(true); }
 
+// [TODO #235 phase 1] The snapshot is keyed by the standard entry the
+// dial was sitting on (exact Hz), not by band. The band table is not
+// part of it: on return it stays blank (rule 4), because its offsets
+// were measured at that dial and anything since has aged out anyway.
 void UI_Constructor::cacheActivity(QString key) {
     m_callActivityBandCache[key] = m_callActivity;
-    m_bandActivityBandCache[key] = m_bandActivity;
     m_rxTextBandCache[key] = ui->textEditRX->toHtml();
     m_heardGraphIncomingBandCache[key] = m_heardGraphIncoming;
     m_heardGraphOutgoingBandCache[key] = m_heardGraphOutgoing;
@@ -4894,10 +4915,6 @@ void UI_Constructor::cacheActivity(QString key) {
 void UI_Constructor::restoreActivity(QString key) {
     if (m_callActivityBandCache.contains(key)) {
         m_callActivity = m_callActivityBandCache[key];
-    }
-
-    if (m_bandActivityBandCache.contains(key)) {
-        m_bandActivity = m_bandActivityBandCache[key];
     }
 
     if (m_rxTextBandCache.contains(key)) {
@@ -4915,7 +4932,58 @@ void UI_Constructor::restoreActivity(QString key) {
     displayActivity(true);
 }
 
-void UI_Constructor::clearActivity() {
+// [TODO #235 phase 1] "On a standard frequency" means EXACT (operator
+// 2026-09-11: "we're all on CAT control"): the dial is set by CAT to
+// the entry's Hz, so any move off it, 250 Hz or 10 Hz, is leaving.
+// JS8 entries only; region is not consulted (an entry is an entry).
+QString UI_Constructor::standardEntryKey(Frequency dial) const {
+    if (dial <= 0)
+        return QString{};
+    for (auto const &it : m_config.frequencies()->frequency_list())
+        if (it.mode_ == Modes::JS8 && it.frequency_ == dial)
+            return QString::number(dial);
+    return QString{};
+}
+
+// [TODO #237] first JS8 entry on the exact dial that carries a group
+QString UI_Constructor::autoRouteGroupForDial() const {
+    auto const dial = const_cast<UI_Constructor *>(this)->dialFrequency();
+    for (auto const &it : m_config.frequencies()->frequency_list())
+        if (it.mode_ == Modes::JS8 && it.frequency_ == dial &&
+            !it.group_.isEmpty())
+            return it.group_;
+    return QString{};
+}
+
+// [TODO #235 phase 1] Leaving a standard entry: snapshot its call list,
+// RX pane and heard graphs, then clear band table + RX pane + call
+// list (offsets and SNRs measured at that dial mean nothing at the new
+// one). Arriving at an entry: clear again, then restore that entry's
+// snapshot (call list with its ORIGINAL timestamps, so the ages shown
+// are true; RX pane; heard graphs). Band table stays blank on return
+// (rule 4). Off-entry to off-entry never gets here (same empty key).
+// Startup (no previous band) clears only when the operator asked for
+// it, exactly as the band path always did.
+void UI_Constructor::applyEntryTransition(QString const &entryKey,
+                                          bool bandChanged) {
+    bool const startup = m_lastBand.isEmpty() && m_lastEntryKey.isEmpty();
+    qWarning() << "[ENTRY] transition"
+               << (m_lastEntryKey.isEmpty() ? QStringLiteral("off-entry")
+                                            : m_lastEntryKey)
+               << "->"
+               << (entryKey.isEmpty() ? QStringLiteral("off-entry")
+                                      : entryKey)
+               << "band changed=" << bandChanged;
+    if (!m_lastEntryKey.isEmpty())
+        cacheActivity(m_lastEntryKey);
+    if (!startup || m_config.reset_activity())
+        clearActivity(/*keepOutgoingBox=*/!bandChanged);
+    m_lastEntryKey = entryKey;
+    if (!entryKey.isEmpty())
+        restoreActivity(entryKey);
+}
+
+void UI_Constructor::clearActivity(bool keepOutgoingBox) {
     qCDebug(mainwindow_js8) << "clear activity";
 
     m_callSeenHeartbeat.clear();
@@ -4931,7 +4999,7 @@ void UI_Constructor::clearActivity() {
 
 
     clearBandActivity();
-    clearRXActivity();
+    clearRXActivity(keepOutgoingBox);
     clearCallActivity();
 
     displayActivity(true);
@@ -4946,13 +5014,18 @@ void UI_Constructor::clearBandActivity() {
     displayBandActivity();
 }
 
-void UI_Constructor::clearRXActivity() {
+void UI_Constructor::clearRXActivity(bool keepOutgoingBox) {
     qCDebug(mainwindow_js8) << "clear rx activity";
 
     m_rxFrameBlockNumbers.clear();
     m_rxActivityQueue.clear();
 
     ui->textEditRX->clear();
+
+    // [TODO #235 phase 1] a dial step off a standard entry is not a
+    // reason to lose a half-typed message
+    if (keepOutgoingBox)
+        return;
 
     // make sure to clear the read only and transmitting flags so there's always
     // a "way out"

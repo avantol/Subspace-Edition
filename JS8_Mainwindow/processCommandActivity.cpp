@@ -952,9 +952,14 @@ void UI_Constructor::processCommandActivity() {
             // space!) and would have silenced single-frame commands
             // entirely (caught in the side-effect sweep,
             // 2026-08-16).
+            // [TODO #235 phase 1, rule 9] not displayed when the
+            // decode's dial is not the current dial (see
+            // processDecodeEvent); processing continues (map, replies)
             if (!d.isBuffered &&
                 std::abs(d.offset - freq()) <=
-                    JS8::Submode::rxThreshold(d.submode)) {
+                    JS8::Submode::rxThreshold(d.submode) &&
+                !(d.dial > 0 &&
+                  static_cast<Frequency>(d.dial) != dialFrequency())) {
                 displayTextForFreq(text, d.offset, d.utcTimestamp, false,
                                    true, false, d.submode);
             }
@@ -1014,9 +1019,12 @@ void UI_Constructor::processCommandActivity() {
                 */
             }
 
-            // log it to the display!
-            displayTextForFreq(ad.text, ad.offset, ad.utcTimestamp, false, true,
-                               false, ad.submode);
+            // log it to the display! [TODO #235 phase 1, rule 9]
+            // unless the decode's dial is not the current dial
+            if (!(d.dial > 0 &&
+                  static_cast<Frequency>(d.dial) != dialFrequency()))
+                displayTextForFreq(ad.text, ad.offset, ad.utcTimestamp,
+                                   false, true, false, ad.submode);
 
             /*
             // and send it to the network in case we want to interact with it

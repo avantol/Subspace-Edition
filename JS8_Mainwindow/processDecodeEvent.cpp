@@ -529,6 +529,20 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                         holdEarlyTextFrame(d);
                     }
 
+                    // [TODO #235 phase 1, rule 9] a decode stamped
+                    // with another dial (cycle began before a retune)
+                    // stays out of the band table and RX pane: its
+                    // offset belongs to the old dial. Message buffers
+                    // above are untouched (assembly, not display).
+                    bool const staleDial =
+                        d.dial > 0 &&
+                        static_cast<Frequency>(d.dial) != dialFrequency();
+                    if (staleDial) {
+                        qCWarning(mainwindow_js8)
+                            << "[ENTRY] band-row dropped: decode dial"
+                            << d.dial << "!= dial" << dialFrequency()
+                            << "text=" << d.text.left(24);
+                    } else {
                     m_rxActivityQueue.append(d);
                     // [BANDROW] one line per band-activity append —
                     // decodes are sparse, warn-level is fine.
@@ -538,6 +552,7 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                         << "buffered=" << d.isBuffered
                         << "text=" << d.text.left(24);
                     m_bandActivity[offset].append(d);
+                    }
                     // Build 145: cap by submode class. Subspace and
                     // Standard each keep an independent 10-frame
                     // history within an offset bucket. Without this
