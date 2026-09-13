@@ -289,6 +289,11 @@ class UI_Constructor : public QMainWindow {
     // the tables cleared, and the snapshot restored, on every change of
     // standard entry (within-band or with a band change).
     void applyEntryTransition(QString const &entryKey, bool bandChanged);
+    // [TODO #235 phase 1, rule 9] ONE predicate for "this decode's dial
+    // is the dial the display tables describe". True when either side
+    // is unknown (0): the settings restore at startup runs before the
+    // rig state exists, and an unstamped decode carries no verdict.
+    bool decodeDialIsCurrent(int decodeDial);
     // [TODO #237] the current entry's optional auto-route group, or
     // empty when off-entry or none configured.
     QString autoRouteGroupForDial() const;

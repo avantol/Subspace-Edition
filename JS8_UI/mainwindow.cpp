@@ -2992,8 +2992,7 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
     // before a retune) must not land in the freshly cleared list; its
     // SNR and offset were measured somewhere else. One choke point for
     // every producer (decodes, commands, spots).
-    if (d.dial > 0 &&
-        static_cast<Frequency>(d.dial) != dialFrequency()) {
+    if (!decodeDialIsCurrent(d.dial)) {
         qCDebug(mainwindow_js8) << "[ENTRY] call" << d.call
                                 << "dropped: decode dial" << d.dial
                                 << "!= dial" << dialFrequency();
@@ -4943,6 +4942,15 @@ QString UI_Constructor::standardEntryKey(Frequency dial) const {
         if (it.mode_ == Modes::JS8 && it.frequency_ == dial)
             return QString::number(dial);
     return QString{};
+}
+
+// [TODO #235 phase 1, rule 9] see mainwindow.h. The startup restore of
+// the saved call list (SsCallActivity) runs in readSettings before any
+// rig state exists -- dialFrequency() is 0 there -- and must pass.
+bool UI_Constructor::decodeDialIsCurrent(int decodeDial) {
+    auto const dial = dialFrequency();
+    return decodeDial <= 0 || dial == 0 ||
+           static_cast<Frequency>(decodeDial) == dial;
 }
 
 // [TODO #237] first JS8 entry on the exact dial that carries a group

@@ -534,9 +534,7 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                     // stays out of the band table and RX pane: its
                     // offset belongs to the old dial. Message buffers
                     // above are untouched (assembly, not display).
-                    bool const staleDial =
-                        d.dial > 0 &&
-                        static_cast<Frequency>(d.dial) != dialFrequency();
+                    bool const staleDial = !decodeDialIsCurrent(d.dial);
                     if (staleDial) {
                         qCWarning(mainwindow_js8)
                             << "[ENTRY] band-row dropped: decode dial"
