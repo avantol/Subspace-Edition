@@ -1429,11 +1429,15 @@ void UI_Constructor::processCommandActivity() {
                 // exactly as before. The form itself is still logged,
                 // displayed and delivered over the API the same way;
                 // only the confirmation frame is withheld.
-                if (isMagnetFormText(d.text)) {
+                // [operator 2026-09-14] PULL only. A relayed form
+                // SUBMISSION keeps the ACK: it is the sender's only
+                // delivery confirmation (the earlier gate on any
+                // F!701x text withheld it for submissions too).
+                if (isMagnetFormPull(d.text)) {
                     reply.clear();
                     qCWarning(mainwindow_js8)
                         << "[ACKQUIET #222] relay ACK withheld: payload"
-                        << "is an @MAGNET form, which answers itself"
+                        << "is an @MAGNET form PULL, which answers itself"
                         << "path=" << d.relayPath
                         << "text=" << d.text.left(40);
                 } else {

@@ -1933,6 +1933,10 @@ class UI_Constructor : public QMainWindow {
     // ACK suppression (processCommandActivity.cpp). If @MAGNET ever
     // changes the form wire shape, this is the only line to touch.
     static bool isMagnetFormText(QString const &text);
+    // [#222, operator 2026-09-14] the relay-target ACK is withheld ONLY
+    // for a form PULL ("E? F!701x" -- the form is its own reply); a
+    // form SUBMISSION keeps the ACK, it is the sender's confirmation.
+    static bool isMagnetFormPull(QString const &text);
     QString callsignSelected(bool useInputText = false);
     bool isRecentOffset(int submode, int offset);
     void markOffsetRecent(int offset);

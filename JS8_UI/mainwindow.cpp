@@ -10801,6 +10801,15 @@ bool UI_Constructor::isMagnetFormText(QString const &text) {
            text.contains(QLatin1String("F!701C"));
 }
 
+// [#222, operator 2026-09-14] A pull is SuperSpotter's Expect request:
+// "E? F!701x" (relayed: "E? F!701x *DE* ORIGIN"). A submission carries
+// the form code without "E?" and gets its ACK back.
+bool UI_Constructor::isMagnetFormPull(QString const &text) {
+    static QRegularExpression const re(
+        QStringLiteral("\\bE\\?\\s+F!701[ABC]\\b"));
+    return re.match(text).hasMatch();
+}
+
 bool UI_Constructor::isGroupCallIncluded(const QString &text) {
     return m_config.my_groups().contains(text);
 }
