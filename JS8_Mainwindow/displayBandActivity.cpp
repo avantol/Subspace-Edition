@@ -16,10 +16,15 @@ QString UI_Constructor::frameFromCall(QString const &text) {
     int colonPos = text.indexOf(": ");
     if (colonPos > 0 && colonPos <= 15) {
         QString candidate = text.left(colonPos).trimmed();
-        // Valid callsign: 3-15 chars, has letter and digit
-        if (candidate.length() >= 3 && candidate.length() <= 15
-            && candidate.contains(QRegularExpression("[A-Z]"))
-            && candidate.contains(QRegularExpression("[0-9]"))) {
+        // [operator field-caught 2026-09-14] "2,KCNA: N. KOREA ..." --
+        // the remarks field of a CommStat report, mid-message -- was
+        // attributed to a station "2,KCNA" because the old test was
+        // only "3-15 chars with a letter and a digit". The ONE
+        // authority for callsign shape is Varicode::isValidCallsign
+        // (the same test the add-callsign dialog applies), which a
+        // comma, a period or a bare word never passes.
+        if (candidate.length() >= 3 && candidate.length() <= 15 &&
+            Varicode::isValidCallsign(candidate, nullptr)) {
             return candidate;
         }
     }
