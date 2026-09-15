@@ -5194,9 +5194,18 @@ void UI_Constructor::displayTextForFreq(QString text, int freq, QDateTime date,
         // station — composed onto its header line; every station
         // above fragmented to a standalone line. Log-proven
         // 2026-08-16 21:19Z (band activity clean, convo fragmented).
+        // [#242 stalekey 2026-09-15] ... and every OTHER key this line
+        // was registered under. Each frame registers its own exact
+        // offset, so a message whose frames wandered 1301/1301/1300
+        // left "1301 -> this line" behind when it closed on 1300; a
+        // later message's frame at exactly 1301 then hit the finished
+        // line and split onto a new one (log-proven, WM8Q 02:49/02:53Z).
+        // One rule: a closed line owns no keys.
         m_rxFrameBlockNumbers.remove(freq);
         m_rxFrameBlockNumbers.remove(lowFreq);
         m_rxFrameBlockNumbers.remove(highFreq);
+        m_rxFrameBlockNumbers.removeIf(
+            [block](auto const &it) { return it.value() == block; });
     } else {
         m_rxFrameBlockNumbers.insert(freq, block);
         m_rxFrameBlockNumbers.insert(lowFreq, block);

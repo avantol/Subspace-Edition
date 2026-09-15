@@ -31,7 +31,7 @@ QString program_title() {
     return QString{"%1 \"Tranya\" (v4.1.0.483 ASAN) by WM8Q"}
         .arg(QCoreApplication::applicationName());
 #else
-    return QString{"%1 \"Tranya\" (v4.1.0.483 formack2) by WM8Q"}
+    return QString{"%1 \"Tranya\" (v4.1.0.483 stalekey) by WM8Q"}
         .arg(QCoreApplication::applicationName());
 #endif
 }
