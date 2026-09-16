@@ -2493,6 +2493,14 @@ Varicode::buildMessageFrames(QString const &mycall, QString const &mygrid,
                         }
                     }
 
+                    // [#243 2026-09-15, log-proven] The receiver hashes
+                    // the rstripped body (processBufferedActivity), so a
+                    // trailing space typed by the operator was hashed
+                    // here, lost on the wire, and the message was always
+                    // rejected at the target ("7NT" = checksum of the
+                    // text WITH the space, "9V0" without). Same in stock
+                    // 2.2.0. Hash what will actually arrive.
+                    line = Varicode::rstrip(line);
                     if (checksumSize == 32) {
                         line = line + " " + Varicode::checksum32(line);
                     } else if (checksumSize == 16) {

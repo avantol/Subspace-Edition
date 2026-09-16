@@ -3024,6 +3024,24 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
         if (d.grid.isEmpty() && !old.grid.isEmpty()) {
             d.grid = old.grid;
         }
+        // [#244 2026-09-15, log-proven] A relay-learned entry (snr -64,
+        // "through" set: every callsign in a terminal relay's path,
+        // the relay station included) carries no reading. It may ADD
+        // a station we never heard; it must never degrade one we did:
+        // keep the measured SNR, the offset it was measured at, and
+        // the direct (empty) "through". Field: W8UFO heard at -1 dB,
+        // re-logged -64 one second later when its relay assembled,
+        // and "QUERY CALL W8UFO?" was answered "YES (8M)" with no SNR.
+        // Same omission in stock 2.2.0 ("update (keep grid)" kept only
+        // the grid).
+        if (d.snr <= -64 && !d.through.isEmpty() && old.snr > -64) {
+            d.snr = old.snr;
+            d.offset = old.offset;
+            d.through = old.through;
+            // the reading and the time it was taken belong together:
+            // "YES +05 (3m)" must describe the same decode
+            d.utcTimestamp = old.utcTimestamp;
+        }
         if (!d.ackTimestamp.isValid() && old.ackTimestamp.isValid()) {
             d.ackTimestamp = old.ackTimestamp;
         }
