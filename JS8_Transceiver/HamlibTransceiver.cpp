@@ -982,7 +982,21 @@ void HamlibTransceiver::poll() {
     pbwidth_t w;
     split_t s;
 
-    if (get_vfo_works_ && rig_->caps->get_vfo) {
+    // [#245 pttquiet 2026-09-16] No VFO/split/frequency/mode reads while
+    // the rig is keyed -- ours (do_ptt sets it) or anyone's (get_ptt
+    // below keeps reporting, so the reads resume the poll after the
+    // key drops). Inherited code read frequency and mode during PTT
+    // whenever not in split (the normal JS8 case); a rig that does not
+    // answer CAT while keyed (IC-706MKIIG, CI-V) hit the 1-s port
+    // timeout once per second for the whole transmission -- 1,310
+    // timeouts in 26 h at WM8Q/P, 71 of 72 clusters starting 1 s after
+    // transmit() -- and a slow rig or flrig queues the PTT-off command
+    // behind the stalled read.
+    bool const keyed = state().ptt();
+    if (keyed)
+        TRACE_CAT_POLL("HamlibTransceiver", "keyed: reads skipped");
+
+    if (!keyed && get_vfo_works_ && rig_->caps->get_vfo) {
         vfo_t v;
         error_check(
             rig_get_vfo(rig_.data(), &v),
@@ -992,8 +1006,8 @@ void HamlibTransceiver::poll() {
         reversed_ = RIG_VFO_B == v;
     }
 
-    if ((WSJT_RIG_NONE_CAN_SPLIT || !is_dummy_) && rig_->caps->get_split_vfo &&
-        split_query_works_) {
+    if (!keyed && (WSJT_RIG_NONE_CAN_SPLIT || !is_dummy_) &&
+        rig_->caps->get_split_vfo && split_query_works_) {
         vfo_t v{RIG_VFO_NONE}; // so we can tell if it doesn't get updated :(
         auto rc = rig_get_split_vfo(rig_.data(), RIG_VFO_CURR, &s, &v);
         if (-RIG_OK == rc && RIG_SPLIT_ON == s) {
@@ -1021,9 +1035,9 @@ void HamlibTransceiver::poll() {
         }
     }
 
-    if (freq_query_works_) {
-        // only read if possible and when receiving or simplex
-        if (!state().ptt() || !state().split()) {
+    if (!keyed && freq_query_works_) {
+        // only read when receiving (#245: formerly also keyed simplex)
+        {
             error_check(rig_get_freq(rig_.data(), RIG_VFO_CURR, &f),
                         tr("getting current VFO frequency"));
             f = std::round(f);
@@ -1059,8 +1073,8 @@ void HamlibTransceiver::poll() {
         }
     }
 
-    // only read when receiving or simplex if direct VFO addressing unavailable
-    if ((!state().ptt() || !state().split()) && mode_query_works_) {
+    // only read when receiving (#245: formerly also keyed simplex)
+    if (!keyed && mode_query_works_) {
         // We have to ignore errors here because Yaesu FTdx... rigs can
         // report the wrong mode when transmitting split with different
         // modes per VFO. This is unfortunate because that is exactly

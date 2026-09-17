@@ -5315,6 +5315,9 @@ int UI_Constructor::writeMessageTextToUI(QDateTime date, QString text, int freq,
                          .arg(date.time().toString())
                          .arg(freq)
                          .arg(text));
+        // [#248 eraseid] stamp the line with its identity (document
+        // owns the data)
+        c.block().setUserData(new RxLineData(freq, date));
     }
 
     if (isTx) {
@@ -5332,6 +5335,67 @@ int UI_Constructor::writeMessageTextToUI(QDateTime date, QString text, int freq,
         ui->textEditRX->verticalScrollBar()->maximum());
 
     return c.blockNumber();
+}
+
+// [#248 eraseid 2026-09-16] The assembled directed message replaces
+// its own live line. Inherited code (JS8Call 2.2.0) located that line
+// by searching BACKWARD for the last line containing the message's
+// HH:MM:SS text, with the offset guard commented out -- so when two
+// headers arrived in the same second (16:58:26Z, 2359 to us and 2192
+// to W0IFM) the search hit the OTHER station's line: KR1FLE's header
+// and two payload frames were erased, the 2359 live line was left
+// standing beside its assembled copy (one #176 "line twice"
+// mechanism), and KR1FLE's later frames opened a headerless line.
+// Now: the line is found by the identity stamp written when it was
+// opened -- same 10-Hz bucket AND same HH:MM:SS -- and if no such
+// line exists nothing is erased (a duplicate line is recoverable, an
+// erased one is not). The blank spacer block that precedes every
+// message line is removed with it, exactly as before, and every
+// registered block number above the erased lines moves up by the
+// number of blocks removed (the inherited code never adjusted them:
+// after any erase, all in-progress lines above the hole appended to
+// their neighbour's line).
+bool UI_Constructor::eraseRxLineForMessage(int offset, QDateTime const &date) {
+    auto *doc = ui->textEditRX->document();
+    int const lowKey = offset / 10 * 10;
+    QString const hhmmss = date.time().toString();
+
+    for (QTextBlock b = doc->lastBlock(); b.isValid(); b = b.previous()) {
+        if (b.userState() != State::RX)
+            continue;
+        auto const *id = dynamic_cast<RxLineData const *>(b.userData());
+        if (!id)
+            continue;
+        if (id->offset != offset && qAbs(id->offset / 10 * 10 - lowKey) > 10)
+            continue;
+        if (id->date.time().toString() != hhmmss)
+            continue;
+
+        int const blockNo = b.blockNumber();
+        int const blocksBefore = doc->blockCount();
+
+        QTextCursor c(b);
+        c.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        qCDebug(mainwindow_js8)
+            << "[#248] erasing live line by identity" << offset << hhmmss
+            << c.selectedText().toUpper();
+        c.removeSelectedText();
+        // the block separator, then the blank spacer block before it
+        c.deletePreviousChar();
+        if (c.block().length() <= 1 && c.block().previous().isValid())
+            c.deletePreviousChar();
+
+        int const removed = blocksBefore - doc->blockCount();
+        m_rxFrameBlockNumbers.removeIf(
+            [blockNo](auto const &it) { return it.value() == blockNo; });
+        for (auto it = m_rxFrameBlockNumbers.begin();
+             it != m_rxFrameBlockNumbers.end(); ++it) {
+            if (it.value() > blockNo)
+                it.value() -= removed;
+        }
+        return true;
+    }
+    return false;
 }
 
 bool UI_Constructor::isMessageQueuedForTransmit() {
@@ -9600,8 +9664,22 @@ void UI_Constructor::handle_transceiver_update(
         on_monitorTxButton_toggled(!m_config.transmit_off_at_startup());
     }
 
+    // [#249 unkeyed 2026-09-16] A frequency first reported while the
+    // rig was keyed is held back from m_freqNominal (correct: with
+    // fake-it split the keyed VFO carries the shifted TX frequency).
+    // Inherited code (WSJT-X era, JS8Call initial commit) then never
+    // re-evaluated it: the next update compared against old_state,
+    // which had already absorbed the value, so a change made by another
+    // application while the rig reported PTT (its own transmission
+    // through flrig/OmniRig, or a change during ours on a backend that
+    // reads while keyed) left the display following the rig and every
+    // later TX writing the old frequency back. Symmetric counterpart:
+    // the keyed->unkeyed transition evaluates the frequency exactly as
+    // a change would. When nothing moved this is a no-op (every branch
+    // below compares against the value it would set).
+    bool const unkeyed = old_state.ptt() && !new_rig_state.ptt();
     if (new_rig_state.frequency() != old_state.frequency() ||
-        new_rig_state.split() != m_splitMode) {
+        new_rig_state.split() != m_splitMode || unkeyed) {
         m_splitMode = new_rig_state.split();
         if (!new_rig_state.ptt()) {
             m_freqNominal = new_rig_state.frequency();
@@ -11738,6 +11816,13 @@ void UI_Constructor::setRig(Frequency f) {
         m_freqNominal = f;
         m_freqTxNominal = m_freqNominal - m_XIT;
     }
+    // [#249] every frequency request the GUI makes, with its state
+    qCDebug(mainwindow_js8) << "[CAT] setRig f=" << f
+                            << "nominal=" << m_freqNominal
+                            << "txNominal=" << m_freqTxNominal
+                            << "rig=" << m_rigState.frequency()
+                            << "transmitting=" << m_transmitting
+                            << "monitoring=" << m_monitoring;
 
     if (m_transmitting && !m_config.tx_qsy_allowed())
         return;

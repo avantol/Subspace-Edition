@@ -994,29 +994,14 @@ void UI_Constructor::processCommandActivity() {
             // overwritten (multiple responses at once)... so don't overwrite
             // those (i.e., print each on a new line)
             bool shouldOverwrite =
-                (!d.cmd.contains(" ACK") &&
-                 !d.cmd.contains(" SNR")); /* && isRecentOffset(d.freq);*/
+                (!d.cmd.contains(" ACK") && !d.cmd.contains(" SNR"));
 
-            if (shouldOverwrite &&
-                ui->textEditRX->find(d.utcTimestamp.time().toString(),
-                                     QTextDocument::FindBackward)) {
-                // ... maybe we could delete the last line that had this message
-                // on this frequency...
-                c = ui->textEditRX->textCursor();
-                c.movePosition(QTextCursor::StartOfBlock);
-                c.movePosition(QTextCursor::EndOfBlock,
-                               QTextCursor::KeepAnchor);
-                qCDebug(mainwindow_js8) << "should display directed message, "
-                                           "erasing last rx activity line..."
-                                        << c.selectedText().toUpper();
-                c.removeSelectedText();
-                c.deletePreviousChar();
-                c.deletePreviousChar();
-                /*
-                c.deleteChar();
-                c.deleteChar();
-                */
-            }
+            // [#248 eraseid 2026-09-16] erase THIS message's live line
+            // by identity (offset bucket + timestamp stamp), never the
+            // last line whose text contains our timestamp -- see
+            // eraseRxLineForMessage.
+            if (shouldOverwrite)
+                eraseRxLineForMessage(d.offset, d.utcTimestamp);
 
             // log it to the display! [TODO #235 phase 1, rule 9]
             // unless the decode's dial is not the current dial

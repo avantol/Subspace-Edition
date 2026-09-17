@@ -69,6 +69,7 @@
 #include <QCursor>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QTextBlockUserData>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -158,6 +159,19 @@ constexpr auto RX = 1;
 constexpr auto TX = 2;
 } // namespace State
 } // namespace
+
+// [#248 eraseid 2026-09-16] Identity stamp of one RX-pane message line:
+// the offset it was opened at and the timestamp it carries. The
+// assembled directed message erases ITS live line by this stamp,
+// never by searching the pane for its timestamp text (two headers in
+// one second made that search erase the other station's line).
+class RxLineData : public QTextBlockUserData {
+public:
+    RxLineData(int offset, QDateTime const &date)
+        : offset{offset}, date{date} {}
+    int offset;
+    QDateTime date;
+};
 
 namespace Ui {
 class UI_Constructor;
@@ -310,6 +324,9 @@ class UI_Constructor : public QMainWindow {
                             qint64 consumerAbsPos) const;
     void displayTextForFreq(QString text, int freq, QDateTime date, bool isTx,
                             bool isNewLine, bool isLast, int submode = -1);
+    // [#248] erase the RX-pane line stamped with this offset bucket and
+    // timestamp (the message's own live line); false if none exists
+    bool eraseRxLineForMessage(int offset, QDateTime const &date);
     void writeNoticeTextToUI(QDateTime date, QString text);
     int writeMessageTextToUI(QDateTime date, QString text, int freq, bool isTx,
                              int submode = -1, int block = -1);
