@@ -979,15 +979,19 @@ void UI_Constructor::on_actionSubspace_Guide_triggered() {
          "https://groups.io/g/Subspace/message/265"},
         {"How to compensate for QSB during an ARQ message send",
          "https://groups.io/g/Subspace/message/266"},
+        {"How to use Subspace effectively on a non-standard band segment",
+         "https://groups.io/g/Subspace/message/371"},
     };
+    // [#216 guidelink 2026-09-18] The DESCRIPTION is the link; the URL
+    // column is gone. A groups.io message number tells the reader
+    // nothing, and showing both made every row twice as wide as it
+    // needed to be.
     QString html = QStringLiteral(
         "<table cellspacing=\"0\" cellpadding=\"4\">");
     for (auto const &e : kEntries) {
-        html += QStringLiteral(
-                    "<tr><td>%1&nbsp;&nbsp;</td>"
-                    "<td><a href=\"%2\">%2</a></td></tr>")
-                    .arg(QString::fromUtf8(e.desc).toHtmlEscaped(),
-                         QString::fromUtf8(e.url));
+        html += QStringLiteral("<tr><td><a href=\"%1\">%2</a></td></tr>")
+                    .arg(QString::fromUtf8(e.url),
+                         QString::fromUtf8(e.desc).toHtmlEscaped());
     }
     html += QStringLiteral("</table>");
 
