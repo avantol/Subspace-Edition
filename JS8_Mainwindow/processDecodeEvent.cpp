@@ -289,7 +289,7 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
 
                 // log valid frames to ALL.txt (and correct their timestamp
                 // format)
-                auto freq = dialFrequency();
+                auto freq = operatingDial(); // [#256]
 
                 // if we changed frequencies, use the old frequency that we
                 // started the decode with

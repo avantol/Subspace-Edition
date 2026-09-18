@@ -29,7 +29,7 @@ void UI_Constructor::processCommandActivity() {
                     < kManualAskSettleMs)
                 continue;
             m_spotMapWindow->queueReachEvent(
-                {m_config.bands()->find(dialFrequency()),
+                {m_config.bands()->find(operatingDial()) /* [#256] */,
                  m_manualAsks.at(i).via.toUpper(),
                  QStringLiteral("fwd"), QString{},
                  m_manualAsks.at(i).askedMs / 1000, false});
@@ -247,7 +247,7 @@ void UI_Constructor::processCommandActivity() {
                     Radio::same_station(
                         de, m_config.my_callsign().trimmed())) {
                     m_spotMapWindow->queueReachEvent(
-                        {m_config.bands()->find(dialFrequency()),
+                        {m_config.bands()->find(operatingDial()) /* [#256] */,
                          d.from.toUpper(), QStringLiteral("fwd"),
                          QString{}, 0, true});
                     // [manualask] The success this ask was waiting

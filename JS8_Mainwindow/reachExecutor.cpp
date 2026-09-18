@@ -704,7 +704,7 @@ void UI_Constructor::reachStart(QString const &target, int maxMoves,
     m_reach.target = T;
     m_reach.maxMoves = qBound(1, maxMoves, 12);
     m_reach.startMs = DriftingDateTime::currentMSecsSinceEpoch();
-    m_reach.band = m_config.bands()->find(dialFrequency());
+    m_reach.band = m_config.bands()->find(operatingDial()); // [#256]
     m_reach.learnedAt0 = g_book.learned.size();   // [#196]
 
     // Speed pin (attempt.py:102-128): Normal for the whole attempt,

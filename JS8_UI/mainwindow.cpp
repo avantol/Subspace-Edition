@@ -1574,6 +1574,31 @@ Radio::Frequency UI_Constructor::dialFrequency() {
                          : m_rigState.frequency()};
 }
 
+// [#256 opdial 2026-09-18, operator] THE dial we are OPERATING on, as
+// opposed to the frequency the radio happens to sit on this instant.
+// While we transmit, split moves dialFrequency() to the TX frequency
+// and "fake it" moves the rig's own frequency -- both are transmit
+// artifacts, not a change of operating frequency, and both last only
+// as long as the key is down. m_freqNominal is the operating dial: it
+// is what every transmission is set from, and #249 keeps it stable
+// across a keyed interval.
+// Everything that holds STATE about where we are listening must read
+// this and not dialFrequency(): the activity snapshot (#235) would
+// otherwise clear and swap the call sign list at key-down, the Spots
+// Map passband (#218) would re-judge every dot against the transmit
+// frequency, decodes taken during our own transmission would be
+// stamped with it and then dropped by the same-dial guard, and the
+// auto-route group lookup (#237) would miss its entry.
+// What deliberately still reads dialFrequency(): the dial DISPLAY and
+// the API's DIAL/FREQ fields, which report what the radio is doing --
+// that is the honest answer for both, and the user report behind #249
+// was specifically that the display must follow the rig.
+Radio::Frequency UI_Constructor::operatingDial() {
+    if ((m_transmitting || m_tune) && m_freqNominal)
+        return Frequency{m_freqNominal};
+    return dialFrequency();
+}
+
 void UI_Constructor::setSubmode(int submode) {
     // Block mode switch during active TX — stale m_TRperiod causes truncated frames
     if (m_transmitting || m_txFrameCount > 0 || !m_txFrameQueue.isEmpty()) {
@@ -1637,7 +1662,7 @@ void UI_Constructor::updateCurrentBand() {
         return;
     }
 
-    auto dial_frequency = dialFrequency();
+    auto dial_frequency = operatingDial(); // [#256]
     auto const &band_name = m_config.bands()->find(dial_frequency);
 
     // [TODO #235 phase 1] Two transitions are watched here: the band
@@ -1755,8 +1780,10 @@ void UI_Constructor::displayDialFrequency() {
     // [BUILD 340] Spots Map needs the dial to convert spot RF Hz to
     // audio offsets (hover display + double-click QSY).
     if (m_spotMapWindow) {
+        // [#256] the map filters on where we LISTEN, not on a
+        // transmit-time shift
         m_spotMapWindow->setDialFrequency(
-            static_cast<qint64>(dial_frequency));
+            static_cast<qint64>(operatingDial()));
     }
 
     // lookup band
@@ -2638,7 +2665,7 @@ void UI_Constructor::decodeBusy(bool b) // decodeBusy()
 
         m_decoderBusyStartTime = QDateTime::
             currentDateTimeUtc(); // DriftingDateTime::currentDateTimeUtc();
-        m_decoderBusyFreq = dialFrequency();
+        m_decoderBusyFreq = operatingDial(); // [#256]
         m_decoderBusyBand = m_config.bands()->find(m_decoderBusyFreq);
     }
 }
@@ -4985,14 +5012,15 @@ QString UI_Constructor::standardEntryKey(Frequency dial) const {
 // the saved call list (SsCallActivity) runs in readSettings before any
 // rig state exists -- dialFrequency() is 0 there -- and must pass.
 bool UI_Constructor::decodeDialIsCurrent(int decodeDial) {
-    auto const dial = dialFrequency();
+    auto const dial = operatingDial(); // [#256]
     return decodeDial <= 0 || dial == 0 ||
            static_cast<Frequency>(decodeDial) == dial;
 }
 
 // [TODO #237] first JS8 entry on the exact dial that carries a group
 QString UI_Constructor::autoRouteGroupForDial() const {
-    auto const dial = const_cast<UI_Constructor *>(this)->dialFrequency();
+    auto const dial =
+        const_cast<UI_Constructor *>(this)->operatingDial(); // [#256]
     // [#254 2026-09-18, operator agreed] Modes::ALL counts too: an
     // "all modes" entry includes JS8, and requiring JS8 exactly meant a
     // group set on an ALL entry was accepted in Settings and then
@@ -12505,7 +12533,8 @@ void UI_Constructor::l2TryDecode(char const *source) {
     // and is stamped on every decode in the emitter below. Residual
     // imprecision is the ring depth (7.5 s), the same one-capture-per-
     // window granularity the normal decoder already accepts.
-    std::int64_t const snapDial = static_cast<std::int64_t>(dialFrequency());
+    std::int64_t const snapDial =
+        static_cast<std::int64_t>(operatingDial()); // [#256]
     m_l2Decoding = true;
     m_l2DecodeStartedMs = QDateTime::currentMSecsSinceEpoch();  // [l2watch]
     m_l2DecodeWatcher.setFuture(QtConcurrent::run(

@@ -1917,6 +1917,10 @@ class UI_Constructor : public QMainWindow {
     void spotAprsGrid(int dial, int offset, int snr, QString callsign,
                       QString grid);
     Radio::Frequency dialFrequency();
+    // [#256] the dial we are OPERATING on: ignores the transmit-time
+    // shift from split / "fake it". State about where we listen reads
+    // this; the display and the API's DIAL field read dialFrequency().
+    Radio::Frequency operatingDial();
     void setSubmode(int submode);     // full reconfiguration (radio, FFT, tables)
     // switchSubmode() removed — use setSubmode() for all mode changes
     void updateCurrentBand();
