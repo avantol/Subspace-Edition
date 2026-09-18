@@ -1502,12 +1502,15 @@ void UI_Constructor::on_monitorTxButton_toggled(bool checked) {
     resetPushButtonToggleText(ui->monitorTxButton);
 
     if (!checked) {
-        qCDebug(mainwindow_js8)
-            << "on_monitorTxButton_toggled(" << checked << ") to stop TX.";
-        // [BUILD 353 haltwrap] Mechanical: unchecking TX-enable (by
-        // the user OR programmatically, e.g. the stuck-key path's
-        // setChecked(false)) stops TX but must not destroy ARQ state.
-        stopTxMechanical();
+        // [#253 txhalt 2026-09-17, operator ruling] Un-selecting TX is
+        // a FULL operator halt, not the mechanical stop this used to
+        // do. The mechanical stop deliberately preserves ARQ state, so
+        // the current burst ended and the protocol's next chunk or ACK
+        // keyed the radio again -- with the operator believing the
+        // station was off the air. Same treatment as the Halt button,
+        // which also clears ARQ sessions in BOTH directions, so a
+        // receive session stops acknowledging too.
+        haltAllOperator(QStringLiteral("TX un-selected"));
     }
 }
 
@@ -9431,12 +9434,29 @@ void UI_Constructor::stopTxMechanical()
 
 void UI_Constructor::on_stopTxButton_clicked() // Stop Tx — OPERATOR halt
 {
-    qWarning() << "[TX-CAUSE] operator HALT clicked";
-    // [BUILD 353 haltwrap] This slot is now reached ONLY by operator
-    // gestures: the Halt button (Qt auto-connect) and Escape. All
-    // programmatic stops call stopTxMechanical() directly and can no
-    // longer destroy ARQ session state (the old m_stopTxButtonIsLongterm
-    // flag ritual had four callers that forgot it — deleted).
+    haltAllOperator(QStringLiteral("HALT clicked"));
+}
+
+// [#253 txhalt 2026-09-17, operator ruling] The operator's halt, shared
+// by the Halt button / Escape and by un-selecting "TX" in the upper
+// right. Un-selecting TX used to run stopTxMechanical() only, which by
+// design leaves every machine that can re-key alive (ARQ sessions
+// above all): the current burst stopped and the next ARQ chunk or ACK
+// keyed the radio again. Operator ruling: "un-selecting TX should be
+// the same as Halt. it is a safety issue, one would assume it was an
+// intentional halt." An antenna must not be energized again after the
+// operator switched TX off. The cost, accepted with the ruling: a
+// transfer in progress is CANCELLED, not paused -- re-checking TX does
+// not resume it and the peer sees a failure.
+void UI_Constructor::haltAllOperator(QString const &cause)
+{
+    qWarning() << "[TX-CAUSE] operator" << cause;
+    // [BUILD 353 haltwrap] Reached ONLY by operator gestures: the Halt
+    // button (Qt auto-connect), Escape, and the TX-enable un-select.
+    // All programmatic stops call stopTxMechanical() directly and can
+    // no longer destroy ARQ session state (the old
+    // m_stopTxButtonIsLongterm flag ritual had four callers that forgot
+    // it — deleted).
     stopTxMechanical();
 
     // [autoroute] The banner says "Halt to cancel." -- so Halt
@@ -9661,7 +9681,18 @@ void UI_Constructor::handle_transceiver_update(
     if (old_state.online() == false && new_rig_state.online() == true) {
         // initializing
         on_monitorButton_clicked(!m_config.monitor_off_at_startup());
-        on_monitorTxButton_toggled(!m_config.transmit_off_at_startup());
+        // [#253 txhalt] Applying the startup setting is NOT an operator
+        // halt: set the button without firing the slot (which would now
+        // log a halt and tear down machines that cannot exist this
+        // early), and keep the mechanical stop for the disabled case.
+        {
+            QSignalBlocker const block(ui->monitorTxButton);
+            ui->monitorTxButton->setChecked(
+                !m_config.transmit_off_at_startup());
+        }
+        resetPushButtonToggleText(ui->monitorTxButton);
+        if (m_config.transmit_off_at_startup())
+            stopTxMechanical();
     }
 
     // [#249 unkeyed 2026-09-16] A frequency first reported while the

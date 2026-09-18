@@ -249,6 +249,10 @@ class UI_Constructor : public QMainWindow {
     // into a structural one (a caller now CANNOT destroy ARQ session
     // state by merely stopping TX).
     void stopTxMechanical();
+    // [#253 txhalt] the operator's halt: Halt button / Escape / TX
+    // un-select. Cancels every machine that can re-key, ARQ sessions
+    // in both directions included.
+    void haltAllOperator(QString const &cause);
     bool m_hbButtonIsLongterm;
     bool m_cqButtonIsLongterm;
 
