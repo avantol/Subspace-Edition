@@ -37,6 +37,13 @@
 #include <memory>
 
 namespace {
+// [#227 modalwait] How long after the main window is shown -- or after
+// a modal dialog closes -- before the startup hint chain runs. It
+// exists so anchors have real global positions, and on the re-arm so a
+// CHAINED dialog has appeared before we decide. Not a safety pad: a
+// modal that is up when the chain runs defers it again.
+constexpr int kHintSettleMs = 1500;
+
 // [#228 arrowtip 2026-09-18, operator] Aim a balloon's tail at a
 // tool button's DOWN-ARROW instead of the whole button. The arrow is
 // not a child widget -- a QToolButton in MenuButtonPopup mode draws it
@@ -2552,9 +2559,19 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                         [self, chain, conn](int) {
                             QObject::disconnect(*conn);
                             if (!self) return;
-                            // queue hop only: leave the dialog's own
-                            // signal handler before touching the UI
-                            QTimer::singleShot(0, self,
+                            // Re-arm with the SAME settle delay as the
+                            // first arm, not a queue hop: startup
+                            // dialogs CHAIN (the rig-failure box's OK
+                            // path queues the Settings dialog, and
+                            // ensureCallsignSet opens Settings after
+                            // its own warning box), so firing
+                            // immediately on "finished" would show the
+                            // balloon in the gap and the next dialog
+                            // would cover it. Correctness does not
+                            // depend on the delay -- if another modal
+                            // is up when the chain re-runs it simply
+                            // defers again -- only the latency does.
+                            QTimer::singleShot(kHintSettleMs, self,
                                                [chain]() { (*chain)(); });
                         });
                     qCDebug(mainwindow_js8)
@@ -2782,10 +2799,10 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 return; // one balloon per startup
             }
         };
-        // [#227] Same 1500 ms as before: the main window must be shown
+        // [#227] Same delay as before: the main window must be shown
         // and anchors must have real global positions before any
         // balloon is placed.
-        QTimer::singleShot(1500, this, [chain]() { (*chain)(); });
+        QTimer::singleShot(kHintSettleMs, this, [chain]() { (*chain)(); });
     }
 
     // this must be the last statement of constructor
