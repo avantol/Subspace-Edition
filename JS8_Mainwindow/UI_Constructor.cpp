@@ -2613,7 +2613,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     tr("Would you like to add @MAGNET frequencies to "
                        "your frequency list?\n\n"
                        "This saves call sign status for immediate "
-                       "re-display after a band change (recommended)."),
+                       "re-display after a frequency change, and "
+                       "optimizes relay search (highly recommended)."),
                     self->ui->labDialFreqOffset);
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setYesNoChoice([self]() {
