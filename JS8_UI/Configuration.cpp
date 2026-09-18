@@ -131,6 +131,7 @@
 //
 
 #include "Configuration.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 #include "JS8_Include/Maidenhead.h"
 #include "JS8_Include/SettingsGroup.h"
 #include "JS8_Include/pimpl_impl.h"
@@ -2215,6 +2216,7 @@ void Configuration::impl::read_settings() {
     SettingsGroup g{settings_, "Configuration"};
     setMinimumSize(800, 400);
     restoreGeometry(settings_->value("WindowGeometry").toByteArray());
+    JS8::rescueOffScreen(this); // [#246]
     setMinimumSize(800, 400);
 
     auto_switch_bands_ = settings_->value("AutoSwitchBands", false).toBool();

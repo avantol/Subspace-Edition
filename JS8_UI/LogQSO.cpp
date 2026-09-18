@@ -4,6 +4,7 @@
  */
 
 #include "LogQSO.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 #include "Configuration.h"
 #include "JS8_Include/Maidenhead.h"
 #include "JS8_Logbook/ADIF.h"
@@ -164,6 +165,7 @@ void LogQSO::loadSettings() {
     m_settings->beginGroup("LogQSO");
     restoreGeometry(
         m_settings->value("geometry", saveGeometry()).toByteArray());
+    JS8::rescueOffScreen(this); // [#246]
     ui->cbComments->setChecked(
         m_settings->value("SaveComments", false).toBool());
     m_comments = m_settings->value("LogComments", "").toString();

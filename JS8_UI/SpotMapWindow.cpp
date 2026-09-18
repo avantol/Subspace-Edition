@@ -4,6 +4,7 @@
  */
 
 #include "SpotMapWindow.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 
 #include "JS8_Include/SettingsGroup.h"
 #include "JS8_Include/commons.h"
@@ -162,6 +163,7 @@ SpotMapWindow::SpotMapWindow(QSettings *settings,
         SettingsGroup g{m_settings, "SpotMap"};
         restoreGeometry(
             m_settings->value("geometry", saveGeometry()).toByteArray());
+        JS8::rescueOffScreen(this); // [#246]
         m_restoreVisible = m_settings->value("WindowVisible", false).toBool();
         m_showCallsigns = m_settings->value("ShowCallsigns", false).toBool();
         // [persistui 2026-08-15] Connections overlay, map type, and

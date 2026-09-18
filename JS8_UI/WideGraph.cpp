@@ -4,6 +4,7 @@
  */
 
 #include "WideGraph.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 #include "Configuration.h"
 #include "JS8_Include/EventFilter.h"
 #include "JS8_Include/SettingsGroup.h"
@@ -209,6 +210,7 @@ WideGraph::WideGraph(QSettings *settings, QWidget *parent)
         SettingsGroup g{m_settings, "WideGraph"};
         restoreGeometry(
             m_settings->value("geometry", saveGeometry()).toByteArray());
+        JS8::rescueOffScreen(this); // [#246]
         ui->widePlot->setPlotZero(m_settings->value("PlotZero", 0).toInt());
         ui->widePlot->setPlotGain(m_settings->value("PlotGain", 0).toInt());
         ui->widePlot->setPlot2dGain(m_settings->value("Plot2dGain", 0).toInt());

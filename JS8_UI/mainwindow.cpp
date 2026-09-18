@@ -6,6 +6,7 @@
  */
 
 #include "mainwindow.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 #include "JS8_UI/SpeechBalloon.h" // [#255] close live hints at shutdown
 
 #include <cstdlib>   // std::_Exit — shutdown watchdog (see ~UI_Constructor)
@@ -598,6 +599,7 @@ void UI_Constructor::readSettings() {
     setMinimumSize(800, 400);
     restoreGeometry(
         m_settings->value("geometry", saveGeometry()).toByteArray());
+    JS8::rescueOffScreen(this); // [#246]
     setMinimumSize(800, 400);
 
     m_geometryNoControls =

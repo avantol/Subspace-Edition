@@ -21,6 +21,7 @@
 #include "JS8_UI/ArqMonitorWindow.h"
 #include "JS8_UI/StationMonitorWindow.h" // [stamon]
 #include "JS8_Widgets/BandActivityMessageDelegate.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 
 #include <QAction>
 #include <QApplication>
@@ -633,6 +634,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 // rewritten in the new form at exit
                 w->move(parts[1].toInt(), parts[2].toInt());
             }
+            JS8::rescueOffScreen(w); // [#246]
         }
     });
     m_spotMapWindow->setStation(m_config.my_callsign(), m_config.my_grid());

@@ -4,6 +4,7 @@
  */
 
 #include "ArqMonitorWindow.h"
+#include "JS8_Widgets/ScreenRescue.h" // [#246]
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
@@ -93,6 +94,7 @@ ArqMonitorWindow::ArqMonitorWindow(QSettings *settings,
         SettingsGroup g{m_settings, "ArqMonitor"};
         restoreGeometry(
             m_settings->value("geometry", saveGeometry()).toByteArray());
+        JS8::rescueOffScreen(this); // [#246]
         m_restoreVisible =
             m_settings->value("WindowVisible", false).toBool();
     }
