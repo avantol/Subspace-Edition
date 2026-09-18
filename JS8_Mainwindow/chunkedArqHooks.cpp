@@ -81,6 +81,25 @@ void UI_Constructor::onChunkedWantToTransmit(QString const &text) {
     if (!ui->extFreeTextMsgEdit) {
         return;
     }
+    // [#251 txgate 2026-09-17] TX-enable is an operator control, and
+    // this is the ONE funnel every ARQ transmission passes through --
+    // chunk 1 from the operator's Send, chunks 2..N driven by ACKs,
+    // and the receive side's own ACK/NACK via
+    // onChunkedWantsResponseTx. The operator's send path checks this
+    // in startTxNonArq -> ensureCreateMessageReady; the protocol's own
+    // path never did, so a station with TX unchecked still keyed its
+    // ACKs and a whole file transfer completed (field 2026-09-17).
+    // Return only -- no stopTxMechanical: nothing has been started
+    // here, and tearing down would also kill a half-assembled receive
+    // session. The sender's ACK timer retries and gives up on its own,
+    // which is the honest outcome when this station is told to stay
+    // off the air.
+    if (!ensureCanTransmit()) {
+        qCWarning(chunkedarq_js8)
+            << "[ARQ] transmit SUPPRESSED: TX disabled by operator; text="
+            << text.left(40);
+        return;
+    }
     addMessageText(text, /*clear=*/true);
     if (!ui->startTxButton->isChecked()) {
         QSignalBlocker const block(ui->startTxButton);
@@ -1317,6 +1336,19 @@ void UI_Constructor::onNativeChunkWantToTransmit(
     int const totalChunks, QByteArray const &markerFrame9,
     QByteArray const &chunkBytes) {
     if (!ui->extFreeTextMsgEdit) {
+        return;
+    }
+    // [#251 txgate 2026-09-17] Same operator gate as
+    // onChunkedWantToTransmit -- this is the THIRD and last ARQ
+    // transmit funnel (V3 native-binary chunks; the other two are
+    // wantToTransmit for text/V1/V2 chunks and wantsResponseTx for the
+    // receive side's ACK/NACK, both of which land in
+    // onChunkedWantToTransmit). Checked BEFORE the stale-frame flush
+    // so a suppressed chunk leaves the queue exactly as it was.
+    if (!ensureCanTransmit()) {
+        qCWarning(chunkedarq_js8)
+            << "[V3-TX] transmit SUPPRESSED: TX disabled by operator;"
+            << "peer=" << peer << "chunk=" << chunkId << "/" << totalChunks;
         return;
     }
     // A (re)send REPLACES the chunk's frames — flush leftovers from
