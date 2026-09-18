@@ -4977,9 +4977,13 @@ bool UI_Constructor::decodeDialIsCurrent(int decodeDial) {
 // [TODO #237] first JS8 entry on the exact dial that carries a group
 QString UI_Constructor::autoRouteGroupForDial() const {
     auto const dial = const_cast<UI_Constructor *>(this)->dialFrequency();
+    // [#254 2026-09-18, operator agreed] Modes::ALL counts too: an
+    // "all modes" entry includes JS8, and requiring JS8 exactly meant a
+    // group set on an ALL entry was accepted in Settings and then
+    // silently ignored here.
     for (auto const &it : m_config.frequencies()->frequency_list())
-        if (it.mode_ == Modes::JS8 && it.frequency_ == dial &&
-            !it.group_.isEmpty())
+        if ((it.mode_ == Modes::JS8 || it.mode_ == Modes::ALL) &&
+            it.frequency_ == dial && !it.group_.isEmpty())
             return it.group_;
     return QString{};
 }

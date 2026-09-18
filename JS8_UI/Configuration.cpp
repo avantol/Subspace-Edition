@@ -1132,6 +1132,55 @@ void Configuration::removeGroup(QString const &group) {
     m_->write_settings();
 }
 
+// [#254 magfreq 2026-09-18] Seed group frequencies. Lives here, beside
+// addGroup/removeGroup, because write_settings() is private to the
+// implementation -- one authority for configuration writes. Rules,
+// exactly as ruled by the operator: fill a BLANK group only (a group
+// already set is a deliberate choice), never duplicate a frequency
+// (match on exact hertz -- the auto-route lookup takes the FIRST
+// match), and add missing entries as JS8, the mode every default entry
+// ships with.
+int Configuration::seedGroupFrequencies(
+    QList<Radio::Frequency> const &frequencies, QString const &group,
+    QString const &description) {
+    if (group.trimmed().isEmpty() || frequencies.isEmpty())
+        return 0;
+
+    auto items = m_->frequencies_.frequency_list();
+    int changed = 0;
+
+    for (auto const freq : frequencies) {
+        bool found = false;
+        for (auto &it : items) {
+            if (it.frequency_ != freq)
+                continue;
+            found = true;
+            if (it.group_.isEmpty()) {
+                it.group_ = group;
+                ++changed;
+            }
+            break; // exact-hertz match is unique by construction below
+        }
+        if (!found) {
+            FrequencyList_v3::Item item;
+            item.frequency_ = freq;
+            item.mode_ = Modes::JS8;
+            item.region_ = IARURegions::ALL;
+            item.description_ = description;
+            item.group_ = group;
+            items.append(item);
+            ++changed;
+        }
+    }
+
+    if (changed) {
+        m_->frequencies_.frequency_list(items);
+        m_->frequencies_.sort(FrequencyList_v3::frequency_column);
+        m_->write_settings();
+    }
+    return changed;
+}
+
 QSet<QString> Configuration::auto_whitelist() const {
     return QSet<QString>(m_->auto_whitelist_.begin(),
                          m_->auto_whitelist_.end());

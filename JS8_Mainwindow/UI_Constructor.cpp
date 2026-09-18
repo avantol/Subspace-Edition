@@ -2586,6 +2586,51 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 return;
             }
 
+            // Priority 0: [#254 magfreq 2026-09-18, operator ruling]
+            // MAGNET frequency seeding -- ABOVE every other hint. Four
+            // conditions, all required, all evaluated here at startup
+            // (the "act the moment MAGNET operation is detected" case
+            // was dropped: next startup is fine):
+            //   - the MAGNET latch is already set (the same persisted
+            //     signal that marks the window title "- MAGNET"), which
+            //     covers a station detected in an earlier session and a
+            //     station where MAGNET behaviour was already known
+            //     before this build;
+            //   - "@MAGNET" is ALREADY one of the operator's groups --
+            //     if it is not, we do not ask and do not add, and we do
+            //     NOT join the group on their behalf (that would make
+            //     the station answer group calls);
+            //   - the one-shot flag is unset.
+            // Yes adds the three MAGNET frequencies; No, a body click
+            // or the timeout declines. Either way the flag is set, so
+            // it never asks twice.
+            if (!self->m_settings->value("MagnetFreqSeedAsked", false)
+                     .toBool() &&
+                self->m_superSpotterSeen &&
+                self->m_config.my_groups().contains(
+                    QStringLiteral("@MAGNET"))) {
+                auto *balloon = new SpeechBalloon(
+                    tr("Would you like to add @MAGNET frequencies to "
+                       "your frequency list?\n\n"
+                       "This saves call sign status for immediate "
+                       "re-display after a band change (recommended)."),
+                    self->ui->labDialFreqOffset);
+                balloon->setTailSide(SpeechBalloon::TailSide::Top);
+                balloon->setYesNoChoice([self]() {
+                    if (!self) return;
+                    int const n = self->m_config.seedGroupFrequencies(
+                        {3585000, 7115000, 14115000},
+                        QStringLiteral("@MAGNET"),
+                        QStringLiteral("MAGNET"));
+                    qWarning() << "[MAGFREQ] seeded/updated" << n
+                               << "frequency entries with @MAGNET";
+                });
+                balloon->setAutoDismissMs(45000);
+                balloon->showAtTarget();
+                self->m_settings->setValue("MagnetFreqSeedAsked", true);
+                return; // one balloon per startup
+            }
+
             // Priority 1: ARQ / Send-chevron discovery (Build 314).
             if (!self->m_settings->value("FirstRunArqHintShown", false)
                      .toBool() &&

@@ -111,6 +111,14 @@ class Configuration final : public QObject {
     QSet<QString> my_groups() const;
     void addGroup(QString const &group);
     void removeGroup(QString const &group);
+    // [#254 magfreq] Ensure each of `frequencies` exists in the
+    // frequency list as a JS8 entry carrying `group`. An entry that
+    // already exists keeps its mode and description, and takes the
+    // group ONLY if its group is blank. Returns how many entries were
+    // added or changed; persists via write_settings() like addGroup.
+    int seedGroupFrequencies(QList<Radio::Frequency> const &frequencies,
+                             QString const &group,
+                             QString const &description);
     QSet<QString> auto_whitelist() const;
     QSet<QString> auto_blacklist() const;
     QSet<QString> hb_blacklist() const;
