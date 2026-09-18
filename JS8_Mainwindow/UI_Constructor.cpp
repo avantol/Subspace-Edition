@@ -2604,11 +2604,24 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             // Yes adds the three MAGNET frequencies; No, a body click
             // or the timeout declines. Either way the flag is set, so
             // it never asks twice.
+            // [#254] ...and only when a Yes would actually DO
+            // something. With all three frequencies already present and
+            // already carrying a group (field 2026-09-18: one @MAGNET,
+            // two @MAGTG), a Yes changes nothing -- groups already set
+            // are never overwritten -- so asking is pure noise. The
+            // flag is deliberately NOT set in that case: nothing was
+            // asked, and if an entry is removed later the offer is
+            // still available.
+            static QList<Radio::Frequency> const kMagnetFreqs{
+                3585000, 7115000, 14115000};
             if (!self->m_settings->value("MagnetFreqSeedAsked", false)
                      .toBool() &&
                 self->m_superSpotterSeen &&
                 self->m_config.my_groups().contains(
-                    QStringLiteral("@MAGNET"))) {
+                    QStringLiteral("@MAGNET")) &&
+                self->m_config.pendingGroupFrequencySeed(
+                    kMagnetFreqs, QStringLiteral("@MAGNET"),
+                    QStringLiteral("MAGNET")) > 0) {
                 auto *balloon = new SpeechBalloon(
                     tr("Would you like to add @MAGNET frequencies to "
                        "your frequency list?\n\n"
@@ -2620,8 +2633,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 balloon->setYesNoChoice([self]() {
                     if (!self) return;
                     int const n = self->m_config.seedGroupFrequencies(
-                        {3585000, 7115000, 14115000},
-                        QStringLiteral("@MAGNET"),
+                        kMagnetFreqs, QStringLiteral("@MAGNET"),
                         QStringLiteral("MAGNET"));
                     qWarning() << "[MAGFREQ] seeded/updated" << n
                                << "frequency entries with @MAGNET";

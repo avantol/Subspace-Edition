@@ -1132,23 +1132,19 @@ void Configuration::removeGroup(QString const &group) {
     m_->write_settings();
 }
 
-// [#254 magfreq 2026-09-18] Seed group frequencies. Lives here, beside
-// addGroup/removeGroup, because write_settings() is private to the
-// implementation -- one authority for configuration writes. Rules,
-// exactly as ruled by the operator: fill a BLANK group only (a group
-// already set is a deliberate choice), never duplicate a frequency
-// (match on exact hertz -- the auto-route lookup takes the FIRST
-// match), and add missing entries as JS8, the mode every default entry
-// ships with.
-int Configuration::seedGroupFrequencies(
-    QList<Radio::Frequency> const &frequencies, QString const &group,
-    QString const &description) {
-    if (group.trimmed().isEmpty() || frequencies.isEmpty())
-        return 0;
-
-    auto items = m_->frequencies_.frequency_list();
+namespace {
+// [#254 magfreq 2026-09-18] THE seeding rule, in one place, so the
+// "would this change anything?" question and the actual edit can never
+// disagree. Mutates `items` and returns how many entries it changed.
+// Operator's rules: fill a BLANK group only (a group already set is a
+// deliberate choice -- @MAGTG on a MAGNET frequency stays @MAGTG),
+// never duplicate a frequency (match on exact hertz; the auto-route
+// lookup takes the FIRST match), and add a missing frequency as JS8,
+// the mode every default entry ships with.
+int planGroupSeed(FrequencyList_v3::FrequencyItems &items,
+                  QList<Radio::Frequency> const &frequencies,
+                  QString const &group, QString const &description) {
     int changed = 0;
-
     for (auto const freq : frequencies) {
         bool found = false;
         for (auto &it : items) {
@@ -1159,7 +1155,7 @@ int Configuration::seedGroupFrequencies(
                 it.group_ = group;
                 ++changed;
             }
-            break; // exact-hertz match is unique by construction below
+            break;
         }
         if (!found) {
             FrequencyList_v3::Item item;
@@ -1172,6 +1168,36 @@ int Configuration::seedGroupFrequencies(
             ++changed;
         }
     }
+    return changed;
+}
+} // namespace
+
+// [#254] How many entries a seed WOULD change. Zero means every one of
+// these frequencies is already present AND already carries a group, so
+// there is nothing to offer -- do not ask (operator, field 2026-09-18:
+// all three configured, one @MAGNET and two @MAGTG, and it asked
+// anyway).
+int Configuration::pendingGroupFrequencySeed(
+    QList<Radio::Frequency> const &frequencies, QString const &group,
+    QString const &description) const {
+    if (group.trimmed().isEmpty() || frequencies.isEmpty())
+        return 0;
+    auto items = m_->frequencies_.frequency_list(); // copy, discarded
+    return planGroupSeed(items, frequencies, group, description);
+}
+
+// [#254] Apply the seed. Lives here, beside addGroup/removeGroup,
+// because write_settings() is private to the implementation -- one
+// authority for configuration writes.
+int Configuration::seedGroupFrequencies(
+    QList<Radio::Frequency> const &frequencies, QString const &group,
+    QString const &description) {
+    if (group.trimmed().isEmpty() || frequencies.isEmpty())
+        return 0;
+
+    auto items = m_->frequencies_.frequency_list();
+    int const changed =
+        planGroupSeed(items, frequencies, group, description);
 
     if (changed) {
         m_->frequencies_.frequency_list(items);

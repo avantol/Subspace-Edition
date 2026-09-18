@@ -119,6 +119,11 @@ class Configuration final : public QObject {
     int seedGroupFrequencies(QList<Radio::Frequency> const &frequencies,
                              QString const &group,
                              QString const &description);
+    // [#254] How many entries seedGroupFrequencies() WOULD change.
+    // Zero means there is nothing to offer.
+    int pendingGroupFrequencySeed(QList<Radio::Frequency> const &frequencies,
+                                  QString const &group,
+                                  QString const &description) const;
     QSet<QString> auto_whitelist() const;
     QSet<QString> auto_blacklist() const;
     QSet<QString> hb_blacklist() const;
