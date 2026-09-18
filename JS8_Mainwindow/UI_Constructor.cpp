@@ -2544,6 +2544,23 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         *chain = [self, chain]() {
             if (!self) return;
 
+            // [#255 hintquit 2026-09-18, field] NEVER build a hint once
+            // the application is going away. Cancel at the rig-error
+            // dialog queues the main window's close at 0 ms AND fires
+            // the #227 re-arm, which ran this chain 1500 ms later --
+            // after closeEvent had already run. The balloon that
+            // appeared then outlived the window it was attached to,
+            // the process stayed alive, and the next start found the
+            // lock file held (field, Windows). m_valid is closeEvent's
+            // own "shutting down" flag; the visibility test also covers
+            // a window merely hidden.
+            if (!self->m_valid || !self->isVisible() ||
+                QCoreApplication::closingDown()) {
+                qCDebug(mainwindow_js8)
+                    << "[HINT] chain skipped: application is closing";
+                return;
+            }
+
             // [#227] A modal dialog owns the screen. The startup
             // balloon is anchored to the main window, which the user
             // cannot act on while Settings is up, so it would appear

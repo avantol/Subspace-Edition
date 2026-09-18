@@ -6,6 +6,7 @@
  */
 
 #include "mainwindow.h"
+#include "JS8_UI/SpeechBalloon.h" // [#255] close live hints at shutdown
 
 #include <cstdlib>   // std::_Exit — shutdown watchdog (see ~UI_Constructor)
 #include <random>    // noisefill: watermark-seeded Gaussian fill
@@ -1866,6 +1867,15 @@ void UI_Constructor::closeEvent(QCloseEvent *e) {
     m_prefixes.reset();
     m_shortcuts.reset();
     m_mouseCmnds.reset();
+
+    // [#255 hintquit 2026-09-18, field] A startup balloon is a Tool
+    // window parented to this one. One left on screen at shutdown kept
+    // the process alive on Windows, and the next start then failed on
+    // the lock file. Close every one explicitly here rather than
+    // relying on the parent teardown to take them with it.
+    for (auto *balloon : findChildren<SpeechBalloon *>())
+        balloon->close();
+
     Q_EMIT finished();
 
     QMainWindow::closeEvent(e);
