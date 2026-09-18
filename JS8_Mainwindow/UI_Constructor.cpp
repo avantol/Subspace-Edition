@@ -23,12 +23,52 @@
 #include "JS8_Widgets/BandActivityMessageDelegate.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QMenu>
+#include <QStyle>
+#include <QStyleOptionToolButton>
 #include <QToolButton>
 #include <QLabel>
 #include <QUrl>
+
+#include <memory>
+
+namespace {
+// [#228 arrowtip 2026-09-18, operator] Aim a balloon's tail at a
+// tool button's DOWN-ARROW instead of the whole button. The arrow is
+// not a child widget -- a QToolButton in MenuButtonPopup mode draws it
+// as the SC_ToolButtonMenu sub-control -- so ask the style for its
+// rect. Going through the widget's style means the .ui stylesheet's
+// own "QToolButton::menu-button" width is honoured, and the tail stays
+// correct if the button is resized, restyled or moved; a hardcoded
+// pixel offset would not. The rect is target-local, which is what
+// SpeechBalloon::setTargetRectOverride expects (same mechanism the
+// menu-bar hints already use with actionGeometry()).
+// initStyleOption() is protected on QToolButton, so the option is
+// built here: subControlRect(CC_ToolButton, SC_ToolButtonMenu) needs
+// only the widget palette/state, the button rect and the
+// MenuButtonPopup feature flag.
+void aimBalloonAtMenuArrow(SpeechBalloon *balloon, QWidget *w) {
+    auto *tb = qobject_cast<QToolButton *>(w);
+    if (!balloon || !tb ||
+        tb->popupMode() != QToolButton::MenuButtonPopup)
+        return;
+    QStyleOptionToolButton opt;
+    opt.initFrom(tb);
+    opt.rect = tb->rect();
+    opt.features |= QStyleOptionToolButton::MenuButtonPopup;
+    QRect const arrow = tb->style()->subControlRect(
+        QStyle::CC_ToolButton, &opt, QStyle::SC_ToolButtonMenu, tb);
+    // Only override when the style gave a real sub-rect inside the
+    // button; otherwise leave the balloon pointing at the whole button
+    // (previous behaviour) rather than at a bogus position.
+    if (arrow.isValid() && !arrow.isEmpty() && tb->rect().contains(arrow))
+        balloon->setTargetRectOverride(arrow);
+}
+} // namespace
 
 #include "JS8_Main/FileTransfer.h"
 
@@ -2485,8 +2525,49 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // is fully shown and anchors have their global positions.
     {
         QPointer<UI_Constructor> const self(this);
-        QTimer::singleShot(1500, this, [self]() {
+        // [#227 modalwait 2026-09-18, operator] The chain holds a
+        // reference to itself so it can RE-RUN unchanged after a modal
+        // dialog closes. No second timer and no longer delay: a fixed
+        // delay would still race the dialog, and the chain already has
+        // the property this needs -- a hint that does not show keeps
+        // its flag unset. So the modal check is a phase of the SAME
+        // state machine: return before any hint is considered, then
+        // run the identical lambda when the dialog is finished.
+        auto chain = std::make_shared<std::function<void()>>();
+        *chain = [self, chain]() {
             if (!self) return;
+
+            // [#227] A modal dialog owns the screen. The startup
+            // balloon is anchored to the main window, which the user
+            // cannot act on while Settings is up, so it would appear
+            // over or behind a window that ignores it. Defer, consuming
+            // nothing. Re-armed on the dialog's finished signal; the
+            // connection disconnects itself because the Configuration
+            // dialog is a reused member, not destroyed on close.
+            if (auto *modal = QApplication::activeModalWidget()) {
+                if (auto *dlg = qobject_cast<QDialog *>(modal)) {
+                    auto conn = std::make_shared<QMetaObject::Connection>();
+                    *conn = QObject::connect(
+                        dlg, &QDialog::finished, self,
+                        [self, chain, conn](int) {
+                            QObject::disconnect(*conn);
+                            if (!self) return;
+                            // queue hop only: leave the dialog's own
+                            // signal handler before touching the UI
+                            QTimer::singleShot(0, self,
+                                               [chain]() { (*chain)(); });
+                        });
+                    qCDebug(mainwindow_js8)
+                        << "[HINT] startup balloon deferred: modal dialog up";
+                } else {
+                    // Not a QDialog: nothing reliable to hook. Skip this
+                    // startup entirely -- every flag stays unset, so the
+                    // hint shows on a later run.
+                    qCDebug(mainwindow_js8)
+                        << "[HINT] startup balloon skipped: modal widget up";
+                }
+                return;
+            }
 
             // Priority 1: ARQ / Send-chevron discovery (Build 314).
             if (!self->m_settings->value("FirstRunArqHintShown", false)
@@ -2498,6 +2579,10 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                        "Use '@ALLCALL QUERY ARQ?' to find ARQ-ready stations. "
                        "Click anywhere to dismiss."),
                     self->ui->startTxButton);
+                // [#228] the text means the chevron, so point at the
+                // chevron -- a tail on the whole button read as
+                // "click Send", the opposite of what it says.
+                aimBalloonAtMenuArrow(balloon, self->ui->startTxButton);
                 balloon->setTailSide(SpeechBalloon::TailSide::Bottom);
                 balloon->setAutoDismissMs(45000);
                 balloon->showAtTarget();
@@ -2604,6 +2689,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                        "ICS-213 Forms.\n"
                        "Click here to dismiss."),
                     self->ui->startTxButton);
+                // [#228] same defect, same fix: this text names the
+                // down arrow explicitly.
+                aimBalloonAtMenuArrow(balloon, self->ui->startTxButton);
                 balloon->setTailSide(SpeechBalloon::TailSide::Bottom);
                 balloon->setAutoDismissMs(45000);
                 balloon->showAtTarget();
@@ -2693,7 +2781,11 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                            true);
                 return; // one balloon per startup
             }
-        });
+        };
+        // [#227] Same 1500 ms as before: the main window must be shown
+        // and anchors must have real global positions before any
+        // balloon is placed.
+        QTimer::singleShot(1500, this, [chain]() { (*chain)(); });
     }
 
     // this must be the last statement of constructor
