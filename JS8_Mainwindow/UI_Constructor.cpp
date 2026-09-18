@@ -2604,24 +2604,41 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             // Yes adds the three MAGNET frequencies; No, a body click
             // or the timeout declines. Either way the flag is set, so
             // it never asks twice.
-            // [#254] ...and only when a Yes would actually DO
-            // something. With all three frequencies already present and
-            // already carrying a group (field 2026-09-18: one @MAGNET,
-            // two @MAGTG), a Yes changes nothing -- groups already set
-            // are never overwritten -- so asking is pure noise. The
-            // flag is deliberately NOT set in that case: nothing was
-            // asked, and if an entry is removed later the offer is
-            // still available.
+            // [#254 refinement, operator 2026-09-18] ASK only when a
+            // frequency must be ADDED -- that changes the operator's
+            // band plan. Filling a BLANK group on a frequency they
+            // already entered is not a band-plan change and needs no
+            // question, so it is just done (and logged). With all three
+            // present and already grouped -- field case: one @MAGNET,
+            // two @MAGTG -- there is nothing to do and nothing is said,
+            // because a group already set is never overwritten.
             static QList<Radio::Frequency> const kMagnetFreqs{
                 3585000, 7115000, 14115000};
-            if (!self->m_settings->value("MagnetFreqSeedAsked", false)
+            bool const magnetEligible =
+                !self->m_settings->value("MagnetFreqSeedAsked", false)
                      .toBool() &&
                 self->m_superSpotterSeen &&
                 self->m_config.my_groups().contains(
-                    QStringLiteral("@MAGNET")) &&
-                self->m_config.pendingGroupFrequencySeed(
+                    QStringLiteral("@MAGNET"));
+            auto const magnetPlan =
+                magnetEligible
+                    ? self->m_config.pendingGroupFrequencySeed(
+                          kMagnetFreqs, QStringLiteral("@MAGNET"),
+                          QStringLiteral("MAGNET"))
+                    : QPair<int, int>{0, 0};
+            if (magnetEligible && magnetPlan.first == 0 &&
+                magnetPlan.second > 0) {
+                // Nothing to add, only blank groups to fill: do it
+                // silently and fall THROUGH -- no balloon was shown, so
+                // this must not consume the one-per-startup slot.
+                int const n = self->m_config.seedGroupFrequencies(
                     kMagnetFreqs, QStringLiteral("@MAGNET"),
-                    QStringLiteral("MAGNET")) > 0) {
+                    QStringLiteral("MAGNET"));
+                self->m_settings->setValue("MagnetFreqSeedAsked", true);
+                qWarning() << "[MAGFREQ] filled @MAGNET into" << n
+                           << "existing MAGNET frequency entries with no"
+                           << "group set (no question needed)";
+            } else if (magnetEligible && magnetPlan.first > 0) {
                 auto *balloon = new SpeechBalloon(
                     tr("Would you like to add @MAGNET frequencies to "
                        "your frequency list?\n\n"

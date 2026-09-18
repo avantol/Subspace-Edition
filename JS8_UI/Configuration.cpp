@@ -1141,10 +1141,18 @@ namespace {
 // never duplicate a frequency (match on exact hertz; the auto-route
 // lookup takes the FIRST match), and add a missing frequency as JS8,
 // the mode every default entry ships with.
-int planGroupSeed(FrequencyList_v3::FrequencyItems &items,
-                  QList<Radio::Frequency> const &frequencies,
-                  QString const &group, QString const &description) {
-    int changed = 0;
+// .first = entries that must be ADDED (frequency absent entirely),
+// .second = existing entries whose BLANK group would be filled. The
+// two are counted separately because they are different promises to
+// the operator: adding a frequency changes their band plan and is
+// asked about; filling a blank group on a frequency they already
+// entered is not.
+QPair<int, int> planGroupSeed(FrequencyList_v3::FrequencyItems &items,
+                              QList<Radio::Frequency> const &frequencies,
+                              QString const &group,
+                              QString const &description) {
+    int added = 0;
+    int filled = 0;
     for (auto const freq : frequencies) {
         bool found = false;
         for (auto &it : items) {
@@ -1153,7 +1161,7 @@ int planGroupSeed(FrequencyList_v3::FrequencyItems &items,
             found = true;
             if (it.group_.isEmpty()) {
                 it.group_ = group;
-                ++changed;
+                ++filled;
             }
             break;
         }
@@ -1165,23 +1173,23 @@ int planGroupSeed(FrequencyList_v3::FrequencyItems &items,
             item.description_ = description;
             item.group_ = group;
             items.append(item);
-            ++changed;
+            ++added;
         }
     }
-    return changed;
+    return {added, filled};
 }
 } // namespace
 
-// [#254] How many entries a seed WOULD change. Zero means every one of
-// these frequencies is already present AND already carries a group, so
-// there is nothing to offer -- do not ask (operator, field 2026-09-18:
-// all three configured, one @MAGNET and two @MAGTG, and it asked
-// anyway).
-int Configuration::pendingGroupFrequencySeed(
+// [#254] What a seed WOULD do: {entries to add, blank groups to fill}.
+// {0,0} means every one of these frequencies is already present AND
+// already carries a group -- nothing to do at all (operator, field
+// 2026-09-18: all three configured, one @MAGNET and two @MAGTG, and it
+// asked anyway).
+QPair<int, int> Configuration::pendingGroupFrequencySeed(
     QList<Radio::Frequency> const &frequencies, QString const &group,
     QString const &description) const {
     if (group.trimmed().isEmpty() || frequencies.isEmpty())
-        return 0;
+        return {0, 0};
     auto items = m_->frequencies_.frequency_list(); // copy, discarded
     return planGroupSeed(items, frequencies, group, description);
 }
@@ -1196,8 +1204,8 @@ int Configuration::seedGroupFrequencies(
         return 0;
 
     auto items = m_->frequencies_.frequency_list();
-    int const changed =
-        planGroupSeed(items, frequencies, group, description);
+    auto const plan = planGroupSeed(items, frequencies, group, description);
+    int const changed = plan.first + plan.second;
 
     if (changed) {
         m_->frequencies_.frequency_list(items);
