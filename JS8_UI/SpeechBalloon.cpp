@@ -1,5 +1,8 @@
 #include "SpeechBalloon.h"
 
+#include <QApplication>
+#include <QDialog>
+#include <QEvent>
 #include <QFontMetrics>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
@@ -95,6 +98,42 @@ void SpeechBalloon::setYesNoChoice(std::function<void()> onYes) {
     m_noButton->show();
 }
 
+// [#227 withdraw 2026-09-18, operator] Arm the "a modal appeared after
+// I was shown" rule. Qt has no signal for that, so while this balloon
+// is visible it filters application events and reacts to any WIDGET
+// becoming visible that is modal -- the rig-configuration error box
+// and the Settings dialog both qualify. The balloon then closes and
+// reports itself WITHDRAWN so the caller can un-mark the hint; the
+// operator gets it another time instead of losing it to a dialog that
+// buried it.
+void SpeechBalloon::setWithdrawOnModal(std::function<void()> onWithdrawn) {
+    m_onWithdrawn = std::move(onWithdrawn);
+}
+
+void SpeechBalloon::withdraw() {
+    if (m_withdrawn)
+        return;
+    m_withdrawn = true; // report exactly once
+    auto const cb = m_onWithdrawn;
+    m_onWithdrawn = nullptr;
+    close();
+    if (cb)
+        cb();
+}
+
+bool SpeechBalloon::eventFilter(QObject *obj, QEvent *event) {
+    if (m_onWithdrawn && event->type() == QEvent::Show && obj != this) {
+        if (auto *w = qobject_cast<QWidget *>(obj)) {
+            // isModal() covers application- and window-modal dialogs;
+            // the balloon itself and our own children are excluded
+            // above and by the modality test.
+            if (w->isModal() && !isAncestorOf(w))
+                withdraw();
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
 void SpeechBalloon::layoutButtons() {
     if (!m_yesButton) {
         return;
@@ -171,6 +210,14 @@ void SpeechBalloon::showAtTarget() {
     move(pos);
 
     show();
+
+    // [#227 withdraw] Watch for a modal appearing only while visible,
+    // and only when the caller asked to be told. Installed after show()
+    // so our own Show event is not the one that triggers it. A modal
+    // that is ALREADY up is the hint chain's business, not ours -- it
+    // checks before building a balloon at all.
+    if (m_onWithdrawn)
+        qApp->installEventFilter(this);
 
     if (m_autoDismissMs > 0) {
         QTimer::singleShot(m_autoDismissMs, this, &QWidget::close);

@@ -2586,6 +2586,29 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 return;
             }
 
+            // [#227 withdraw 2026-09-18, operator] Arm every hint the
+            // same way: if a modal dialog appears AFTER the balloon is
+            // on screen -- the rig-configuration error box is the case
+            // that prompted this, and it can arrive well after the
+            // main window is up -- the balloon closes itself unseen,
+            // its "shown" flag is UN-set, and the chain runs again.
+            // That re-run finds the dialog still up, so it defers on
+            // the modal check above and comes back when the dialog is
+            // finished: the operator gets the hint they would have
+            // lost. One rule here rather than one per hint.
+            auto const armWithdraw = [self, chain](SpeechBalloon *balloon,
+                                                   QString const &key) {
+                balloon->setWithdrawOnModal([self, chain, key]() {
+                    if (!self) return;
+                    self->m_settings->setValue(key, false);
+                    qCWarning(mainwindow_js8)
+                        << "[HINT] withdrawn unseen, a modal appeared:"
+                        << key;
+                    QTimer::singleShot(kHintSettleMs, self,
+                                       [chain]() { (*chain)(); });
+                });
+            };
+
             // Priority 0: [#254 magfreq 2026-09-18, operator ruling]
             // MAGNET frequency seeding -- ABOVE every other hint. Four
             // conditions, all required, all evaluated here at startup
@@ -2656,6 +2679,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                << "frequency entries with @MAGNET";
                 });
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("MagnetFreqSeedAsked"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("MagnetFreqSeedAsked", true);
                 return; // one balloon per startup
@@ -2677,6 +2701,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 aimBalloonAtMenuArrow(balloon, self->ui->startTxButton);
                 balloon->setTailSide(SpeechBalloon::TailSide::Bottom);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("FirstRunArqHintShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("FirstRunArqHintShown", true);
                 return; // one balloon per startup
@@ -2698,6 +2723,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuWindow->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("FirstRunSpotsMapHintShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("FirstRunSpotsMapHintShown",
                                            true);
@@ -2719,6 +2745,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuWindow->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("FirstRunAutoRouteHintShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue(
                     "FirstRunAutoRouteHintShown", true);
@@ -2744,6 +2771,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                           120, 24));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("FirstRunWaterfallDblClickHintShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue(
                     "FirstRunWaterfallDblClickHintShown", true);
@@ -2766,6 +2794,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuWindow->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintSpotsMapRelayShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintSpotsMapRelayShown",
                                            true);
@@ -2786,6 +2815,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 aimBalloonAtMenuArrow(balloon, self->ui->startTxButton);
                 balloon->setTailSide(SpeechBalloon::TailSide::Bottom);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintIcs213Shown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintIcs213Shown", true);
                 return; // one balloon per startup
@@ -2804,6 +2834,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuWindow->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintArqMonitorShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintArqMonitorShown", true);
                 return; // one balloon per startup
@@ -2822,6 +2853,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuHelp->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintGuideShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintGuideShown", true);
                 return; // one balloon per startup
@@ -2845,6 +2877,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->ui->menuWindow->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintStationMonitorShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintStationMonitorShown",
                                            true);
@@ -2868,6 +2901,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     self->setBandListBy(QStringLiteral("call"));
                 });
                 balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintBandListByShown"));
                 balloon->showAtTarget();
                 self->m_settings->setValue("HintBandListByShown",
                                            true);

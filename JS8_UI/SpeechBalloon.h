@@ -66,6 +66,19 @@ class SpeechBalloon : public QWidget {
      */
     void setYesNoChoice(std::function<void()> onYes);
 
+    /**
+     * [#227 withdraw] A modal dialog that appears AFTER this balloon is
+     * on screen buries it -- the operator never gets to read it, but
+     * the one-per-startup chain has already marked the hint as shown.
+     * With this set, the balloon watches for a modal window becoming
+     * visible while it is up, closes itself, and calls `onWithdrawn`
+     * so the caller can UN-mark the hint and offer it another time.
+     * The callback means "withdrawn unseen", never "dismissed": a
+     * click, a Yes/No answer or the auto-dismiss timeout do not call
+     * it. Call BEFORE showAtTarget().
+     */
+    void setWithdrawOnModal(std::function<void()> onWithdrawn);
+
     /** Compute position relative to target and show. */
     void showAtTarget();
 
@@ -73,10 +86,12 @@ class SpeechBalloon : public QWidget {
     void paintEvent(QPaintEvent *)      override;
     void mousePressEvent(QMouseEvent *) override;
     void resizeEvent(QResizeEvent *)    override;
+    bool eventFilter(QObject *, QEvent *) override;
 
   private:
     void updateShape();
     void layoutButtons();
+    void withdraw(); // [#227] close unseen and report
 
     QString             m_text;
     QPointer<QWidget>   m_target;
@@ -84,6 +99,8 @@ class SpeechBalloon : public QWidget {
     QPushButton        *m_noButton{nullptr};
     int                 m_buttonRowH{0};      // extra body height
     QRect               m_targetRectOverride; // local coords; invalid = whole widget
+    std::function<void()> m_onWithdrawn;      // [#227] set = watch for modals
+    bool                m_withdrawn{false};   // [#227] report once
     TailSide            m_tailSide{TailSide::Top};
     int                 m_autoDismissMs{0};
     int                 m_cornerRadius{8};
