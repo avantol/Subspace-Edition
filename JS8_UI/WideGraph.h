@@ -63,6 +63,7 @@ class WideGraph : public QWidget {
     void setArqCapableCheck(std::function<bool(QString const &)> fn);
     void saveSettings();
     void setBand(QString const &);
+    void clearWaterfall(); // [TODO #132] passthrough to CPlotter
     void setFilterCenter(int);
     void setFilterWidth(int);
     void setFilterMinimumBandwidth(int);

@@ -181,6 +181,10 @@ class CPlotter final : public QWidget {
     void setPlotGain(int);
     void setPlotZero(int);
     void setStartFreq(int);
+    // [TODO #132] Wipe the waterfall: pixmap, replot history and label
+    // history together. Any one left behind is painted back by
+    // replot() or by a same-call label upgrade.
+    void clearWaterfall();
     void setSubMode(int);
     void setWaterfallAvg(int);
 

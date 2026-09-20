@@ -582,6 +582,75 @@ void UI_Constructor::writeSettings() {
             });
     }
     m_settings->endGroup();
+
+    // [TODO #235 rule 5, 2026-09-19] PER-ENTRY persistence. The flat
+    // RXActivity string and SsCallActivity group above are kept EXACTLY
+    // as they were, for every older reader (stock JS8Call reads
+    // RXActivity; earlier Subspace builds read SsCallActivity). The
+    // per-entry snapshot lives in its own new group that no older build
+    // reads: SsEntryActivity/<Hz>/Rx (pane HTML) and
+    // SsEntryActivity/<Hz>/Calls/<call> (rows, same map shape as above).
+    // The live pane and list are the CURRENT entry's snapshot when the
+    // dial is on one; a non-entry dial persists nothing (rule 5). An
+    // entry no longer in the frequency list is dropped here, which is
+    // how "deleting an entry deletes its persisted context" is met.
+    {
+        auto const writeCalls =
+            [this, now, callsignAging](QMap<QString, CallDetail> const &calls) {
+                for (auto const &cd : calls) {
+                    if (cd.call.trimmed().isEmpty())
+                        continue;
+                    if (callsignAging &&
+                        cd.utcTimestamp.secsTo(now) / 60 >= callsignAging)
+                        continue;
+                    m_settings->setValue(
+                        cd.call.trimmed(),
+                        QVariantMap{
+                            {"snr", QVariant(cd.snr)},
+                            {"grid", QVariant(cd.grid)},
+                            {"dial", QVariant(cd.dial)},
+                            {"freq", QVariant(cd.offset)},
+                            {"tdrift", QVariant(cd.tdrift)},
+                            {"ackTimestamp", QVariant(cd.ackTimestamp)},
+                            {"utcTimestamp", QVariant(cd.utcTimestamp)},
+                            {"submode", QVariant(cd.submode)},
+                        });
+                }
+            };
+
+        QSet<QString> keys;
+        for (auto it = m_callActivityBandCache.cbegin();
+             it != m_callActivityBandCache.cend(); ++it)
+            keys.insert(it.key());
+        for (auto it = m_rxTextBandCache.cbegin();
+             it != m_rxTextBandCache.cend(); ++it)
+            keys.insert(it.key());
+        if (!m_lastEntryKey.isEmpty())
+            keys.insert(m_lastEntryKey);
+
+        m_settings->beginGroup("SsEntryActivity");
+        m_settings->remove("");
+        int written = 0;
+        for (auto const &key : keys) {
+            if (standardEntryKey(key.toLongLong()).isEmpty())
+                continue; // entry deleted: its context goes with it
+            bool const live = (key == m_lastEntryKey);
+            m_settings->beginGroup(key);
+            m_settings->setValue("Rx", live ? ui->textEditRX->toHtml()
+                                            : m_rxTextBandCache.value(key));
+            m_settings->beginGroup("Calls");
+            writeCalls(live ? m_callActivity
+                            : m_callActivityBandCache.value(key));
+            m_settings->endGroup();
+            m_settings->endGroup();
+            ++written;
+        }
+        m_settings->endGroup();
+        qWarning() << "[ENTRY] persisted" << written << "entry snapshot(s)"
+                   << "live entry" << (m_lastEntryKey.isEmpty()
+                                           ? QStringLiteral("off-entry")
+                                           : m_lastEntryKey);
+    }
 }
 
 //---------------------------------------------------------- readSettings()
@@ -642,10 +711,11 @@ void UI_Constructor::readSettings() {
     ui->actionShow_Statusbar->setChecked(
         m_settings->value("ShowStatusbar", true).toBool());
     ui->statusBar->setVisible(ui->actionShow_Statusbar->isChecked());
-    ui->textEditRX->setHtml(
-        m_config.reset_activity()
-            ? ""
-            : m_settings->value("RXActivity", "").toString());
+    // [TODO #235 rule 5] the conversation pane is no longer filled here
+    // from the flat RXActivity string: it belongs to the entry it was
+    // saved on, and is restored by the first entry transition. See the
+    // SsEntryActivity block below.
+    ui->textEditRX->clear();
     ui->actionShow_Band_Heartbeats_and_ACKs->setChecked(
         m_settings->value("BandHBActivityVisible", true).toBool());
     m_settings->endGroup();
@@ -743,59 +813,101 @@ void UI_Constructor::readSettings() {
         8);
     m_settings->endGroup();
 
+    // [TODO #235 rule 5, 2026-09-19] The saved activity is loaded into
+    // the PER-ENTRY caches, never onto the live list or pane: the
+    // first entry transition (updateCurrentBand, once the rig reports
+    // its dial) restores the entry the dial is actually on, and a
+    // start on a non-entry dial shows nothing. Before this, the whole
+    // saved list and pane were put on screen against whatever dial
+    // the rig came up on (legacy behaviour, stock JS8Call does the
+    // same) -- garbage whenever the dial changed between exit and start.
     if (m_config.reset_activity()) {
         // NOOP
     } else {
-        // Migrate from old [CallActivity] to [SsCallActivity] if needed,
-        // then delete [CallActivity] to prevent JS8Call-Improved crashes.
-        QString readGroup = "SsCallActivity";
-        if (!m_settings->childGroups().contains("SsCallActivity") &&
-            m_settings->childGroups().contains("CallActivity")) {
-            readGroup = "CallActivity";  // one-time migration
-        }
-
-        m_settings->beginGroup(readGroup);
-        foreach (auto call, m_settings->allKeys()) {
-
-            auto values = m_settings->value(call).toMap();
-
-            auto snr = values.value("snr", -64).toInt();
-            auto grid = values.value("grid", "").toString();
-            auto dial = values.value("dial", 0).toInt();
-            auto freq = values.value("freq", 0).toInt();
-            auto tdrift = values.value("tdrift", 0).toFloat();
-
-#if CACHE_CALL_DATETIME_AS_STRINGS
-            auto ackTimestampStr = values.value("ackTimestamp", "").toString();
-            auto ackTimestamp =
-                QDateTime::fromString(ackTimestampStr, "yyyy-MM-dd hh:mm:ss");
-            ackTimestamp.setUtcOffset(0);
-
-            auto utcTimestampStr = values.value("utcTimestamp", "").toString();
-            auto utcTimestamp =
-                QDateTime::fromString(utcTimestampStr, "yyyy-MM-dd hh:mm:ss");
-            utcTimestamp.setUtcOffset(0);
-#else
-            auto ackTimestamp = values.value("ackTimestamp").toDateTime();
-            auto utcTimestamp = values.value("utcTimestamp").toDateTime();
-#endif
-            auto submode =
-                values.value("submode", Varicode::JS8CallNormal).toInt();
-
+        auto const readCall = [](QString const &call,
+                                 QVariantMap const &values) {
             CallDetail cd = {};
             cd.call = call;
-            cd.snr = snr;
-            cd.grid = grid;
-            cd.dial = dial;
-            cd.offset = freq;
-            cd.tdrift = tdrift;
-            cd.ackTimestamp = ackTimestamp;
-            cd.utcTimestamp = utcTimestamp;
-            cd.submode = submode;
+            cd.snr = values.value("snr", -64).toInt();
+            cd.grid = values.value("grid", "").toString();
+            cd.dial = values.value("dial", 0).toInt();
+            cd.offset = values.value("freq", 0).toInt();
+            cd.tdrift = values.value("tdrift", 0).toFloat();
+            cd.ackTimestamp = values.value("ackTimestamp").toDateTime();
+            cd.utcTimestamp = values.value("utcTimestamp").toDateTime();
+            cd.submode =
+                values.value("submode", Varicode::JS8CallNormal).toInt();
+            return cd;
+        };
+        QString const myCall = m_config.my_callsign().trimmed();
+        auto const admit = [&myCall](CallDetail const &cd) {
+            // the same filters logCallActivity applies to a live row
+            if (cd.call.trimmed().isEmpty() || cd.call.contains(">"))
+                return false;
+            return myCall.isEmpty() ||
+                   cd.call.compare(myCall, Qt::CaseInsensitive) != 0;
+        };
 
-            logCallActivity(cd, false);
+        int entries = 0, rows = 0, dropped = 0;
+        if (m_settings->childGroups().contains("SsEntryActivity")) {
+            // current format: one snapshot per entry
+            m_settings->beginGroup("SsEntryActivity");
+            for (auto const &key : m_settings->childGroups()) {
+                if (standardEntryKey(key.toLongLong()).isEmpty()) {
+                    ++dropped; // entry no longer in the frequency list
+                    continue;
+                }
+                m_settings->beginGroup(key);
+                m_rxTextBandCache[key] = m_settings->value("Rx").toString();
+                m_settings->beginGroup("Calls");
+                for (auto const &call : m_settings->allKeys()) {
+                    auto cd = readCall(call, m_settings->value(call).toMap());
+                    if (!admit(cd))
+                        continue;
+                    m_callActivityBandCache[key][cd.call] = cd;
+                    ++rows;
+                }
+                m_settings->endGroup();
+                m_settings->endGroup();
+                ++entries;
+            }
+            m_settings->endGroup();
+        } else {
+            // older format (488 and earlier, and the one-time migration
+            // from stock's [CallActivity]): one flat list. Each row
+            // carries the dial it was heard on, so route it to that
+            // entry; the pane has no dial, so it goes to the entry of
+            // the dial saved at exit (Common/DialFreq). Rows from a
+            // non-entry dial are dropped: nothing to restore them to.
+            QString readGroup = "SsCallActivity";
+            if (!m_settings->childGroups().contains("SsCallActivity") &&
+                m_settings->childGroups().contains("CallActivity")) {
+                readGroup = "CallActivity";
+            }
+            m_settings->beginGroup(readGroup);
+            for (auto const &call : m_settings->allKeys()) {
+                auto cd = readCall(call, m_settings->value(call).toMap());
+                if (!admit(cd))
+                    continue;
+                QString const key = standardEntryKey(cd.dial);
+                if (key.isEmpty()) {
+                    ++dropped;
+                    continue;
+                }
+                m_callActivityBandCache[key][cd.call] = cd;
+                ++rows;
+            }
+            m_settings->endGroup();
+            QString const paneKey = standardEntryKey(m_lastMonitoredFrequency);
+            auto const html =
+                m_settings->value("UI_Constructor/RXActivity", "").toString();
+            if (!paneKey.isEmpty() && !html.isEmpty())
+                m_rxTextBandCache[paneKey] = html;
+            entries = m_callActivityBandCache.size();
         }
-        m_settings->endGroup();
+        qWarning() << "[ENTRY] loaded" << rows << "saved call(s) into"
+                   << entries << "entry cache(s)," << dropped
+                   << "dropped (no entry)";
 
         // Always delete [CallActivity] to prevent JS8Call-Improved crashes
         if (m_settings->childGroups().contains("CallActivity")) {
@@ -4965,11 +5077,12 @@ void UI_Constructor::stopTx2() {
 void UI_Constructor::TxAgain() { auto_tx_mode(true); }
 
 // [TODO #235 phase 1] The snapshot is keyed by the standard entry the
-// dial was sitting on (exact Hz), not by band. The band table is not
-// part of it: on return it stays blank (rule 4), because its offsets
-// were measured at that dial and anything since has aged out anyway.
+// dial was sitting on (exact Hz), not by band. The band table IS part
+// of it again since 2026-09-19 (rule 4 reversed): the dial is exact so
+// its offsets are valid, and its rows carry their own timestamps.
 void UI_Constructor::cacheActivity(QString key) {
     m_callActivityBandCache[key] = m_callActivity;
+    m_bandActivityBandCache[key] = m_bandActivity; // [#235 rule 4 reversed]
     m_rxTextBandCache[key] = ui->textEditRX->toHtml();
     m_heardGraphIncomingBandCache[key] = m_heardGraphIncoming;
     m_heardGraphOutgoingBandCache[key] = m_heardGraphOutgoing;
@@ -4980,8 +5093,30 @@ void UI_Constructor::restoreActivity(QString key) {
         m_callActivity = m_callActivityBandCache[key];
     }
 
+    // [#235 rule 4 REVERSED, operator 2026-09-19: "implement that now"]
+    // The band table comes back with the other panes. Its rows keep
+    // their own timestamps, so the Age column is true and the aging
+    // filter hides what is stale; the dial is exact, so the offsets
+    // are valid. See the cache member's comment in mainwindow.h.
+    if (m_bandActivityBandCache.contains(key)) {
+        m_bandActivity = m_bandActivityBandCache[key];
+    }
+
     if (m_rxTextBandCache.contains(key)) {
         ui->textEditRX->setHtml(m_rxTextBandCache[key]);
+        // [operator 2026-09-19] "when restoring the convo window,
+        // scroll to the end": the newest line is what the operator
+        // returns to. Cursor to the end now, and the scroll bar to
+        // its maximum once the document has laid out (the range is
+        // not final inside setHtml).
+        auto c = ui->textEditRX->textCursor();
+        c.movePosition(QTextCursor::End);
+        ui->textEditRX->setTextCursor(c);
+        ui->textEditRX->ensureCursorVisible();
+        QTimer::singleShot(0, ui->textEditRX, [edit = ui->textEditRX]() {
+            edit->verticalScrollBar()->setValue(
+                edit->verticalScrollBar()->maximum());
+        });
     }
 
     if (m_heardGraphIncomingBandCache.contains(key)) {
@@ -4998,12 +5133,17 @@ void UI_Constructor::restoreActivity(QString key) {
 // [TODO #235 phase 1] "On a standard frequency" means EXACT (operator
 // 2026-09-11: "we're all on CAT control"): the dial is set by CAT to
 // the entry's Hz, so any move off it, 250 Hz or 10 Hz, is leaving.
-// JS8 entries only; region is not consulted (an entry is an entry).
+// JS8 and ALL entries; region is not consulted (an entry is an entry).
+// [#235 2026-09-19] Modes::ALL counts too, same rule as
+// autoRouteGroupForDial below: a hand-added row defaults to "All" in
+// Settings, and requiring JS8 exactly meant such an entry never cached
+// or restored its call list and RX pane (user report, 7.115 <-> 14.115).
 QString UI_Constructor::standardEntryKey(Frequency dial) const {
     if (dial <= 0)
         return QString{};
     for (auto const &it : m_config.frequencies()->frequency_list())
-        if (it.mode_ == Modes::JS8 && it.frequency_ == dial)
+        if ((it.mode_ == Modes::JS8 || it.mode_ == Modes::ALL) &&
+            it.frequency_ == dial)
             return QString::number(dial);
     return QString{};
 }
@@ -5078,6 +5218,14 @@ void UI_Constructor::clearActivity(bool keepOutgoingBox) {
     clearBandActivity();
     clearRXActivity(keepOutgoingBox);
     clearCallActivity();
+
+    // [TODO #132, operator 2026-09-19: "implement the erase now"] The
+    // waterfall clears with the three panes: its traces and labels
+    // belong to the dial they were painted at, exactly like the band
+    // table's offsets. One place, so every caller of clearActivity
+    // (entry transition, band change, Clear All Activity) agrees.
+    if (m_wideGraph)
+        m_wideGraph->clearWaterfall();
 
     displayActivity(true);
 }

@@ -801,6 +801,25 @@ void CPlotter::drawDials() {
     }
 }
 
+// [TODO #132, operator 2026-09-19] Wipe the waterfall. The three
+// stores must go together: the pixmap is what is seen, m_replot is
+// what replot() rebuilds the pixmap from on a resize, and
+// m_recentLabels is what label painting matches against and what
+// replot() re-paints. The buffer keeps its size (one slot per pixmap
+// row, set in the resize path); each slot becomes the monostate
+// alternative, which draws nothing. m_waterfallRow is NOT reset: it
+// is a monotonic counter and the labels that referenced it are gone.
+
+void CPlotter::clearWaterfall() {
+    std::fill(m_replot.begin(), m_replot.end(), std::monostate{});
+    m_recentLabels.clear();
+    m_line = std::numeric_limits<int>::max();
+    m_text.clear();
+    if (!m_WaterfallPixmap.isNull())
+        m_WaterfallPixmap.fill(Qt::black);
+    update();
+}
+
 // Replot the waterfall display, using the data present in the replot
 // buffer, if any.
 

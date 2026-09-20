@@ -737,6 +737,8 @@ void WideGraph::setBand(QString const &band) {
     m_band = QString(4, ' ').append(band);
 }
 
+void WideGraph::clearWaterfall() { ui->widePlot->clearWaterfall(); }
+
 void WideGraph::on_fStartSpinBox_valueChanged(int const n) {
     ui->widePlot->setStartFreq(n);
 }

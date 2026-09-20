@@ -1807,6 +1807,17 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 ui->tableWidgetCalls->selectionModel()->clearSelection();
             }
 
+            // [#257 2026-09-19] Same rule as the calls table: a
+            // right-click SELECTS the row under the cursor through the
+            // left-click path first. Here the offset/speed/drift
+            // entries already followed Qt's row highlight while the
+            // "Directed to", "Relay via", "Deselect" and log entries
+            // followed the stale program selection: one menu, two rows.
+            if (int const row = ui->tableWidgetRXAll->rowAt(point.y());
+                row != -1)
+                on_tableWidgetRXAll_cellClicked(
+                    row, ui->tableWidgetRXAll->columnAt(point.x()));
+
             QString selectedCall = callsignSelected();
             bool missingCallsign = selectedCall.isEmpty();
             bool isAllCall = isAllCallIncluded(selectedCall);
@@ -2129,6 +2140,19 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             if (ui->tableWidgetCalls->rowAt(point.y()) != -1) {
                 ui->tableWidgetRXAll->selectionModel()->clearSelection();
             }
+
+            // [#257 2026-09-19, operator: "very confusing, we should
+            // fix"] A right-click SELECTS the row under the cursor
+            // first, through the one left-click path, so the menu is
+            // built for the row the operator is looking at. Before:
+            // Qt moved the highlight on the press, but the program's
+            // selection changes only on cellClicked (left button), so
+            // the menu served the PREVIOUS selection and the highlight
+            // then landed on the right-clicked row once the menu closed.
+            // Legacy (stock 2.2.0 identical). Empty area: unchanged.
+            if (int const row = ui->tableWidgetCalls->rowAt(point.y());
+                row != -1)
+                on_tableWidgetCalls_cellClicked(row, 0);
 
             QString selectedCall = callsignSelected();
             bool isAllCall = isAllCallIncluded(selectedCall);

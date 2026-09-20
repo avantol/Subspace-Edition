@@ -1834,6 +1834,13 @@ class UI_Constructor : public QMainWindow {
     // the band table is NOT cached: it stays blank on return (rule 4)
     QMap<QString, QMap<QString, CallDetail>>
         m_callActivityBandCache; // entry -> call activity
+    // [#235 rule 4 REVERSED, operator 2026-09-19] the band table is
+    // cached and restored per entry again, as stock did per band: the
+    // dial is exact so its offsets are valid, the Age column is computed
+    // from each row's own timestamp, and Band Activity aging hides the
+    // stale rows. Rule 4 rested on "restoring shows old traffic as
+    // current", which was wrong.
+    QMap<QString, BandActivity> m_bandActivityBandCache; // entry -> band table
     QMap<QString, QString> m_rxTextBandCache; // entry -> rx text
     QMap<QString, QMap<QString, QSet<QString>>>
         m_heardGraphOutgoingBandCache; // band -> heard in
