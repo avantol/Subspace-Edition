@@ -2179,6 +2179,28 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                             [this, mcall]() {
                                 openStationMonitor(mcall);
                             });
+                    // [#269 2026-09-21, operator] The reach question
+                    // in the operator's own words, from the list they
+                    // already use: opens the Spots Map with auto-route
+                    // armed and this call filled in, one click from
+                    // Start. Testers were not finding the map; this
+                    // brings it to where they already are.
+                    auto *reachAction = menu->addAction(
+                        tr("Can I reach %1 now?").arg(mcall));
+                    connect(reachAction, &QAction::triggered, this,
+                            [this, mcall]() {
+                                // [operator 2026-09-21] Clear the
+                                // outgoing box, as every directed-to
+                                // entry does: this is a new intent,
+                                // not an addition to a draft. Same
+                                // guard addMessageText uses -- never
+                                // touch the box with a transmission
+                                // already queued.
+                                if (!isMessageQueuedForTransmit())
+                                    ui->extFreeTextMsgEdit->clear();
+                                if (m_spotMapWindow)
+                                    m_spotMapWindow->autoRouteFor(mcall);
+                            });
                     menu->addSeparator();
                 }
             }

@@ -2510,6 +2510,8 @@ Varicode::buildMessageFrames(QString const &mycall, QString const &mygrid,
                         qCDebug(varicode_js8)
                             << "no checksum required for cmd" << dirCmd;
                     }
+                    if (pInfo)
+                        pInfo->checksumSize = checksumSize; // what went on
                     qCDebug(varicode_js8) << "after:" << line;
                 }
 

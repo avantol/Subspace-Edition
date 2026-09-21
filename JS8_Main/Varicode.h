@@ -18,6 +18,11 @@ class Varicode {
         QString dirTo;
         QString dirCmd;
         QString dirNum;
+        // [operator 2026-09-20] bits of checksum actually APPENDED to the
+        // last line (0, 16 or 32), after the APRS / ARQ-marker / QUERY ARQ
+        // skips. Lets the station-monitor feed strip it from our own
+        // transmissions so they read like received messages.
+        int checksumSize = 0;
     };
 
     // submode types

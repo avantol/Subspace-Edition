@@ -82,6 +82,14 @@ void UI_Constructor::processCommandActivity() {
 
         // is this to me? Exact match only — WM8Q/P is a different station than WM8Q
         bool toMe = d.to == m_config.my_callsign().trimmed();
+        // [#258 2026-09-20] THE structural "addressed to me" record for
+        // this offset. markOffsetDirected() existed since 2.2.0 but was
+        // called only by the dummy-data generator, so its two readers,
+        // the band-activity "my call" color and isFreqOffsetFree(), ran
+        // on an always-empty cache; the color was carried by a MENTION
+        // test instead. One call, at the one place toMe is decided.
+        if (toMe)
+            markOffsetDirected(d.offset, /*isAllCall=*/false);
 
         // log call activity BEFORE the command-allowed gate so even
         // unrecognized directed commands refresh the sender's SNR in the
@@ -182,11 +190,22 @@ void UI_Constructor::processCommandActivity() {
                 hearer.compare(d.from, Qt::CaseInsensitive) == 0
                     ? d.dial + d.offset
                     : 0;
-            m_spotMapWindow->addHearingReport(band, hearer, hearerGrid,
-                                              heard, grids,
-                                              reportedToMeSnr,
-                                              QDateTime{}, -99,
-                                              QString{}, hearerRfHz);
+            // [testimony, audit F3 2026-09-21] The HEARER's presence
+            // is first-hand only when we decoded this frame from it;
+            // the heard calls are always its testimony ("hearing"),
+            // never our radio's observation. Before, every edge this
+            // lambda made was tagged "radio". [linehz] The line was
+            // observed at the hearer's transmit frequency, known
+            // under the same condition (0 = unknown otherwise).
+            bool const firstHand =
+                hearer.compare(d.from, Qt::CaseInsensitive) == 0;
+            m_spotMapWindow->addHearingReport(
+                band, hearer, hearerGrid, heard, grids, reportedToMeSnr,
+                QDateTime{}, -99,
+                /*source=*/firstHand ? QStringLiteral("radio")
+                                     : QStringLiteral("hearing"),
+                hearerRfHz, /*edgeHz=*/hearerRfHz,
+                /*edgeSource=*/QStringLiteral("hearing"));
         };
         // [hbdots] PRESENCE for every on-air sender — heartbeats and
         // all other frames put a hollow dot at the station's grid in
@@ -209,7 +228,9 @@ void UI_Constructor::processCommandActivity() {
                         static_cast<Radio::Frequency>(d.dial)),
                     myC, m_config.my_grid(), {d.from}, {QString()},
                     /*reportedToMeSnr=*/-99, QDateTime{},
-                    /*heardSnr=*/d.snr);
+                    /*heardSnr=*/d.snr, /*source=*/QString{},
+                    /*hearerRfHz=*/0,
+                    /*edgeHz=*/d.dial + d.offset);   // [linehz]
             }
         }
         // [#167 2026-08-21] Mesh edge A->B ONLY when this frame is
@@ -225,19 +246,52 @@ void UI_Constructor::processCommandActivity() {
         // C's traffic, so A DECODED C -- a real A->C edge, and one of
         // the few ways a link between two distant stations becomes
         // visible to us at all. Note the direction: the edge is to the
-        // *DE* ORIGINATOR, never to the destination X (that pairing is
+        // *DE* originator, never to the destination X (that pairing is
         // exactly the phantom this todo removes). The *DE* tail is
         // otherwise consumed only for HEARING/GRID attribution below.
+        //
+        // [#268 2026-09-21, operator] THE TAIL IS A PATH, NOT A NAME.
+        // Each hop APPENDS the station it decoded, so the tail reads
+        // oldest first: "*DE* WM8Q *DE* KJ7VWV" on a frame from
+        // KB7ITU means WM8Q originated, KJ7VWV forwarded it (KJ7VWV
+        // decoded WM8Q) and KB7ITU forwarded that (KB7ITU decoded
+        // KJ7VWV). Taking the FIRST name credited the forwarder with
+        // hearing the ORIGINATOR -- on a two-hop tail the one pair
+        // the message does not prove, the same phantom #167 exists to
+        // remove (17 such messages in the field log). Two questions,
+        // two names: the ADJACENT hop (last) is who this station
+        // decoded; the ORIGINATOR (first) is whose traffic it is, and
+        // that one still answers the fwd-journal test below.
         if (d.cmd == QStringLiteral(">") && !d.from.isEmpty()) {
             static QRegularExpression const kDeFromRe(
                 QStringLiteral(R"(\*DE\*\s+(?<de>[A-Z0-9/]+))"),
                 QRegularExpression::CaseInsensitiveOption);
-            if (auto const m = kDeFromRe.match(d.text); m.hasMatch()) {
-                QString const de =
-                    m.captured(QStringLiteral("de")).toUpper();
-                if (Radio::is_callsign(de) &&
-                    de.compare(d.from, Qt::CaseInsensitive) != 0)
-                    feedHearing(d.from, {de});
+            QStringList hops;   // oldest first: originator .. adjacent
+            for (auto it = kDeFromRe.globalMatch(d.text); it.hasNext();) {
+                QString const c =
+                    it.next().captured(QStringLiteral("de")).toUpper();
+                if (Radio::is_callsign(c))
+                    hops.append(c);
+            }
+            if (!hops.isEmpty()) {
+                QString const de = hops.first();        // originator
+                QString const adj = hops.last();        // decoded by d.from
+                if (adj.compare(d.from, Qt::CaseInsensitive) != 0)
+                    feedHearing(d.from, {adj});
+                // [#268] The inner links the tail also states: hop i+1
+                // forwarded hop i, so it decoded it. TESTIMONY, not our
+                // observation -- we never heard those transmissions --
+                // which is exactly the class feedHearing gives an edge
+                // whose hearer is not d.from, with no frequency.
+                for (int i = 0; i + 1 < hops.size(); ++i)
+                    if (hops.at(i + 1).compare(hops.at(i),
+                                               Qt::CaseInsensitive) != 0)
+                        feedHearing(hops.at(i + 1), {hops.at(i)});
+                if (hops.size() > 1)
+                    qCWarning(mainwindow_js8)
+                        << "[RELAYPATH #268] tail" << hops.join('>')
+                        << "-> forwarder" << d.from << "decoded" << adj
+                        << "; originator" << de;
                 // [fwdjournal 2026-08-27] A station observed
                 // forwarding OUR traffic is a forward outcome
                 // whoever asked -- the operator's manual K0EMP relay
@@ -783,8 +837,19 @@ void UI_Constructor::processCommandActivity() {
         // "MSG ID n" forms). A "NO" answer clears the pending entry.
         if (!isAllCall && toMe && d.cmd == QStringLiteral(" YES"))
             bindCallQueryReply(d.from, d.text, d.dial);
-        if (!isAllCall && toMe && d.cmd == QStringLiteral(" NO"))
-            m_pendingCallQueries.remove(d.from.toUpper());
+        if (!isAllCall && toMe && d.cmd == QStringLiteral(" NO")) {
+            // [groupbind] a NO retires every direct query of that
+            // station; group entries are untouched (one member's NO
+            // says nothing about the rest).
+            QString const who = d.from.toUpper();
+            for (auto it = m_pendingCallQueries.begin();
+                 it != m_pendingCallQueries.end();) {
+                if (it->askee == who)
+                    it = m_pendingCallQueries.erase(it);
+                else
+                    ++it;
+            }
+        }
 
         if (!isAllCall && d.cmd == QStringLiteral(" YES")) {
             static QRegularExpression const kArqLevelReplyRe{
@@ -1349,6 +1414,16 @@ void UI_Constructor::processCommandActivity() {
             auto text = d.text;
             auto match = re.match(text);
 
+            // [TODO #260] The ORIGINATOR of this relayed message: the
+            // last hop of its path (the *DE* tail), which is also the
+            // station an ACK would be addressed to. Computed once,
+            // here, for the suppression test below.
+            QStringList const relayPathCalls =
+                parseRelayPathCallsigns(d.from, d.text);
+            QString const relayOriginator =
+                relayPathCalls.isEmpty() ? QString{}
+                                         : relayPathCalls.last();
+
             // if the text starts with a callsign, and relay is not disabled,
             // and this is not a group callsign, then relay.
             if (match.hasMatch() && !isGroupCall) {
@@ -1376,6 +1451,16 @@ void UI_Constructor::processCommandActivity() {
                 qCWarning(mainwindow_js8)
                     << "[REACH] relay ACK suppressed (TODO #177):"
                     << d.text.left(40);
+            } else if (!d.text.startsWith("ACK") &&
+                       relayedAskAnswered(relayOriginator)) {
+                // [TODO #260, 2026-09-21] #177's ruling for a relayed
+                // ask WE sent by hand: the answer's arrival proves the
+                // path, so the ACK carries nothing. Relay layer only --
+                // the payload is not read.
+                qCWarning(mainwindow_js8)
+                    << "[RELAYASK] relay ACK suppressed (TODO #260):"
+                    << "answer to an ask of ours from"
+                    << relayOriginator << "text=" << d.text.left(40);
             } else if (!d.text.startsWith("ACK")) {
 
                 // parse out the callsign path
@@ -1665,7 +1750,7 @@ void UI_Constructor::processCommandActivity() {
 
             if (mid != -1) {
                 if (pendingCount > 0) {
-                    extra = QString("MSG ID %1 +%2)")
+                    extra = QString("MSG ID %1 +%2") // [#262] no stray ")"
                             .arg(mid)
                             .arg(pendingCount);
                 }
@@ -1684,7 +1769,7 @@ void UI_Constructor::processCommandActivity() {
                 mid = getNextGroupMessageIdForCallsign(d.to, d.from);
                 if (mid != -1) {
                     if (pendingCount > 0) {
-                        extra = QString("MSG ID %1 +%2)")
+                        extra = QString("MSG ID %1 +%2") // [#262] no stray ")"
                             .arg(mid)
                             .arg(pendingCount);
                     }

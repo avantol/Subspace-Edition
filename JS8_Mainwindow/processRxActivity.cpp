@@ -25,20 +25,9 @@ void UI_Constructor::processRxActivity() {
         if (m_reach.active)
             reachOnFrame(d);
 
-        // [congestion] every decoded frame marks its slot occupied.
-        {
-            qint64 const slot =
-                QDateTime::currentSecsSinceEpoch() /
-                qMax(1, static_cast<int>(m_TRperiod));
-            m_congestionSlots.insert(slot);
-            for (auto it = m_congestionSlots.begin();
-                 it != m_congestionSlots.end();) {
-                if (*it < slot - 40)
-                    it = m_congestionSlots.erase(it);
-                else
-                    ++it;
-            }
-        }
+        // [#261] every heard frame feeds the on-air congestion model
+        // with its offset (this queue never carries our own frames).
+        recordCongestionFrame(d.offset, d.bits);
 
         if (canSendNetworkMessage()) {
             sendNetworkMessage(

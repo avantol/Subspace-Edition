@@ -12,7 +12,20 @@
 // [bandcall] Shared "CALL: " prefix parse -- the ONE authority for
 // attributing a frame to its sender in the band activity view (was
 // inline in the render loop). Format is always "CALLSIGN: @GROUP/msg".
-QString UI_Constructor::frameFromCall(QString const &text) {
+QString UI_Constructor::frameFromCall(QString const &text, int bits) {
+    // [#240 LAYER 1, operator 2026-09-20: "a sender prefix is
+    // meaningful only on a JS8CallFirst frame"] A message's sender
+    // rides its FIRST frame: the compound frame precedes the directed
+    // frame in buildMessageFrames, a plain-text message's "CALL: " is
+    // typed at its start, HB/ACK/SNR are single First|Last frames. A
+    // "X: " on any later frame is body text -- a CommStat remark
+    // ("2,KCNA: N."), a MeshCore tag ("JS8MESH: ..."), a quoted call --
+    // and layer 0's shape test cannot tell a real callsign in a body
+    // from a sender. The protocol says where a message starts (bit 72);
+    // use it. A missed First frame yields nothing here and falls to the
+    // offset fallback (mostLikelyCallAtOffset), never to body text.
+    if ((bits & Varicode::JS8CallFirst) != Varicode::JS8CallFirst)
+        return QString();
     int colonPos = text.indexOf(": ");
     if (colonPos > 0 && colonPos <= 15) {
         QString candidate = text.left(colonPos).trimmed();
@@ -132,7 +145,7 @@ void UI_Constructor::displayBandActivity() {
             if (listByCall) {
                 QString lastCall;
                 for (auto const &it : items) {
-                    QString const c = frameFromCall(it.text);
+                    QString const c = frameFromCall(it.text, it.bits);
                     if (!c.isEmpty())
                         lastCall = c;
                     attrib.append(
@@ -440,10 +453,18 @@ void UI_Constructor::displayBandActivity() {
                 }
             }
 
+            // [#258 2026-09-20, operator: "highlighted in red, as if for
+            // me"] The "my call" color means ADDRESSED TO ME: a directed
+            // message to this station was heard at this offset within
+            // the last two minutes (markOffsetDirected). The old second
+            // test, isMyCallIncluded(lastText), colored any row that
+            // MENTIONED my call anywhere -- a relay body naming me as the
+            // next hop ("W5TTA: W0IFM> WM8Q F!701C ..."), a *DE* tail, a
+            // free-text mention. Legacy (stock 2.2.0 identical). Meaning
+            // is not position: a mention is not an address.
             bool isDirectedAllCall = false;
-            if ((isDirectedOffset(offset, &isDirectedAllCall) &&
-                 !isDirectedAllCall) ||
-                isMyCallIncluded(lastText)) {
+            if (isDirectedOffset(offset, &isDirectedAllCall) &&
+                !isDirectedAllCall) {
                 for (int i = 0; i < ui->tableWidgetRXAll->columnCount();
                      i++) {
                     ui->tableWidgetRXAll->item(row, i)->setBackground(
@@ -591,7 +612,7 @@ void UI_Constructor::displayBandActivity() {
                         }
 
                         // Extract "from" callsign via the shared parse
-                        QString frameCall = frameFromCall(item.text);
+                        QString frameCall = frameFromCall(item.text, item.bits);
 
                         // Assign frame to callsign group — consolidate by callsign
                         int maxGroups = m_config.message_subdivisions();

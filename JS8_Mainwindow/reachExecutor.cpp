@@ -1875,9 +1875,25 @@ void UI_Constructor::reachNextMove() {
         // shouted on move 2 and nine stations answered in one cycle.
         bool shoutFirst = false;
         if (m_reach.triedAt.contains(QStringLiteral("snr:") + T)) {
-            shoutFirst =
-                !m_spotMapWindow ||
-                m_spotMapWindow->hearersOf(m_reach.band, T).isEmpty();
+            // [groupbind 2026-09-21, audit] Ask the ROUTE BOOK, the
+            // executor's own live knowledge, not the map's hearing
+            // store. The book holds every store edge at attempt start
+            // PLUS every YES learned this attempt; the store gets those
+            // YES answers through a separate binder the executor
+            // neither owns nor checks -- and when that binder skipped
+            // #237 group replies, the book said seven stations hear
+            // KR1FLE while this test said nobody does, and a second
+            // 98-second shout went to @ALLCALL (16:46:29Z). "Recent"
+            // keeps the store's own horizon, one hour, so the 24-hour
+            // rows the book also carries do not count here.
+            bool anyRecentHearer = false;
+            qint64 const recentMs = now - 3600LL * 1000;
+            for (auto h = g_book.edges.constBegin();
+                 h != g_book.edges.constEnd() && !anyRecentHearer; ++h)
+                if (auto const e = h.value().constFind(T);
+                    e != h.value().constEnd() && e->whenMs > recentMs)
+                    anyRecentHearer = true;
+            shoutFirst = !anyRecentHearer;
             if (shoutFirst)
                 reachLog(QStringLiteral(
                     "    no recent report of anyone hearing %1 -- "
@@ -2798,15 +2814,26 @@ void UI_Constructor::reachTick() {
                              : 6 * static_cast<int>(
                                    m_reach.chain.size()));
     else if (m_reach.ansStartedMs != 0) {
-        bool allDone = !m_reach.watchers.isEmpty();
+        // [verdictcount 2026-09-21] Say what happened to EVERY started
+        // reply. Field 08:28:59Z: "7 started, 6 assembled, 1 died"
+        // followed by "answer started but never assembled" -- the
+        // two-way wording called a 6-of-7 outcome a total loss.
+        int done = 0;
         for (auto const &w : m_reach.watchers)
-            if (!w.done)
-                allDone = false;
-        state = allDone
-            ? QStringLiteral("every started reply assembled -- the "
-                             "target itself never answered")
-            : QStringLiteral("answer started but never assembled -- "
-                             "frames lost");
+            if (w.done)
+                ++done;
+        int const started = m_reach.watchers.size();
+        if (started && done == started)
+            state = QStringLiteral("every started reply assembled -- the "
+                                   "target itself never answered");
+        else if (done == 0)
+            state = QStringLiteral("answer started but never assembled -- "
+                                   "frames lost");
+        else
+            state = QStringLiteral("%1 of %2 started replies assembled, "
+                                   "%3 lost frames -- the target itself "
+                                   "never answered")
+                        .arg(done).arg(started).arg(started - done);
     } else if (m_reach.kind == QLatin1String("relay"))
         // past "relay silent" (it keyed) and past fwdDone (nothing
         // assembled): the one-checkpoint wait ran dry.

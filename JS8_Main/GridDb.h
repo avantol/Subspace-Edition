@@ -90,6 +90,29 @@ class GridDb final {
         QString source;       // radio | mqtt | hearing
         qint64 when = 0;      // secs since epoch, UTC
         int snr = -99;
+        // [linehz 2026-09-21, audit F1] The RF frequency the
+        // observation was made at (the hearer's transmit frequency
+        // for an on-air report, the spot frequency for PSK Reporter),
+        // 0 = unknown. Travels with `when`: set only by the report
+        // that advances the clock. Without it a line could only be
+        // judged through its endpoints, and a line heard on 7.115 drew
+        // on the 7.078 map whenever both stations passed there.
+        qint64 hz = 0;
+    };
+
+    // [freqset 2026-09-21, audit F8 / proposal of 2026-09-11] ONE
+    // observed frequency of a station: the evidence set the passband
+    // verdict reads (StationInfo::freqSeen), persisted entry by entry
+    // so a restart does not collapse it to the single display copy in
+    // `stations.freq_hz`. PK (band, call, hz); when_s only moves
+    // forward; radio/tx are sticky-true like the RAM entry.
+    struct FreqRow {
+        QString band;
+        QString call;
+        qint64 hz = 0;
+        qint64 when = 0;      // secs since epoch, UTC
+        bool radio = false;   // from a frame WE decoded
+        bool tx = false;      // transmitting there (else listening)
     };
 
     // ONE ROW PER STATION -- facts about the station itself.
@@ -176,6 +199,10 @@ class GridDb final {
 
     QVector<EdgeRow> loadEdges(qint64 notOlderThanSecs) const;
     QVector<StationRow> loadStations(qint64 notOlderThanSecs) const;
+    // [freqset] the evidence set, same queue/flush/prune discipline
+    // as edges; loaded within the map window at restore.
+    void queueFreq(FreqRow const &f);
+    QVector<FreqRow> loadFreqs(qint64 notOlderThanSecs) const;
 
     // ---- reach events: months-scale habit observations ------------
     // [habitstore 2026-08-27] The executor's per-attempt observations
@@ -213,6 +240,7 @@ class GridDb final {
     QVector<EdgeRow> m_pendingEdges;
     QVector<ReachEventRow> m_pendingReach;
     QVector<StationRow> m_pendingStations;
+    QVector<FreqRow> m_pendingFreqs;   // [freqset]
     // call -> last activity write, for the 1/min throttle.
     QHash<QString, qint64> m_lastActivityWrite;
     qint64 m_lastPrune = 0;

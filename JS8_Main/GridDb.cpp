@@ -280,6 +280,35 @@ bool GridDb::ensureSchema() {
             "ALTER TABLE stations ADD COLUMN freq_radio INTEGER"
             " DEFAULT 0"));
     }
+    // [linehz 2026-09-21, audit F1] The frequency an observation was
+    // made at, on the edge row, added in place with the same guarded
+    // ALTER. Rows written before this build read 0 = unknown, which
+    // the line judge treats exactly as it treats a station with no
+    // frequency: never Out, never In.
+    {
+        QSqlQuery a{m_db};
+        a.exec(QStringLiteral(
+            "ALTER TABLE edges ADD COLUMN hz INTEGER DEFAULT 0"));
+    }
+    // [freqset 2026-09-21] The station's evidence SET, one row per
+    // observed frequency. A new table, never read by any earlier
+    // build, so it changes nothing for a downgrade.
+    ok = q.exec(QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS station_freqs ("
+        " band TEXT NOT NULL,"
+        " call TEXT NOT NULL,"
+        " hz INTEGER NOT NULL,"
+        " when_s INTEGER NOT NULL,"
+        " radio INTEGER DEFAULT 0,"
+        " tx INTEGER DEFAULT 0,"
+        " PRIMARY KEY (band, call, hz))"));
+    ok &= q.exec(QStringLiteral(
+        "CREATE INDEX IF NOT EXISTS station_freqs_when"
+        " ON station_freqs(when_s)"));
+    if (!ok)
+        qCWarning(griddb_js8)
+            << "[GRIDDB] station_freqs schema FAILED:"
+            << q.lastError().text();
     // [passband #218 freqclock, operator ruling 2026-09-11] A
     // frequency without a clock is worthless: the verdict already
     // ignores it, and the display copy (hover offset, QSY double-
@@ -485,6 +514,20 @@ void GridDb::queueEdge(EdgeRow const &e) {
         flush();
 }
 
+// [freqset] Same bound as edges: PSK Reporter feeds two of these per
+// spot, so the queue would otherwise grow at firehose rate between
+// flushes.
+void GridDb::queueFreq(FreqRow const &f) {
+    if (f.call.isEmpty() || f.band.isEmpty() || f.hz <= 0 || f.when <= 0)
+        return;
+    FreqRow row = f;
+    row.call = row.call.toUpper();
+    constexpr int kMaxPendingFreqs = 2000;
+    m_pendingFreqs.append(row);
+    if (m_pendingFreqs.size() >= kMaxPendingFreqs)
+        flush();
+}
+
 void GridDb::queueStation(StationRow const &s) {
     if (s.call.isEmpty() || s.band.isEmpty())
         return;
@@ -539,7 +582,7 @@ void GridDb::flush() {
     qint64 const now = nowSecs();
     bool const prune = now - m_lastPrune >= kPruneEverySecs;
     if (m_pendingEdges.isEmpty() && m_pendingStations.isEmpty() &&
-        m_pendingReach.isEmpty() && !prune)
+        m_pendingReach.isEmpty() && m_pendingFreqs.isEmpty() && !prune)
         return;
 
     int const edges = m_pendingEdges.size();
@@ -575,14 +618,18 @@ void GridDb::flush() {
         QSqlQuery q{m_db};
         q.prepare(QStringLiteral(
             "INSERT INTO edges (band, hearer, heard, when_s, snr,"
-            " hearer_grid, heard_grid, source)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " hearer_grid, heard_grid, source, hz)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(band, hearer, heard) DO UPDATE SET"
             // Freshest wins; never let a stale replay move an edge
             // backwards in time.
             " when_s = MAX(when_s, excluded.when_s),"
             " snr = CASE WHEN excluded.when_s >= when_s"
             "            THEN excluded.snr ELSE snr END,"
+            // [linehz] the frequency travels with the clock, and a
+            // known value is never replaced by unknown.
+            " hz = CASE WHEN excluded.when_s >= when_s AND excluded.hz > 0"
+            "           THEN excluded.hz ELSE hz END,"
             " hearer_grid = excluded.hearer_grid,"
             " heard_grid = excluded.heard_grid,"
             " source = excluded.source"));
@@ -595,12 +642,36 @@ void GridDb::flush() {
             q.bindValue(5, e.hearerGrid);
             q.bindValue(6, e.heardGrid);
             q.bindValue(7, e.source);
+            q.bindValue(8, e.hz);                       // [linehz]
             if (!q.exec())
                 qCDebug(griddb_js8) << "[GRIDDB] edge FAILED:"
                                     << e.hearer << e.heard
                                     << q.lastError().text();
         }
         m_pendingEdges.clear();
+    }
+    if (!m_pendingFreqs.isEmpty()) {                    // [freqset]
+        QSqlQuery q{m_db};
+        q.prepare(QStringLiteral(
+            "INSERT INTO station_freqs (band, call, hz, when_s, radio, tx)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(band, call, hz) DO UPDATE SET"
+            " when_s = MAX(when_s, excluded.when_s),"
+            " radio = MAX(radio, excluded.radio),"
+            " tx = MAX(tx, excluded.tx)"));
+        for (FreqRow const &f : m_pendingFreqs) {
+            q.bindValue(0, f.band);
+            q.bindValue(1, f.call);
+            q.bindValue(2, f.hz);
+            q.bindValue(3, f.when);
+            q.bindValue(4, f.radio ? 1 : 0);
+            q.bindValue(5, f.tx ? 1 : 0);
+            if (!q.exec())
+                qCDebug(griddb_js8) << "[GRIDDB] freq FAILED:"
+                                    << f.call << f.hz
+                                    << q.lastError().text();
+        }
+        m_pendingFreqs.clear();
     }
 
     if (!m_pendingStations.isEmpty()) {
@@ -675,6 +746,10 @@ void GridDb::flush() {
             "DELETE FROM stations WHERE any_when < ?"));
         q.addBindValue(cutoff);
         q.exec();
+        q.prepare(QStringLiteral(                       // [freqset]
+            "DELETE FROM station_freqs WHERE when_s < ?"));
+        q.addBindValue(cutoff);
+        q.exec();
     }
 
     // [audit] Only commit what we actually began; committing without
@@ -695,7 +770,7 @@ GridDb::loadEdges(qint64 notOlderThanSecs) const {
     QSqlQuery q{m_db};
     q.prepare(QStringLiteral(
                   "SELECT band, hearer, heard, when_s, snr,"
-                  " hearer_grid, heard_grid, source FROM edges"
+                  " hearer_grid, heard_grid, source, hz FROM edges"
                   " WHERE when_s >= ?%1 ORDER BY when_s")
                   .arg(noInternetSim()
                            ? QStringLiteral(
@@ -717,10 +792,44 @@ GridDb::loadEdges(qint64 notOlderThanSecs) const {
         e.hearerGrid = q.value(5).toString();
         e.heardGrid = q.value(6).toString();
         e.source = q.value(7).toString();
+        e.hz = q.value(8).toLongLong();                 // [linehz]
         out.append(e);
     }
     qCWarning(griddb_js8) << "[GRIDDB] restored" << out.size()
                           << "mesh edges from disk";
+    return out;
+}
+
+QVector<GridDb::FreqRow>
+GridDb::loadFreqs(qint64 notOlderThanSecs) const {       // [freqset]
+    QVector<FreqRow> out;
+    if (!m_db.isOpen())
+        return out;
+    QSqlQuery q{m_db};
+    q.prepare(QStringLiteral(
+                  "SELECT band, call, hz, when_s, radio, tx"
+                  " FROM station_freqs WHERE when_s >= ?%1")
+                  .arg(noInternetSim()
+                           ? QStringLiteral(" AND radio > 0")
+                           : QString{}));
+    q.addBindValue(nowSecs() - notOlderThanSecs);
+    if (!q.exec()) {
+        qCWarning(griddb_js8)
+            << "[GRIDDB] loadFreqs FAILED:" << q.lastError().text();
+        return out;
+    }
+    while (q.next()) {
+        FreqRow f;
+        f.band = q.value(0).toString();
+        f.call = q.value(1).toString();
+        f.hz = q.value(2).toLongLong();
+        f.when = q.value(3).toLongLong();
+        f.radio = q.value(4).toInt() != 0;
+        f.tx = q.value(5).toInt() != 0;
+        out.append(f);
+    }
+    qCWarning(griddb_js8) << "[GRIDDB] restored" << out.size()
+                          << "station frequencies from disk";
     return out;
 }
 

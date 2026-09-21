@@ -127,6 +127,9 @@ class FrequencyList_v3 final : public QSortFilterProxyModel {
 
     // Reset
     Q_SLOT void reset_to_defaults();
+    // [#261] true for a JS8 default (standard) dial frequency, the
+    // built-in table above -- ONE authority for "standard dial".
+    static bool is_default_frequency(Frequency);
 
     // Model API
     QModelIndex add(Item);

@@ -12,6 +12,21 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
     // also broadcast-targeted; some items shouldn't fire to a group.
     bool isGroupCall = isGroupCallIncluded(call);
 
+    // [#269] Kept before the blanking below, for the entries that name
+    // their station.
+    QString const target = call.trimmed();
+
+    // [#269 2026-09-21, operator] Say WHICH station. The menu is about
+    // one selected call sign, and "selected callsign" made the reader
+    // look away to check which. Falls back to the old wording when
+    // nothing is selected.
+    QString const who = target.isEmpty()
+                            ? QStringLiteral("selected callsign")
+                            : target;
+    QString const whoThe = target.isEmpty()
+                               ? QStringLiteral("the selected callsign")
+                               : target;
+
     // for now, we're going to omit displaying the call...delete this if we want
     // the other functionality
     call = "";
@@ -22,7 +37,7 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
     bool emptyGrid = m_config.my_grid().isEmpty();
 
     auto callAction = menu->addAction(
-        QString("Send a directed message to selected callsign"));
+        QString("Send a directed message to %1").arg(who));
     connect(callAction, &QAction::triggered, this, [this]() {
         QString selectedCall = callsignSelected();
         if (selectedCall.isEmpty()) {
@@ -32,11 +47,30 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
         addMessageText(QString("%1 ").arg(selectedCall), true);
     });
 
+    // [#269 2026-09-21, operator] The same reach question here, under
+    // the directed-message entry. STATION ONLY -- a group is not a
+    // reach target, and `call` is blanked just below for display, so
+    // the name is captured now.
+    if (!isAllCall && !isGroupCall && !target.isEmpty()) {
+        auto *reachAction =
+            menu->addAction(QString("Can I reach %1 now?").arg(target));
+        connect(reachAction, &QAction::triggered, this, [this, target]() {
+            // [operator 2026-09-21] Clear the outgoing box, as every
+            // other entry in this menu does; same queued-transmission
+            // guard addMessageText applies.
+            if (!isMessageQueuedForTransmit())
+                ui->extFreeTextMsgEdit->clear();
+            if (m_spotMapWindow)
+                m_spotMapWindow->autoRouteFor(target);
+        });
+    }
+
     menu->addSeparator();
 
     auto sendReplyAction = menu->addAction(
-        QString("%1 Reply - Send reply message to selected callsign")
+        QString("%1 Reply - Send reply message to %2")
             .arg(call)
+            .arg(who)
             .trimmed());
     connect(sendReplyAction, &QAction::triggered, this, [this]() {
         QString selectedCall = callsignSelected();
@@ -51,8 +85,9 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
     });
 
     auto sendSNRAction = menu->addAction(
-        QString("%1 SNR - Send a signal report to the selected callsign")
+        QString("%1 SNR - Send a signal report to %2")
             .arg(call)
+            .arg(whoThe)
             .trimmed());
     sendSNRAction->setEnabled(m_callActivity.contains(callsignSelected()));
     connect(sendSNRAction, &QAction::triggered, this, [this]() {

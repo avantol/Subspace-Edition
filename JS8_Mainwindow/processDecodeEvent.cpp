@@ -1001,7 +1001,13 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                     bool const isDataFrame =
                         (ft == Varicode::FrameData ||
                          ft == Varicode::FrameDataCompressed);
-                    if (isDataFrame) {
+                    // [#240 layer 1] same rule as frameFromCall: a
+                    // "CALL: " on a frame that does not START a message
+                    // is body text and paints no label.
+                    bool const isFirstFrame =
+                        (decodedtext.bits() & Varicode::JS8CallFirst) ==
+                        Varicode::JS8CallFirst;
+                    if (isDataFrame && isFirstFrame) {
                         static QRegularExpression const leadingCallRe(
                             QStringLiteral(R"(^\s*([A-Z0-9/]+)\s*:\s+)"));
                         auto const m = leadingCallRe.match(

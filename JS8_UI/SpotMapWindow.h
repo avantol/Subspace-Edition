@@ -64,6 +64,12 @@ class SpotMapWindow final : public QWidget {
     // feedback for click actions, e.g. "Copied K9AVT to outgoing
     // message".
     void showToast(QString const &text);
+    // [#269 2026-09-21, operator] "Can I reach X now?" from the main
+    // window's menus: open the map, arm auto-route and prefill the
+    // target, leaving the operator one click from Start. The map is
+    // the right tool for a reach question and testers were not
+    // finding it; this brings it to where they already are.
+    void autoRouteFor(QString const &call);
     // [units] Settings changed (distance units etc.) — repaint with
     // the new configuration. Cheap; safe to call on every accept.
     void configRefresh() { requestReplot(); }
@@ -182,11 +188,24 @@ class SpotMapWindow final : public QWidget {
     //                m_showPskr (with PSKR display off the map judges
     //                on radio evidence only, per effectiveWhen()).
     //                Relay: always -- its book uses PSKR regardless.
+    //
+    // [linehz 2026-09-21, audit] A LINE is judged by its OWN frequency
+    // (linePassband below), never through its endpoints: In / Out /
+    // Unknown by HeardEdge::hz against the same passband. On the map
+    // an Out line is never drawn and never ties anything; an In line
+    // ties BOTH its ends to this dial (operator ruling 2026-09-20: a
+    // station that a station in our passband hears was heard in our
+    // passband), which is what the retired radiotie rescue of
+    // 2026-09-20 approximated through the endpoints' evidence; an
+    // Unknown line (no frequency: QUERY CALL replies, rows written
+    // before the column existed) keeps the older tether rule. The
+    // station verdict decides dots and Unknown lines only.
     enum class Passband { In, Out, Unknown };
     Passband passbandVerdict(QString const &band, QString const &call,
                              int staleSecs = JS8_FREQ_STALE_SECS,
                              bool includeRx = true,
                              bool pskrAllowed = true) const;
+    Passband linePassband(qint64 hz) const;
 
     // [reachport2] Whole-band adjacency for the executor's route book
     // (one snapshot per attempt), and the persistent tier at the
@@ -277,6 +296,14 @@ class SpotMapWindow final : public QWidget {
     // — so the stations we are CERTAIN we can hear were the ones with
     // no recorded frequency, while PSKR-sourced ones had it. That was
     // backwards, and it is the prerequisite for the passband filter.
+    //
+    // [linehz] edgeHz: the frequency the OBSERVATION was made at,
+    // stamped on every edge this call creates or advances (0 = not
+    // known; see HeardEdge::hz). [testimony, audit F3] edgeSource: the
+    // class of the EDGES when it differs from the hearer's presence
+    // class -- a HEARING list is a station WE decoded ("radio"
+    // presence) claiming it hears others ("hearing" edges). Empty =
+    // same as `source`.
     void addHearingReport(QString const &band, QString const &hearer,
                           QString const &hearerGrid,
                           QStringList const &heardCalls,
@@ -285,7 +312,9 @@ class SpotMapWindow final : public QWidget {
                           QDateTime const &heardWhen = QDateTime{},
                           int heardSnr = -99,
                           QString const &source = QString{},
-                          qint64 hearerRfHz = 0);
+                          qint64 hearerRfHz = 0,
+                          qint64 edgeHz = 0,
+                          QString const &edgeSource = QString{});
 
   public slots:
     void setBand(QString const &band);
@@ -660,8 +689,21 @@ class SpotMapWindow final : public QWidget {
         // session, carrying no frequency evidence. A restored edge
         // must not TETHER an unknown-frequency station to the current
         // dial; only a live observation can. Cleared the moment a
-        // live report touches the edge.
+        // live report ADVANCES the edge (audit F9: a backdated report
+        // used to clear it without moving the clock).
         bool fromDisk = false;
+        // [linehz 2026-09-21, audit F1 -- THE missing piece] The RF
+        // frequency this observation was made at, 0 = unknown. For an
+        // on-air report it is the HEARER's transmit frequency (we
+        // decoded that frame at d.dial + d.offset); for a PSK Reporter
+        // spot it is the spot frequency (sender transmitting, reporter
+        // listening, both there). Travels with `when`. The store had
+        // the frequency of the STATION but never of the OBSERVATION,
+        // so a line could only be judged through its endpoints, and a
+        // line heard on 7.115 drew on the 7.078 map whenever both
+        // stations passed there (field 2026-09-21: 61 lines with the
+        // PSKR toggle off, 38 with it on, all 7.115 lines).
+        qint64 hz = 0;
     };
     struct HearingEntry {
         QDateTime lastSeen;   // presence freshness (HBs, any frame)
@@ -730,8 +772,11 @@ class SpotMapWindow final : public QWidget {
     // clock (forward-only), else appends; entries older than
     // JS8_FREQ_STALE_SECS are pruned on the way in. A frequency of 0
     // or an invalid clock records nothing.
+    // [freqset] journal = false on the restore paths (the row is
+    // already on disk).
     void noteFreq(QString const &band, QString const &call, qint64 hz,
-                  QDateTime const &when, bool radio, bool tx);
+                  QDateTime const &when, bool radio, bool tx,
+                  bool journal = true);
     QHash<QString, QHash<QString, StationInfo>> m_infoByBand;
     // [mqttgrid] call -> locator harvested from EVERY MQTT message
     // (sender sc/sl and reporter rc/rl) — fallback grid source for

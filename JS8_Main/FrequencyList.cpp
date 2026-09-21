@@ -180,6 +180,13 @@ int FrequencyList_v3::best_working_frequency(QString const &target_band) const {
     return result;
 }
 
+bool FrequencyList_v3::is_default_frequency(Frequency f) {
+    for (auto const &item : default_frequency_list)
+        if (item.frequency_ == f)
+            return true;
+    return false;
+}
+
 void FrequencyList_v3::reset_to_defaults() {
     m_->frequency_list(default_frequency_list);
 }

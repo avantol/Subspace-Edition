@@ -625,6 +625,9 @@ void UI_Constructor::writeSettings() {
         for (auto it = m_rxTextBandCache.cbegin();
              it != m_rxTextBandCache.cend(); ++it)
             keys.insert(it.key());
+        for (auto it = m_congestionRange.cbegin();
+             it != m_congestionRange.cend(); ++it)
+            keys.insert(it.key()); // [#261] learned range lives with the entry
         if (!m_lastEntryKey.isEmpty())
             keys.insert(m_lastEntryKey);
 
@@ -638,6 +641,12 @@ void UI_Constructor::writeSettings() {
             m_settings->beginGroup(key);
             m_settings->setValue("Rx", live ? ui->textEditRX->toHtml()
                                             : m_rxTextBandCache.value(key));
+            if (auto const r = m_congestionRange.constFind(key);
+                r != m_congestionRange.cend()) {
+                m_settings->setValue("RangeLo", r->lo); // [#261]
+                m_settings->setValue("RangeHi", r->hi);
+                m_settings->setValue("RangeN", r->samples);
+            }
             m_settings->beginGroup("Calls");
             writeCalls(live ? m_callActivity
                             : m_callActivityBandCache.value(key));
@@ -859,6 +868,11 @@ void UI_Constructor::readSettings() {
                 }
                 m_settings->beginGroup(key);
                 m_rxTextBandCache[key] = m_settings->value("Rx").toString();
+                if (m_settings->contains("RangeLo")) // [#261]
+                    m_congestionRange[key] = {
+                        m_settings->value("RangeLo").toInt(),
+                        m_settings->value("RangeHi").toInt(),
+                        m_settings->value("RangeN").toInt()};
                 m_settings->beginGroup("Calls");
                 for (auto const &call : m_settings->allKeys()) {
                     auto cd = readCall(call, m_settings->value(call).toMap());
@@ -1814,9 +1828,10 @@ void UI_Constructor::updateCurrentBand() {
             reachStop(QStringLiteral("band changed"));
         m_txMessageQueue = {};
         m_manualAsks.clear();
-        // [congestion] the index describes THIS band's channel; the
-        // old band's trailing slots must not bleed into the new one.
-        m_congestionSlots.clear();
+        // [#261] the congestion model is keyed per entry, so a band
+        // change switches lists by itself; only the shared bucket for
+        // dials that are not an entry must not bleed across bands.
+        m_congestionSamples.remove(QStringLiteral("off-entry"));
     }
 
     // [TODO #235 phase 1] the activity snapshot is keyed by standard
@@ -2990,19 +3005,115 @@ QString UI_Constructor::txBusyToastText() const {
 // executor pins the speed for the whole mode). Deliberately ALLOWS
 // the ARQ send session's between-chunk waits and the Send-armed
 // pre-key seconds, as every build through last night did.
-// [congestion 2026-08-31] ceil(10 x occupied fraction) over the 20
-// completed slots before the current one; floor 1 so the scale is
-// honest ("1" = essentially clear, never zero-looking). Calibration
-// so far (operator labels): quiet ~= 2-3, light ~= 5.
+// [#261 2026-09-20, operator design; replaces the 2026-08-31 duty
+// cycle, which read "someone transmitted in 60% of the last 5 minutes"
+// when the operator's own relay exchange came back at him]
+QString UI_Constructor::congestionKey() const {
+    return m_lastEntryKey.isEmpty() ? QStringLiteral("off-entry")
+                                    : m_lastEntryKey;
+}
+
+void UI_Constructor::recordCongestionFrame(int offset, int bits) {
+    if (offset <= 0)
+        return;
+    qint64 const now = QDateTime::currentSecsSinceEpoch();
+    auto &list = m_congestionSamples[congestionKey()];
+    // [operator 2026-09-20] the RANGE takes one vote per message (First
+    // frames); OCCUPANCY takes every frame, so a long message holds its
+    // position until 3 min after its LAST frame and a lost First frame
+    // still occupies.
+    list.append({offset, now,
+                 (bits & Varicode::JS8CallFirst) == Varicode::JS8CallFirst});
+    while (!list.isEmpty() && list.first().secs < now - kCongestionRangeSecs)
+        list.removeFirst();
+}
+
 int UI_Constructor::bandCongestionIndex() const {
-    int const period = qMax(1, static_cast<int>(m_TRperiod));
-    qint64 const nowSlot =
-        QDateTime::currentSecsSinceEpoch() / period;
-    int occ = 0;
-    for (qint64 s = nowSlot - 20; s < nowSlot; ++s)
-        if (m_congestionSlots.contains(s))
-            ++occ;
-    return qMax(1, (occ * 10 + 19) / 20);   // ceil(10*occ/20), min 1
+    QString const key = congestionKey();
+    qint64 const now = QDateTime::currentSecsSinceEpoch();
+    auto &list = m_congestionSamples[key];
+    while (!list.isEmpty() && list.first().secs < now - kCongestionRangeSecs)
+        list.removeFirst();
+
+    // 1. the usual range, re-derived on every call so it follows the
+    //    traffic up and down [operator 2026-09-20: "keep adjusting the
+    //    size of the available passband continuously"]: the central
+    //    95% of the MESSAGES (First frames) heard on this entry in the
+    //    last hour; the full passband above the HB sub-band until
+    //    kCongestionMinSamples messages are in hand; a range learned
+    //    earlier on this entry (this session or persisted) stands in
+    //    until then.
+    int lo = kCongestionLo;
+    int hi = kCongestionHi;
+    QString basis = QStringLiteral("full");
+    // [operator 2026-09-20: "I specified over 1000 Hz"] messages in the
+    // HB sub-band do not vote on the range at all; 75 of 98 messages
+    // on 14.078 were heartbeats below 1000 and they had pulled the
+    // 97.5th percentile down to 1588.
+    QList<int> offs;
+    for (auto const &s : list)
+        if (s.first && s.offset >= kCongestionLo)
+            offs.append(s.offset);
+    bool const onEntry = key != QStringLiteral("off-entry");
+    bool const magnetDial =
+        onEntry && entryGroup(key.toLongLong())
+                           .compare(QStringLiteral("@MAGNET"),
+                                    Qt::CaseInsensitive) == 0;
+    bool const standardDial =
+        onEntry && FrequencyList_v3::is_default_frequency(key.toLongLong());
+    // Known policies first, the explicit one (a group the operator
+    // set on the entry) before the implicit one (JS8's default table);
+    // the learned window is the fallback for everything else.
+    if (magnetDial) {
+        lo = kCongestionMagnetLo;
+        hi = kCongestionMagnetHi;
+        basis = QStringLiteral("@MAGNET");
+    } else if (standardDial) {
+        // [operator 2026-09-20] a JS8 default frequency uses JS8's own
+        // recommended window, the green bar on the waterfall scale:
+        // 1000-2500, no calculation, nothing learned or persisted.
+        lo = kCongestionStdLo;
+        hi = kCongestionStdHi;
+        basis = QStringLiteral("standard");
+    } else if (offs.size() >= kCongestionMinSamples) {
+        std::sort(offs.begin(), offs.end());
+        int const n = offs.size();
+        int const pLo = offs.at(n * 25 / 1000);
+        int const pHi = offs.at(qMin(n - 1, n * 975 / 1000));
+        lo = qBound(kCongestionLo, pLo, kCongestionHi - kCongestionSlotHz);
+        hi = qBound(lo + kCongestionSlotHz, pHi, kCongestionHi);
+        m_congestionRange[key] = {lo, hi, n};
+        basis = QStringLiteral("learned");
+    } else if (auto const r = m_congestionRange.constFind(key);
+               r != m_congestionRange.cend()) {
+        lo = r->lo;
+        hi = r->hi;
+        basis = QStringLiteral("remembered");
+    }
+
+    // 2. a 70 Hz grid over the range; every offset heard in the last
+    //    3 minutes occupies its position.
+    int const positions = qMax(1, (hi - lo) / kCongestionSlotHz);
+    QSet<int> occupied;
+    for (auto const &s : list) {
+        if (s.secs < now - kCongestionOccSecs)
+            continue;
+        if (s.offset < lo || s.offset > hi)
+            continue;
+        occupied.insert(qMin(positions - 1, (s.offset - lo) / kCongestionSlotHz));
+    }
+
+    // 3. 1 = every position free, 10 = every position taken.
+    int const idx = qBound(
+        1, 1 + qRound(9.0 * occupied.size() / positions), 10);
+    if (idx != m_congestionLastIndex) {
+        qWarning() << "[CONGEST]" << key << "range" << lo << "-" << hi
+                   << basis << "msgs=" << offs.size()
+                   << "frames=" << list.size() << "occupied="
+                   << occupied.size() << "/" << positions << "->" << idx;
+        m_congestionLastIndex = idx;
+    }
+    return idx;
 }
 
 // [#207 waitopts] Map Options dialog pushes changes here; persisted
@@ -3270,10 +3381,13 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
             // call is US. d.dial + d.offset is THEIR transmit
             // frequency, not ours, and this record is about our own
             // station.
+            // [linehz] The line ME -> them was observed at THEIR
+            // transmit frequency, d.dial + d.offset.
             m_spotMapWindow->addHearingReport(
                 band, myC, m_config.my_grid(), {d.call}, {QString()},
                 /*reportedToMeSnr=*/-99, QDateTime{},
-                /*heardSnr=*/d.snr);
+                /*heardSnr=*/d.snr, /*source=*/QString{},
+                /*hearerRfHz=*/0, /*edgeHz=*/d.dial + d.offset);
         }
     }
 
@@ -5018,6 +5132,11 @@ void UI_Constructor::stopTx() {
         captureOutgoingCallQuery(m_lastComposedMessage.isEmpty()
                                      ? m_totalTxMessage
                                      : m_lastComposedMessage);
+        // [TODO #260] Same text, same moment, same reason: a relayed
+        // ask starts its answer window when it finishes airing.
+        noteRelayedAsk(m_lastComposedMessage.isEmpty()
+                           ? m_totalTxMessage
+                           : m_lastComposedMessage);
 
         // Notify API clients that the queued transmission block finished.
         sendNetworkMessage("TX.COMPLETE", dt.message(),
@@ -5158,9 +5277,11 @@ bool UI_Constructor::decodeDialIsCurrent(int decodeDial) {
 }
 
 // [TODO #237] first JS8 entry on the exact dial that carries a group
-QString UI_Constructor::autoRouteGroupForDial() const {
-    auto const dial =
-        const_cast<UI_Constructor *>(this)->operatingDial(); // [#256]
+// [#261 2026-09-20] ONE authority for "the group of the entry on this
+// dial" -- auto-route's shout target and the congestion window's
+// @MAGNET policy read the same predicate (the 2026-09-19 miss was two
+// copies of this test drifting apart).
+QString UI_Constructor::entryGroup(Frequency dial) const {
     // [#254 2026-09-18, operator agreed] Modes::ALL counts too: an
     // "all modes" entry includes JS8, and requiring JS8 exactly meant a
     // group set on an ALL entry was accepted in Settings and then
@@ -5170,6 +5291,11 @@ QString UI_Constructor::autoRouteGroupForDial() const {
             it.frequency_ == dial && !it.group_.isEmpty())
             return it.group_;
     return QString{};
+}
+
+QString UI_Constructor::autoRouteGroupForDial() const {
+    return entryGroup(
+        const_cast<UI_Constructor *>(this)->operatingDial()); // [#256]
 }
 
 // [TODO #235 phase 1] Leaving a standard entry: snapshot its call list,
@@ -6287,6 +6413,10 @@ UI_Constructor::buildMessageFrames(const QString &text, bool isData,
         *pDisableTypeahead = (!info.dirCmd.isEmpty() &&
                               Varicode::isCommandChecksumed(info.dirCmd));
     }
+    // [operator 2026-09-20] remember how much checksum the wire text
+    // ends with, for the station-monitor feed of our own transmission
+    m_txChecksumTail = info.checksumSize == 32 ? 6
+                     : info.checksumSize == 16 ? 3 : 0;
 
 #if 0
     qCDebug(mainwindow_js8) << "frames:";
@@ -6409,6 +6539,8 @@ bool UI_Constructor::prepareNextMessageFrame() {
     m_totalTxMessage.append(dt.message());
     ui->extFreeTextMsgEdit->setCharsSent(m_totalTxMessage.length());
     m_txFrameCountSent += 1;
+    if (m_txFrameCountSent == 1)
+        m_txFirstFrameUtc = DriftingDateTime::currentDateTimeUtc(); // [#259]
     // [TODO #143 fullrestore] During a chunked-ARQ send each sub-msg
     // is its own TX cycle, so this per-frame assignment would leave
     // the restore buffer holding the last sub-msg's WIRE text
@@ -6428,11 +6560,28 @@ bool UI_Constructor::prepareNextMessageFrame() {
         // [stamon] Our own side of the conversation: the message is
         // fully on the air at its last frame; the wire text carries
         // our "CALL: " prefix, so membership sees every party.
-        if (!m_stationMonitors.isEmpty())
+        if (!m_stationMonitors.isEmpty()) {
+            // [operator 2026-09-20 "take out the checksum in my msgs"]
+            // Received messages reach the monitors after the checksum
+            // check strips the checksum; our own wire text still carried
+            // it ("... E? F!701C -5I"). Strip the same tail so both
+            // sides of a monitor read alike.
+            QString monText = Varicode::rstrip(m_totalTxMessage);
+            int const tail = m_txChecksumTail;
+            if (tail > 0 && monText.length() > tail + 1 &&
+                monText.at(monText.length() - tail - 1) == QLatin1Char(' '))
+                monText = monText.left(monText.length() - tail - 1);
+            // [#259 2026-09-20] stamped with the FIRST frame's time: the
+            // pane and every received monitor line use the first frame,
+            // so a 4-frame message read 56 s later here than there.
             feedStationMonitors(
-                m_config.my_callsign(), QString(), QString(),
-                m_totalTxMessage, freq(),
-                DriftingDateTime::currentDateTimeUtc(), m_nSubMode);
+                m_config.my_callsign(), QString(), QString(), monText,
+                freq(),
+                m_txFirstFrameUtc.isValid()
+                    ? m_txFirstFrameUtc
+                    : DriftingDateTime::currentDateTimeUtc(),
+                m_nSubMode);
+        }
     } else {
         displayTextForFreq(dt.message(), freq(),
                            DriftingDateTime::currentDateTimeUtc(), true,
@@ -6457,10 +6606,18 @@ bool UI_Constructor::prepareNextMessageFrame() {
 }
 
 bool UI_Constructor::isFreqOffsetFree(int const f, int const bw) {
-    // if this frequency is our current frequency, or it's in our
-    // directed cache, it's free.
+    // if this frequency is our current frequency, it's free.
+    // [#258 2026-09-20] The stock clause "or it's in our directed
+    // cache" is gone. It dated from a design where this picker placed
+    // REPLIES, and meant "the traffic on the caller's offset is the
+    // caller, answer there". Replies now go straight to the caller's
+    // offset; the picker's only remaining user is heartbeat/CQ
+    // placement, where a station that called us two minutes ago is
+    // exactly who not to transmit over. The clause was dead anyway
+    // (the cache was never fed) until #258 started feeding it for the
+    // band-activity color.
 
-    if ((freq() == f) || isDirectedOffset(f, nullptr))
+    if (freq() == f)
         return true;
 
     // Run through the band activity; if there's no activity for a given
@@ -8177,15 +8334,101 @@ void UI_Constructor::captureOutgoingCallQuery(QString const &sentMsg) {
         else
             ++it;
     }
-    m_pendingCallQueries.insert(
-        askee.toUpper(),
-        PendingCallQuery{m.captured(QStringLiteral("target")), hops,
-                         now});
+    // [groupbind] append; newest last. A repeat of the same (askee,
+    // target) replaces its older entry so the list never holds two.
+    QString const targetUp =
+        m.captured(QStringLiteral("target")).toUpper();
+    for (auto it = m_pendingCallQueries.begin();
+         it != m_pendingCallQueries.end();) {
+        if (it->askee == askee.toUpper() && it->target == targetUp)
+            it = m_pendingCallQueries.erase(it);
+        else
+            ++it;
+    }
+    m_pendingCallQueries.append(
+        PendingCallQuery{askee.toUpper(), targetUp, hops, now});
     qCWarning(chunkedarq_js8)
         << "[QCALL] pending armed: askee=" << askee
         << "target=" << m.captured(QStringLiteral("target"))
         << "hops=" << hops
         << "windowMs=" << kQCallReplyWindowMs;
+}
+
+// [TODO #260, 2026-09-21] Remember that WE relayed something to a far
+// end, so its relayed answer needs no ACK (see the header: #177's
+// ruling, generalised off the executor). Reads the ADDRESSING only --
+// one or more relay heads, then the far end -- never the payload.
+//
+//   "KJ4RMO> KG5RKW E? F!701C"   -> target KG5RKW  (head + far end)
+//   "KJ4RMO>KG5RKW> anything"    -> target KG5RKW  (heads only form)
+//   "KG5RKW SNR?"                -> nothing: not relayed, no ACK path
+//
+// Group and @ALLCALL heads are refused: a broadcast is not an ask of
+// one station, and the far end of one is not a callsign we can match.
+void UI_Constructor::noteRelayedAsk(QString const &sentMsg) {
+    QString msg = sentMsg.toUpper().simplified();
+    static QRegularExpression const kSelfPrefixRe{
+        QStringLiteral(R"(^[A-Z0-9/]+:\s*)")};
+    if (auto const pm = kSelfPrefixRe.match(msg); pm.hasMatch())
+        msg = msg.mid(pm.capturedLength()).trimmed();
+    // At least one head ("CALL>"), then the far end: either a second
+    // head or a bare callsign before the body.
+    static QRegularExpression const kRelayedRe{QStringLiteral(
+        R"(^(?<heads>(?:[A-Z0-9/]+>\s*)+)(?<tail>[A-Z0-9/]+)?)")};
+    auto const m = kRelayedRe.match(msg);
+    if (!m.hasMatch())
+        return;
+    QStringList heads = m.captured(QStringLiteral("heads"))
+                            .simplified()
+                            .split(QLatin1Char('>'), Qt::SkipEmptyParts);
+    QString target = m.captured(QStringLiteral("tail")).trimmed();
+    if (target.isEmpty() || !Radio::is_callsign(target)) {
+        // "A>B>" form: the LAST head is the far end.
+        if (heads.size() < 2)
+            return;
+        target = heads.last().trimmed();
+    }
+    target = target.trimmed();
+    if (target.isEmpty() || target.startsWith(QLatin1Char('@')) ||
+        !Radio::is_callsign(target))
+        return;
+    for (QString const &h : heads)
+        if (h.trimmed().startsWith(QLatin1Char('@')))
+            return;   // broadcast head: not an ask of one station
+    qint64 const now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_relayedAsks.begin(); it != m_relayedAsks.end();) {
+        if (now - it->askedMs > kRelayedAskWindowMs ||
+            Radio::same_station(it->target, target))
+            it = m_relayedAsks.erase(it);
+        else
+            ++it;
+    }
+    m_relayedAsks.append({target, now});
+    qCWarning(chunkedarq_js8)
+        << "[RELAYASK] noted: we relayed an ask to" << target
+        << "-- its relayed answer will not be ACKed"
+        << "pending=" << m_relayedAsks.size();
+}
+
+// [TODO #260] Does a relayed message from this ORIGINATOR answer an
+// ask of ours? Consumes the record: one ask, one suppression, so a
+// later unsolicited relay from the same station is ACKed normally.
+bool UI_Constructor::relayedAskAnswered(QString const &originator) {
+    if (originator.isEmpty())
+        return false;
+    qint64 const now = QDateTime::currentMSecsSinceEpoch();
+    bool hit = false;
+    for (auto it = m_relayedAsks.begin(); it != m_relayedAsks.end();) {
+        if (now - it->askedMs > kRelayedAskWindowMs) {
+            it = m_relayedAsks.erase(it);
+        } else if (!hit && Radio::same_station(it->target, originator)) {
+            hit = true;
+            it = m_relayedAsks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return hit;
 }
 
 // [#161 querycall] Bind a "YES +snr (age)" to the pending query and
@@ -8199,13 +8442,29 @@ bool UI_Constructor::bindCallQueryReply(QString const &responder,
     if (!m.hasMatch())
         return false;
     QString const key = responder.toUpper();
-    auto it = m_pendingCallQueries.find(key);
-    bool const wildcard = (it == m_pendingCallQueries.end());
-    if (wildcard)
-        it = m_pendingCallQueries.find(QStringLiteral("@ALLCALL"));
-    if (it == m_pendingCallQueries.end())
-        return false;
     qint64 const now = QDateTime::currentMSecsSinceEpoch();
+    // [groupbind 2026-09-21] Newest first. A station we asked directly
+    // answers ITS entry; anyone else is answering the newest GROUP
+    // query, whatever the group is called. The old code looked up the
+    // responder, then the literal "@ALLCALL", and for a #237 group
+    // shout found neither.
+    int idx = -1;
+    for (int i = m_pendingCallQueries.size() - 1; i >= 0; --i)
+        if (m_pendingCallQueries.at(i).askee == key) {
+            idx = i;
+            break;
+        }
+    bool const wildcard = (idx < 0);
+    if (wildcard)
+        for (int i = m_pendingCallQueries.size() - 1; i >= 0; --i)
+            if (m_pendingCallQueries.at(i).askee.startsWith(
+                    QLatin1Char('@'))) {
+                idx = i;
+                break;
+            }
+    if (idx < 0)
+        return false;
+    auto it = m_pendingCallQueries.begin() + idx;
     if (now - it->sentMs > kQCallReplyWindowMs) {
         m_pendingCallQueries.erase(it); // stale — never bind
         return false;
@@ -9297,7 +9556,7 @@ void UI_Constructor::on_tableWidgetRXAll_cellDoubleClicked(int row, int col) {
                 continue;
             QString lastCall;
             for (auto const &d : it.value()) {
-                QString const c = frameFromCall(d.text);
+                QString const c = frameFromCall(d.text, d.bits);
                 if (!c.isEmpty())
                     lastCall = c;
                 // [bandcall2] same orphan fallback as the renderer:

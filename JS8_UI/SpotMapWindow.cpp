@@ -699,11 +699,17 @@ void SpotMapWindow::setDialFrequency(qint64 const hz) {
 // [passband #218 evidence] One observation into the station's set.
 void SpotMapWindow::noteFreq(QString const &band, QString const &call,
                              qint64 const hz, QDateTime const &when,
-                             bool const radio, bool const tx) {
+                             bool const radio, bool const tx,
+                             bool const journal) {
     if (band.isEmpty() || call.isEmpty() || hz <= 0 || !when.isValid())
         return;
     auto &seen = m_infoByBand[band][call.toUpper()].freqSeen;
     auto const now = DriftingDateTime::currentDateTimeUtc();
+    // [freqset 2026-09-21, audit F8] Every accepted entry is journaled
+    // so a restart restores the SET, not one display copy.
+    if (journal && when.secsTo(now) < JS8_FREQ_STALE_SECS)
+        m_gridDb.queueFreq({band, call.toUpper(), hz,
+                            when.toSecsSinceEpoch(), radio, tx});
     // Prune on the way in, so the set never grows past one window's
     // worth of distinct frequencies. A skimmer's worst case is one
     // entry per distinct offset it reported in the last hour.
@@ -756,13 +762,27 @@ SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
             continue;
         if (!f.radio && !pskrAllowed)
             continue;
-        anyFresh = true;
         // Boundaries inclusive: offset 0 and offset WIDTH are both in.
         qint64 const audio = f.hz - m_dialHz;
         if (audio >= 0 && audio <= JS8_PASSBAND_WIDTH_HZ)
             return Passband::In;   // any one hit is enough
+        anyFresh = true;
     }
     return anyFresh ? Passband::Out : Passband::Unknown;
+}
+
+// [linehz 2026-09-21] A LINE judged by its own frequency, same
+// passband, same boundaries, same "dial unknown = filter off" rule.
+// No freshness here: the caller has already applied the view window
+// to the edge's clock, and the frequency travels with that clock.
+SpotMapWindow::Passband
+SpotMapWindow::linePassband(qint64 const hz) const {
+    if (m_dialHz <= 0 || hz <= 0)
+        return Passband::Unknown;
+    qint64 const audio = hz - m_dialHz;
+    return (audio >= 0 && audio <= JS8_PASSBAND_WIDTH_HZ)
+               ? Passband::In
+               : Passband::Out;
 }
 
 void SpotMapWindow::setBand(QString const &band) {
@@ -799,7 +819,8 @@ void SpotMapWindow::addOnAirSpotOfMe(QString const &band,
     addHearingReport(band, call, grid, {m_myCall.toUpper()}, {m_myGrid},
                      /*reportedToMeSnr=*/snr, QDateTime{},
                      /*heardSnr=*/snr, QStringLiteral("radio"),
-                     /*hearerRfHz=*/callRfHz);
+                     /*hearerRfHz=*/callRfHz,
+                     /*edgeHz=*/callRfHz);   // [linehz] heard at THEIR f
     journalStation(band, call);   // [maptruth #11] AFTER the update
 }
 
@@ -815,7 +836,9 @@ void SpotMapWindow::addHearingReport(QString const &band,
                                      QDateTime const &heardWhen,
                                      int const heardSnr,
                                      QString const &source,
-                                     qint64 const hearerRfHz) {
+                                     qint64 const hearerRfHz,
+                                     qint64 const edgeHz,
+                                     QString const &edgeSource) {
     if (band.isEmpty() || hearer.isEmpty())
         return;
     auto const now = DriftingDateTime::currentDateTimeUtc();
@@ -834,6 +857,12 @@ void SpotMapWindow::addHearingReport(QString const &band,
         si.freqFromRadio = true;
         noteFreq(band, hearer, hearerRfHz, now, /*radio=*/true,
                  /*tx=*/true);        // the verdict's evidence
+        // [audit F7, 2026-09-21] Our own measurement reaches disk from
+        // HERE, the one place every first-hand caller passes through.
+        // Before, journalStation() ran only for a frame addressed to
+        // us or a PSK Reporter spot, so offline a station we decoded
+        // fifty times restarted with no frequency.
+        journalStation(band, hearer);
     }
     auto const resolve = [&](QString const &grid, float *az, float *dist) {
         *az = 0.0f;
@@ -906,7 +935,6 @@ void SpotMapWindow::addHearingReport(QString const &band,
         if (call.isEmpty() || call == hearer.toUpper())
             continue;
         HeardEdge &edge = e.heard[call];
-        edge.fromDisk = false;   // [tether] a live report touched it
         // [meshprobe 2026-08-22] What actually happens to an edge that
         // names US: does it move forward, or is it refused?
         if (!m_myCall.isEmpty() &&
@@ -928,8 +956,16 @@ void SpotMapWindow::addHearingReport(QString const &band,
         // fresher edge; ordinary feeds keep their refresh-to-now.
         QDateTime const sighting =
             heardWhen.isValid() ? heardWhen : now;
-        if (!edge.when.isValid() || sighting > edge.when)
+        if (!edge.when.isValid() || sighting >= edge.when) {
             edge.when = sighting;
+            // [linehz] the observation frequency travels with the
+            // clock; a report that does not advance the edge leaves
+            // both alone, and a known value is never replaced by 0.
+            if (edgeHz > 0)
+                edge.hz = edgeHz;
+            // [tether, audit F9] live only when the report ADVANCED it
+            edge.fromDisk = false;
+        }
         if (heardSnr > -99)
             edge.snr = heardSnr;
         // [tribblenet] Explicit source beats inference: the caller
@@ -942,8 +978,13 @@ void SpotMapWindow::addHearingReport(QString const &band,
         // earned it, hiding it from the blue mesh and from any
         // offline (#159) route.
         {
+            // [testimony, audit F3] the EDGES may be a different class
+            // from the hearer's presence: a HEARING list is a station
+            // we decoded claiming it hears others.
             QString const evid =
-                !source.isEmpty()
+                !edgeSource.isEmpty()
+                    ? edgeSource
+                : !source.isEmpty()
                     ? source
                     : (heardWhen.isValid() ? QStringLiteral("hearing")
                                            : QStringLiteral("radio"));
@@ -981,6 +1022,7 @@ void SpotMapWindow::addHearingReport(QString const &band,
                        ? edge.when.toSecsSinceEpoch()
                        : now.toSecsSinceEpoch();
         row.source = edge.source;
+        row.hz = edge.hz;                               // [linehz]
         m_gridDb.queueEdge(row);
     }
     // [#168 part 1] Presence, on every sighting (throttled inside).
@@ -1058,7 +1100,7 @@ void SpotMapWindow::restoreStationsFromDisk() {
                     QDateTime::fromSecsSinceEpoch(r.freqWhen, Qt::UTC);
                 info.freqFromRadio = r.freqRadio;
                 noteFreq(r.band, r.call, r.freqHz, info.freqWhen,
-                         r.freqRadio, /*tx=*/true);
+                         r.freqRadio, /*tx=*/true, /*journal=*/false);
             }
         }
         if (!r.rxOnly)
@@ -1092,6 +1134,19 @@ void SpotMapWindow::restoreStationsFromDisk() {
     if (restored)
         qCWarning(mqttclient_js8)
             << "[SPOTMAP] restored" << restored << "station records";
+    // [freqset 2026-09-21, audit F8] The evidence SET comes back entry
+    // by entry, listening observations included, so a station In at
+    // two dials before the restart is In at both after it.
+    int freqs = 0;
+    for (GridDb::FreqRow const &f : m_gridDb.loadFreqs(WINDOW_SECS)) {
+        noteFreq(f.band, f.call, f.hz,
+                 QDateTime::fromSecsSinceEpoch(f.when, Qt::UTC),
+                 f.radio, f.tx, /*journal=*/false);
+        ++freqs;
+    }
+    if (freqs)
+        qCWarning(mqttclient_js8)
+            << "[SPOTMAP] restored" << freqs << "frequency observations";
 }
 
 // [#168 part 3] Rebuild the mesh banked by earlier sessions.
@@ -1141,6 +1196,8 @@ void SpotMapWindow::restoreMeshFromDisk() {
             edge.source = r.source.isEmpty()
                               ? QStringLiteral("radio")
                               : r.source;
+            if (r.hz > 0)
+                edge.hz = r.hz;                         // [linehz]
         }
         if (edge.grid.isEmpty() && !r.heardGrid.isEmpty())
             edge.grid = r.heardGrid;
@@ -1627,8 +1684,8 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
     // passband", which is what the adaptive-wait busy metric
     // (item-206/207) actually wants: PSKR measures a remote relay's
     // local channel, and a relay that hears us works our passband.
-    // The on-air measure (m_congestionSlots) was always passband-
-    // local and is untouched. NOTE the PSKR threshold spin was tuned
+    // The on-air measure (bandCongestionIndex, #261) was always
+    // passband-local and is untouched. NOTE the PSKR threshold spin was tuned
     // on band-wide counts and reads lower now -- re-tune in the field.
     {
         bool const inPassband =
@@ -1766,11 +1823,20 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
         // left every reporter -- most of the map -- with no frequency
         // at all, hence visible from one band edge to the other.
         if (spotFreqHz > 0) {
+            // [audit F11, 2026-09-21] WHEN THE REPORTER IS US this spot
+            // is our own receiver's evidence coming back round the
+            // internet -- the same test the edge below already applies
+            // ("the transport is not the provenance"). Classing the
+            // frequency internet while the line was radio left the
+            // station Unknown with the PSKR toggle off after a restart
+            // while its line to us drew blue.
+            bool const reporterIsMe =
+                receiverCall.compare(m_myCall, Qt::CaseInsensitive) == 0;
             if (!senderIsMe)
                 noteFreq(band, sender, spotFreqHz, when,
-                         /*radio=*/false, /*tx=*/true);
+                         /*radio=*/reporterIsMe, /*tx=*/true);
             noteFreq(band, receiverCall, spotFreqHz, when,
-                     /*radio=*/false, /*tx=*/false);
+                     /*radio=*/reporterIsMe, /*tx=*/false);
         }
         if (!senderIsMe)
             info.sawAsSender = true;   // it was the SENDER of a spot
@@ -1825,7 +1891,9 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
                 addHearingReport(band, reporter, rGrid,
                                  {m_myCall.toUpper()}, {m_myGrid}, snr,
                                  when, /*heardSnr=*/snr,
-                                 QStringLiteral("mqtt"));
+                                 QStringLiteral("mqtt"),
+                                 /*hearerRfHz=*/0,
+                                 /*edgeHz=*/spotFreqHz);   // [linehz]
         } else {
             QString const sndr = sender.toUpper();
             QString const sGrid = o.value(QStringLiteral("sl")).toString();
@@ -1843,7 +1911,9 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
             if (!sndr.isEmpty() && sndr != reporter)
                 addHearingReport(band, reporter, rGrid, {sndr}, {sGrid},
                                  /*reportedToMeSnr=*/-99, when,
-                                 /*heardSnr=*/snr, evid);
+                                 /*heardSnr=*/snr, evid,
+                                 /*hearerRfHz=*/0,
+                                 /*edgeHz=*/spotFreqHz);   // [linehz]
         }
     }
     journalStation(band, plottedCall);   // [maptruth #11] AFTER
@@ -1921,6 +1991,35 @@ void SpotMapWindow::pruneBand(QString const &band) {
     // so operator[] quietly inserted empty entries into the other two
     // on every 30 s tick, for every band ever seen.
     auto const hb = m_hearingByBand.find(band);
+    // [infoprune 2026-09-21, audit F13] The station-facts store was
+    // never pruned: one record per (band, call) ever seen, for the
+    // life of the process, ~1-2 MB a day off the all-band PSK
+    // Reporter feed. Drop a record once nothing in it can count any
+    // more -- display clock and every evidence entry past
+    // JS8_FREQ_STALE_SECS, the same limit the verdict applies, so
+    // this removes only what every reader already ignores -- and the
+    // station has no presence entry left in this band (country and
+    // sawAsSender still serve a station that is present).
+    if (auto ib = m_infoByBand.find(band); ib != m_infoByBand.end()) {
+        auto const staleAt = DriftingDateTime::currentDateTimeUtc()
+                                 .addSecs(-JS8_FREQ_STALE_SECS);
+        auto &infos = ib.value();
+        for (auto it = infos.begin(); it != infos.end();) {
+            StationInfo const &si = it.value();
+            bool stale = !si.freqWhen.isValid() || si.freqWhen < staleAt;
+            for (auto const &f : si.freqSeen)
+                if (f.when >= staleAt) {
+                    stale = false;
+                    break;
+                }
+            bool const present =
+                hb != m_hearingByBand.end() && hb.value().contains(it.key());
+            if (stale && !present)
+                it = infos.erase(it);
+            else
+                ++it;
+        }
+    }
     if (hb == m_hearingByBand.end())
         return;
     // [hearlines] Per-edge aging; empty hearers drop out.
@@ -2275,6 +2374,8 @@ void SpotMapWindow::redraw() {
     int dotUntethered = 0;  // [passband #218 tether] Unknown-frequency
                             // dots dropped because no drawable edge
                             // ties them to this dial
+    int dotLineTied = 0;    // [linehz] stations not In by their own
+                            // evidence that a fresh In line tied here
     QElapsedTimer buildTimer;   // [paintlog] render-set cost
     buildTimer.start();
     QHash<QString, QPointF> allPos;   // call -> (azimuth, distance)
@@ -2528,31 +2629,74 @@ void SpotMapWindow::redraw() {
             verdictMemo.insert(call, r);
             return r;
         };
-        QSet<QString> tethered;
+        auto const &hearers0 = m_hearingByBand.value(m_currentBand);
+        // [linehz 2026-09-21, audit F1/F4/F5] ONE pass over the
+        // drawable lines, each judged by ITS OWN frequency:
+        //   Out line     -- never ties anything (and the line pass
+        //                   below never draws it).
+        //   In line      -- ties BOTH ends to this dial: the hearer
+        //                   transmitted in our passband, and what a
+        //                   station in our passband hears was heard
+        //                   in our passband (operator ruling
+        //                   2026-09-20). A station judged Out by its
+        //                   own older evidence is overruled by a fresh
+        //                   In line -- the same "any fresh In wins"
+        //                   the station verdict already applies. This
+        //                   replaces the radiotie rescue of the same
+        //                   day, which inferred the line's passband
+        //                   from its endpoints because the line had
+        //                   no frequency to be judged by.
+        //   Unknown line -- no frequency (QUERY CALL replies, rows
+        //                   from before the column): the tether rule
+        //                   of passband9/10 unchanged -- restored
+        //                   never tethers; both ends not Out.
+        // MY OWN STATION is In by definition at every end (audit F5:
+        // my callsign collects listening entries from my own PSK
+        // Reporter uploads and was being judged Out after a QSY, so
+        // nothing that heard me could be tethered for minutes).
+        QSet<QString> tethered;   // Unknown-frequency stations tied here
         {
-            auto const &hearers0 = m_hearingByBand.value(m_currentBand);
+            QSet<QString> tiedIn;
+            auto const endOut = [&](QString const &c) {
+                return c != myUp && verdictOf(c) == Passband::Out;
+            };
             for (auto h = hearers0.constBegin(); h != hearers0.constEnd();
                  ++h) {
                 for (auto ed = h.value().heard.constBegin();
                      ed != h.value().heard.constEnd(); ++ed) {
                     if (ed.value().when < cutoff)
                         continue;                    // outside window
+                    if (!m_showPskr &&
+                        ed.value().source == QStringLiteral("mqtt"))
+                        continue;                    // toggle hides it
+                    switch (linePassband(ed.value().hz)) {
+                    case Passband::Out:
+                        continue;                    // ties nothing
+                    case Passband::In:
+                        tiedIn.insert(h.key());
+                        tiedIn.insert(ed.key());
+                        continue;
+                    case Passband::Unknown:
+                        break;
+                    }
                     if (ed.value().fromDisk)
                         continue;                    // history only:
                                                      // a restored edge
                                                      // never tethers
-                    if (!m_showPskr &&
-                        ed.value().source == QStringLiteral("mqtt"))
-                        continue;                    // toggle hides it
-                    if (verdictOf(h.key()) == Passband::Out ||
-                        verdictOf(ed.key()) == Passband::Out)
+                    if (endOut(h.key()) || endOut(ed.key()))
                         continue;                    // an end is Out
                     tethered.insert(h.key());
                     tethered.insert(ed.key());
                 }
             }
+            for (auto const &c : tiedIn) {
+                if (c == myUp)
+                    continue;
+                if (verdictOf(c) != Passband::In)
+                    ++dotLineTied;                       // [dotlog]
+                verdictMemo.insert(c, Passband::In);
+            }
         }
-
         // ---- 3. ONE visibility rule ----------------------------------
         auto const &infoBand = m_infoByBand.value(m_currentBand);
         for (auto it = reg.begin(); it != reg.end(); ++it) {
@@ -2663,6 +2807,11 @@ void SpotMapWindow::redraw() {
                 if (!present.contains(snap.receiverCall)) {
                     render.append(snap);
                     present.insert(snap.receiverCall);
+                    // [audit F10, 2026-09-21] A pinned hop is ON the
+                    // map, so its lines must draw: the filter above
+                    // put it in the dropped set when it was Out or
+                    // untethered, and the line pass consults that set.
+                    passbandDropped.remove(snap.receiverCall);
                     if (snap.distance >= 0.0f)
                         allPos.insert(
                             snap.receiverCall,
@@ -2927,6 +3076,7 @@ void SpotMapWindow::redraw() {
         << " tooOldRadio=" << dotOldRadio
         << " outOfBand=" << dotOutOfBand              // [passband #218]
         << " untethered=" << dotUntethered            // [passband #218]
+        << " | lineTied=" << dotLineTied               // [linehz]
         << " | drawn=" << render.size()
         << " ofWhichFreqUnknown=" << dotFreqUnknown  // [passband #218]
         << " ofWhichPskr=" << dotDrawnPskr
@@ -2979,7 +3129,8 @@ void SpotMapWindow::redraw() {
         // stale. One line per paint says which gate did it.
         int seenPskr = 0, seenRadio = 0, oldEdge = 0, noEnd = 0,
             hidPskr = 0, drewPskr = 0, drewRadio = 0,
-            outOfBandEdge = 0;   // [passband #218]
+            outOfBandEdge = 0,   // [passband #218] an endpoint dropped
+            lineOut = 0;         // [linehz] the line's OWN frequency Out
         QPen const penRadio{QColor(90, 160, 255, 210), 1};   // on-air
         auto const &hearers = m_hearingByBand.value(m_currentBand);
         QString const myUp = m_myCall.toUpper();
@@ -3012,6 +3163,15 @@ void SpotMapWindow::redraw() {
                 // button hides. Radio lines are never affected by it.
                 if (isPskr && !m_showPskr) {
                     ++hidPskr;                       // [linelog]
+                    continue;
+                }
+                // [linehz 2026-09-21] THE LINE'S OWN FREQUENCY FIRST.
+                // A line observed outside this passband is not
+                // activity on this dial, whatever its endpoints'
+                // verdicts say -- this is what let 7.115 lines draw
+                // on the 7.078 map (audit F1).
+                if (linePassband(ed.value().hz) == Passband::Out) {
+                    ++lineOut;                       // [linelog]
                     continue;
                 }
                 // [passband #218] No line to or from a station the
@@ -3069,6 +3229,7 @@ void SpotMapWindow::redraw() {
             << " | dropped: old=" << oldEdge << " pskrHidden=" << hidPskr
             << " endpointMissing=" << noEnd
             << " outOfBand=" << outOfBandEdge     // [passband #218]
+            << " lineOut=" << lineOut             // [linehz]
             << " | collected pskr=" << drewPskr << " radio="
             << drewRadio
             << " | window=" << m_viewWindowSecs << "s showPskr="
@@ -4527,6 +4688,42 @@ void SpotMapWindow::autoRouteShowPanel() {
     m_autoRoutePanel->show();
     m_autoRoutePanel->raise();
     m_autoRouteEdit->setFocus();
+}
+
+// [#269 2026-09-21] See the header. One click from the call list or
+// the directed-to menu lands here: window up, auto-route armed, the
+// callsign already typed. Deliberately does NOT press Start -- the
+// operator sees the target and the panel before any air time is
+// spent, and a mis-click costs nothing.
+void SpotMapWindow::autoRouteFor(QString const &call) {
+    QString const t = call.trimmed().toUpper();
+    if (t.isEmpty() || t.startsWith(QLatin1Char('@')))
+        return;   // groups are not reach targets
+    show();
+    raise();
+    activateWindow();
+    if (m_autoRouteActive) {
+        // A run owns the panel; never disturb one in flight.
+        showToast(tr("Auto-route is already running%1")
+                      .arg(m_autoRouteTarget.isEmpty()
+                               ? QString{}
+                               : tr(" for %1").arg(m_autoRouteTarget)));
+        return;
+    }
+    if (m_autoRouteBtn && !m_autoRouteBtn->isChecked()) {
+        m_autoRouteBtn->setChecked(true);   // arms and opens the panel
+    } else {
+        m_autoRouteArmed = true;
+        autoRouteShowPanel();
+    }
+    if (m_autoRouteEdit) {
+        m_autoRouteEdit->setText(t);   // fires the validator, lights Start
+        m_autoRouteEdit->setFocus();
+        // [operator 2026-09-21] NOT selected: a highlighted callsign
+        // reads as "about to be replaced" and the next keystroke would
+        // wipe it. Cursor sits at the end, ready to edit or to Enter.
+        m_autoRouteEdit->setCursorPosition(t.size());
+    }
 }
 
 void SpotMapWindow::positionAutoRoutePanel() {

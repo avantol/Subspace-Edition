@@ -414,8 +414,38 @@ void StationMonitorWindow::runBackfill() {
     HistLine tx{QDateTime(), m_myCall, QString(), 0};
     QDateTime lastFrame;
     auto const flushTx = [&]() {
-        if (tx.utc.isValid() && !tx.text.trimmed().isEmpty())
+        if (tx.utc.isValid() && !tx.text.trimmed().isEmpty()) {
+            // [txcksum2 2026-09-21, operator: "checksums were not
+            // removed from my transmits"] The LIVE own-TX feed strips
+            // the checksum (mainwindow.cpp, m_txChecksumTail); this
+            // path rebuilds our side from ALL.TXT's raw WIRE frames,
+            // which still carry it -- field 17:30Z: "WM8Q: @MAGNET
+            // QUERY CALL W7SUA? FFC". Received lines never reach here
+            // with one (the RX side strips before DIRECTED.TXT), so
+            // only this stitch needs it.
+            //
+            // VALIDATE, never guess: strip the trailing group only
+            // when it actually hashes the body, the same test
+            // buildMessageFrames uses to drop a stale checksum on
+            // recall. A real trailing word cannot be removed by
+            // accident.
+            QString t = Varicode::rstrip(tx.text);
+            for (int const tail : {6, 3}) {
+                if (t.length() < tail + 2 ||
+                    t.at(t.length() - tail - 1) != QLatin1Char(' '))
+                    continue;
+                QString const suffix = t.right(tail);
+                QString const body = t.left(t.length() - tail - 1);
+                bool const valid =
+                    tail == 6 ? Varicode::checksum32Valid(suffix, body)
+                              : Varicode::checksum16Valid(suffix, body);
+                if (valid) {
+                    tx.text = body;
+                    break;
+                }
+            }
             hist.append(tx);
+        }
         tx = {QDateTime(), m_myCall, QString(), 0};
     };
     // write_transmit_entry's separator is "JS8:" + exactly TWO

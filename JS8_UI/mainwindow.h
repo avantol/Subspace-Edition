@@ -315,6 +315,7 @@ class UI_Constructor : public QMainWindow {
     // [TODO #237] the current entry's optional auto-route group, or
     // empty when off-entry or none configured.
     QString autoRouteGroupForDial() const;
+    QString entryGroup(Frequency dial) const; // [#261] one authority
     void createGroupCallsignTableRows(QTableWidget *table,
                                       const QString &selectedCall,
                                       bool &showIconColumn);
@@ -593,7 +594,9 @@ class UI_Constructor : public QMainWindow {
     void buildBandActivityListByMenu(QMenu *menu);
     // [bandcall] shared "CALL: " prefix parse (was inline in the
     // render loop) -- returns empty when the text has no valid prefix
-    static QString frameFromCall(QString const &text);
+    // [#240 layer 1] a sender prefix is meaningful ONLY on a frame that
+    // starts a message (JS8CallFirst); any other frame yields nothing.
+    static QString frameFromCall(QString const &text, int bits);
     // [bandcall2] orphan fallback: the station last seen NEAREST this
     // offset within the submode's rx tolerance, from m_callActivity;
     // empty when none is close enough
@@ -681,8 +684,9 @@ class UI_Constructor : public QMainWindow {
                              QString const &text, int offset,
                              QDateTime const &utc, int submode);
     void reachComputeExpected();   // [structured] packed counts
-    // [congestion] 1-10 = ceil(10 x occupied-slot fraction, trailing
-    // 20 slots). Radio-only; works with no internet.
+    // [#261] 1-10 = 1 + 9 x (occupied 70 Hz positions / positions in
+    // the usual range), heard traffic of the last 3 minutes. Radio-only;
+    // works with no internet. See the member block below.
     int bandCongestionIndex() const;
     bool canSendNetworkMessage();
     void sendNetworkMessage(QString const &type, QString const &message);
@@ -1292,6 +1296,15 @@ class UI_Constructor : public QMainWindow {
     QString m_txTextDirtyLastSelectedCall;
     QString m_lastTxMessage;
     QString m_totalTxMessage;
+    // [operator 2026-09-20 "take out the checksum in my msgs"] characters
+    // of checksum (+ its leading space) at the end of the wire text of
+    // the message being sent: 3, 6 or 0. Set where the frames are built.
+    int m_txChecksumTail = 0;
+    // [#259] UTC of the FIRST frame of the message being sent; the
+    // station-monitor feed for our own transmission stamps this, as the
+    // conversation window and every received line do, not the last
+    // frame's time.
+    QDateTime m_txFirstFrameUtc;
     // [QUEUE PROVENANCE 2026-06-10 build 247]
     // Snapshot of extFreeTextMsgEdit's plain-text content RIGHT AFTER
     // processTxQueue called addMessageText to inject a system-built
@@ -1393,11 +1406,21 @@ class UI_Constructor : public QMainWindow {
     //   window = 6 hops x 3 frames x 15 s = 270 s (+30 s margin)
     //   backdate = parsed age + inboundHops x 3 x 15 s
     struct PendingCallQuery {
+        QString askee;   // [groupbind] who was asked: a station or a @group
         QString target;
         int hops{1};     // relay heads outbound (reply retraces them)
         qint64 sentMs{};
     };
-    QHash<QString, PendingCallQuery> m_pendingCallQueries;
+    // [groupbind 2026-09-21] A LIST, newest last, keyed by (askee,
+    // target) -- not a hash keyed by askee alone. The hash let a
+    // member's reply to "@MAGNET QUERY CALL T?" (#237) fall through a
+    // hardcoded "@ALLCALL" lookup and bind nothing: seven YES answers
+    // on 2026-09-21 16:46Z reached the route book but never the
+    // hearing store, so the executor asked @ALLCALL the question the
+    // group had just answered. A reply from a station that was asked
+    // directly binds to ITS newest entry; any other reply binds to
+    // the newest GROUP entry, whatever the group's name.
+    QVector<PendingCallQuery> m_pendingCallQueries;
     // [#178] The message as COMPOSED, kept for the query capture.
     // m_totalTxMessage is assembled frame by frame and does not hold
     // the whole thing at end of transmission -- instrumented
@@ -1509,9 +1532,48 @@ class UI_Constructor : public QMainWindow {
         qint64 askedMs = 0;
     };
     QVector<ManualAsk> m_manualAsks;
-    // [congestion 2026-08-31] slot ids (epochSecs / current period)
-    // that contained >=1 decoded frame; pruned in the recorder.
-    mutable QSet<qint64> m_congestionSlots;
+    // [#261 2026-09-20, operator design] "heard on-air" congestion.
+    // RANGE: the central 90% of the offsets heard on THIS entry in the
+    // last hour, never below 1000 Hz (the HB sub-band) nor above 2800;
+    // the full passband until kCongestionMinSamples offsets are in
+    // hand; learned per entry and persisted with it (SsEntryActivity).
+    // OCCUPANCY: 70 Hz grid positions in that range holding a frame
+    // heard in the last 3 minutes. Index = 1 + 9 * occupied/positions.
+    // Heard traffic only: our own transmissions never enter the feed.
+    struct CongestionSample {
+        int offset;
+        qint64 secs;
+        bool first; // JS8CallFirst: one vote per MESSAGE for the range
+    };
+    struct CongestionRange {
+        int lo;
+        int hi;
+        int samples;
+    };
+    mutable QMap<QString, QList<CongestionSample>>
+        m_congestionSamples; // entry -> last hour of heard offsets
+    mutable QMap<QString, CongestionRange>
+        m_congestionRange; // entry -> learned usual range
+    mutable int m_congestionLastIndex = -1;
+    static constexpr int kCongestionLo = 1000;
+    static constexpr int kCongestionHi = 2800;
+    static constexpr int kCongestionSlotHz = 65; // operator 2026-09-20
+    // [operator 2026-09-20] on a JS8 DEFAULT dial the window is what
+    // JS8 itself recommends by the green bar on the waterfall scale,
+    // 1000-2500, no learning; user entries (e.g. @MAGNET 7.115) learn.
+    static constexpr int kCongestionStdLo = 1000;
+    static constexpr int kCongestionStdHi = 2500;
+    // [operator 2026-09-20] on an entry whose group is @MAGNET the
+    // window is the group's published segment, 1850-2650. Known band
+    // segment policies come first; the learned window is the fallback
+    // for segments with no known policy.
+    static constexpr int kCongestionMagnetLo = 1850;
+    static constexpr int kCongestionMagnetHi = 2650;
+    static constexpr int kCongestionRangeSecs = 3600;
+    static constexpr int kCongestionOccSecs = 180;
+    static constexpr int kCongestionMinSamples = 10; // messages, not frames
+    QString congestionKey() const;
+    void recordCongestionFrame(int offset, int bits);
     // [#207 waitopts] Response-wait mode for the auto-route
     // executor's two busy-conditional points: 0 Short (never the
     // extra slot), 1 Adaptive on-air, 2 Long (always), 3 Adaptive
@@ -1540,6 +1602,36 @@ class UI_Constructor : public QMainWindow {
     // clears the pair. Empty otherwise.
     QString m_reachAnsweredFrom;
     QString m_reachAnsweredText;
+    // [TODO #260, 2026-09-21] #177 GENERALISED FROM THE EXECUTOR TO
+    // ANY RELAYED ASK WE SEND BY HAND. #177's ruling -- "the reply's
+    // arrival already proves the whole path; an ACK back through the
+    // relay is a 218 s-class transmission carrying no information"
+    // (operator: "nobody cares") -- was wired only to attempts the
+    // reach executor owns. A hand-sent relayed ask got no such
+    // treatment, so a form pull answered through a relay still drew
+    // "WM8Q: KE8SWO> W5TTA ACK" plus the relay's forward of it, six
+    // frames nobody reads (operator 2026-09-20, "basically noise").
+    //
+    // RELAY LAYER ONLY. We remember that WE relayed something to a
+    // station; when a relayed message comes back from that station,
+    // its arrival is the confirmation. No payload is read: not the
+    // form code, not "E?", nothing of SuperSpotter's protocol -- the
+    // #222 form literals stay the one place that carries that risk
+    // (operator 2026-09-21: "does it go too deep into understanding
+    // forms, spotter's job?"). Unsolicited relayed traffic is
+    // untouched by construction, because we never asked for it.
+    struct RelayedAsk {
+        QString target;   // who we addressed, the far end
+        qint64 askedMs = 0;
+    };
+    QVector<RelayedAsk> m_relayedAsks;
+    // The window a relayed answer may arrive in. Generous: a 3-frame
+    // ask, the relay's forward, the far end's reply and the relay's
+    // forward back run minutes at Normal and longer at Slow, and an
+    // expired record only means we ACK exactly as before.
+    static constexpr qint64 kRelayedAskWindowMs = 30 * 60 * 1000;
+    void noteRelayedAsk(QString const &sentMsg);
+    bool relayedAskAnswered(QString const &originator);
     QTimer *m_reachTimer = nullptr;
     void reachStart(QString const &target, int maxMoves = 6,
                     QString const &via = QString{});
