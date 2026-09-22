@@ -1452,15 +1452,32 @@ void UI_Constructor::processCommandActivity() {
                     << "[REACH] relay ACK suppressed (TODO #177):"
                     << d.text.left(40);
             } else if (!d.text.startsWith("ACK") &&
+                       (m_superSpotterSeen ||
+                        isMagnetFormText(d.text)) &&
                        relayedAskAnswered(relayOriginator)) {
                 // [TODO #260, 2026-09-21] #177's ruling for a relayed
                 // ask WE sent by hand: the answer's arrival proves the
-                // path, so the ACK carries nothing. Relay layer only --
-                // the payload is not read.
+                // path, so the ACK carries nothing. The TEST is relay
+                // layer only -- which station answered an ask of ours,
+                // never what the payload says.
+                //
+                // [operator 2026-09-21, "gate it like #222"] SAME GATE
+                // as the form-pull inhibit above: only once the MAGNET
+                // case is known (m_superSpotterSeen, persisted), or on
+                // the 701 literals that ARE the signature. Withholding
+                // a delivery confirmation is a change to what other
+                // stations see, so it stays inside the fleet that
+                // asked for it; everyone else keeps stock behaviour.
+                // Note the ORDER: relayedAskAnswered() consumes its
+                // record, so it is tested last and only when the gate
+                // has already passed -- an ungated station must not
+                // silently burn the ask it would still have ACKed.
                 qCWarning(mainwindow_js8)
                     << "[RELAYASK] relay ACK suppressed (TODO #260):"
                     << "answer to an ask of ours from"
-                    << relayOriginator << "text=" << d.text.left(40);
+                    << relayOriginator
+                    << "magnet=" << m_superSpotterSeen
+                    << "text=" << d.text.left(40);
             } else if (!d.text.startsWith("ACK")) {
 
                 // parse out the callsign path

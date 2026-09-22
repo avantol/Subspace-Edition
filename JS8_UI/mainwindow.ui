@@ -662,7 +662,7 @@ QPushButton:checked {
              <property name="frameShadow">
               <enum>QFrame::Shadow::Plain</enum>
              </property>
-             <layout class="QGridLayout" name="gridLayout_8" rowstretch="1,0,0,1" columnstretch="1,1,1">
+             <layout class="QGridLayout" name="gridLayout_8" rowstretch="1,0,0,1" columnstretch="0,0,0,1">
               <property name="sizeConstraint">
                <enum>QLayout::SizeConstraint::SetMinimumSize</enum>
               </property>
@@ -687,14 +687,14 @@ QPushButton:checked {
                  <bool>true</bool>
                 </property>
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>0</width>
+                  <width>80</width>
                   <height>30</height>
                  </size>
                 </property>
@@ -752,14 +752,14 @@ QPushButton[transmitting=&quot;true&quot;] {
                  <bool>true</bool>
                 </property>
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>0</width>
+                  <width>80</width>
                   <height>30</height>
                  </size>
                 </property>
@@ -811,14 +811,14 @@ QPushButton:checked {
                  <bool>true</bool>
                 </property>
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>0</width>
+                  <width>80</width>
                   <height>30</height>
                  </size>
                 </property>
@@ -862,6 +862,62 @@ QPushButton:checked {
                </widget>
               </item>
               <item row="2" column="2">
+               <widget class="QPushButton" name="mapButton">
+                <property name="enabled">
+                 <bool>true</bool>
+                </property>
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>30</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>16777215</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="font">
+                 <font>
+                  <pointsize>9</pointsize>
+                  <bold>false</bold>
+                 </font>
+                </property>
+                <property name="visible">
+                 <bool>true</bool>
+                </property>
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Open a map of known stations, option to automatically find a path to any station&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="styleSheet">
+                 <string notr="true">QPushButton {
+	background-color:lightgray;
+	padding:0.25em 0.25em; font-weight:normal;
+	border-style:solid;
+	border-width:0px;
+	border-radius:2px;
+ }
+
+QPushButton:checked {
+  background-color:#6699ff;
+}</string>
+                </property>
+                <property name="text">
+                 <string>MAP</string>
+                </property>
+                <property name="flat">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="3">
                <widget class="QPushButton" name="tuneButton">
                 <property name="enabled">
                  <bool>true</bool>
@@ -917,7 +973,7 @@ QPushButton:checked {
                 </property>
                </widget>
               </item>
-              <item row="1" column="2">
+              <item row="1" column="2" colspan="2">
                <widget class="QPushButton" name="modeButton">
                 <property name="enabled">
                  <bool>true</bool>
@@ -978,14 +1034,14 @@ background-color:#6699ff;
                  <bool>true</bool>
                 </property>
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
                 </property>
                 <property name="minimumSize">
                  <size>
-                  <width>0</width>
+                  <width>80</width>
                   <height>30</height>
                  </size>
                 </property>
@@ -1002,7 +1058,7 @@ background-color:#6699ff;
                  </font>
                 </property>
                 <property name="toolTip">
-                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Spot to reporting networks&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enable sending information to reporting networks&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                 </property>
                 <property name="styleSheet">
                  <string notr="true">QPushButton {

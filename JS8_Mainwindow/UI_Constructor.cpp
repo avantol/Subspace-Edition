@@ -30,6 +30,7 @@
 #include <QDir>
 #include <QMenu>
 #include <QStyle>
+#include <QStyleOptionButton>
 #include <QStyleOptionToolButton>
 #include <QToolButton>
 #include <QLabel>
@@ -1402,6 +1403,25 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             return true;
         },
         this));
+
+    // [#269 2026-09-21, operator] The mode button's floor is EXACTLY
+    // its longest label, "NORMAL+MULTI+AUTO", measured through the
+    // button's own style (stylesheet padding included) rather than a
+    // pixel guess. It shares the grid's one stretching column with
+    // TUNE, so this is the width below which the row cannot shrink;
+    // everything above it is slack the window hands to those two.
+    {
+        auto *b = ui->modeButton;
+        QFontMetrics const fm(b->font());
+        QStyleOptionButton opt;
+        opt.initFrom(b);
+        opt.text = QStringLiteral("NORMAL+MULTI+AUTO");
+        QSize const content(fm.horizontalAdvance(opt.text), fm.height());
+        b->setMinimumWidth(
+            b->style()
+                ->sizeFromContents(QStyle::CT_PushButton, &opt, content, b)
+                .width());
+    }
 
     if (!JS8_ENABLE_JS8A)
         ui->actionModeJS8Normal->setVisible(false);
@@ -2776,16 +2796,20 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             if (!self->m_settings
                      ->value("FirstRunSpotsMapHintShown", false)
                      .toBool()) {
-                auto *bar = self->menuBar();
+                // [#269 2026-09-21, operator] Tail on the MAP button
+                // now that there is one, not on the Window menu: the
+                // balloon hangs below the button, tail up.
+                // Text: operator 2026-09-21, verbatim. Blank lines
+                // are paragraph breaks -- drawText with TextWordWrap
+                // honours "\n", and boundingRect sizes for it.
                 auto *balloon = new SpeechBalloon(
-                    tr("Select the 'Spots Map' here to see who has "
-                       "heard you recently. To help others get "
-                       "spotted, select 'Enable spotting to reporting "
-                       "networks' in Settings | Reporting. "
+                    tr("Select 'MAP' to view stations hearing you, "
+                       "and heard by you.\n\n"
+                       "You can automatically find a relay path to "
+                       "any station by clicking on the map.\n\n"
+                       "Tip: Enable 'SPOT' to help others find you.\n\n"
                        "Click to dismiss."),
-                    bar);
-                balloon->setTargetRectOverride(bar->actionGeometry(
-                    self->ui->menuWindow->menuAction()));
+                    self->ui->mapButton);
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);
                 balloon->setAutoDismissMs(45000);
                 armWithdraw(balloon, QStringLiteral("FirstRunSpotsMapHintShown"));

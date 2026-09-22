@@ -493,6 +493,8 @@ class UI_Constructor : public QMainWindow {
     void on_actionShow_Call_Activity_triggered(bool checked);
     void on_actionShow_Waterfall_triggered(bool checked);
     void on_actionShow_Spots_Map_triggered(bool checked);
+    // [#269 2026-09-21, operator] MAP button, between LOG and TUNE.
+    void on_mapButton_clicked();
     void on_actionShow_ARQ_Monitor_triggered(bool checked); // [#153]
     void on_actionShow_Waterfall_Controls_triggered(bool checked);
     void on_actionShow_Waterfall_Time_Drift_Controls_triggered(bool checked);

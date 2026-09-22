@@ -1396,6 +1396,18 @@ void UI_Constructor::on_actionShow_Spots_Map_triggered(bool checked) {
     }
 }
 
+// [#269 2026-09-21, operator] The MAP button, between LOG and TUNE.
+// Always OPENS and raises -- it is a push button, not a toggle, so a
+// second click on a buried window brings it forward instead of
+// closing it. Routed through the menu action's own handler, and the
+// menu item's check state is kept in step, so there is one code path
+// that opens this window.
+void UI_Constructor::on_mapButton_clicked() {
+    if (ui->actionShow_Spots_Map)
+        ui->actionShow_Spots_Map->setChecked(true);
+    on_actionShow_Spots_Map_triggered(true);
+}
+
 void UI_Constructor::on_actionShow_Waterfall_Controls_triggered(bool checked) {
     m_wideGraph->setControlsVisible(checked);
     if (checked && !ui->bandHorizontalWidget->isVisible()) {
@@ -6333,6 +6345,53 @@ void UI_Constructor::restoreMessage() {
     // accumulating extra spaces on each restore cycle
     auto text = Varicode::rstrip(m_lastTxMessage);
     text.replace(QChar(0xA0), QChar(' '));
+    // [#270 2026-09-21, operator: "is there any case where the js8call
+    // checksum should be included in Restore previous message?"] No.
+    // m_lastTxMessage is the WIRE text, checksum and all. Re-sending
+    // unedited is unaffected either way -- buildMessageFrames strips a
+    // valid checksum on recall and appends an identical fresh one --
+    // so keeping it buys nothing, while EDITING the restored text
+    // turns it into junk: the checksum covers the body after the
+    // directed command, so changing the target (not the relay head,
+    // which is outside the hash) leaves a suffix that no longer
+    // validates, is therefore NOT stripped, and goes on the air as a
+    // word inside the new body with a second checksum behind it --
+    // "K7RIE E? F!701C 1JB XYZ". The receiver's check passes because
+    // it hashes the junk too. Same family as #243's trailing space.
+    // Latent, not observed in the field logs as of today.
+    //
+    // VALIDATE before removing, the same test buildMessageFrames uses
+    // on recall and the monitor backfill uses on our own lines, so a
+    // body that genuinely ends in three checksum-shaped characters
+    // cannot be truncated. 6 before 3: a 32-bit tail is longer.
+    for (int const tail : {6, 3}) {
+        if (text.length() < tail + 2 ||
+            text.at(text.length() - tail - 1) != QLatin1Char(' '))
+            continue;
+        QString const suffix = text.right(tail);
+        QString const body = text.left(text.length() - tail - 1);
+        // WHAT WAS HASHED is the body after the addressing and the
+        // directed command, and how many leading tokens that is
+        // depends on the form: "CALL> rest", "CALL CMD rest",
+        // "CALL MSG TO:X rest". Try the whole body, then with one,
+        // two and three leading tokens dropped. A 16-bit false hit
+        // is 1 in 65536 per try, against a certain defect if we
+        // guess the form wrong and leave the suffix in place.
+        bool hit = false;
+        QString cand = body;
+        for (int drop = 0; drop <= 3 && !hit; ++drop) {
+            hit = tail == 6 ? Varicode::checksum32Valid(suffix, cand)
+                            : Varicode::checksum16Valid(suffix, cand);
+            int const sp = cand.indexOf(QLatin1Char(' '));
+            if (sp < 0)
+                break;
+            cand = cand.mid(sp + 1);
+        }
+        if (hit) {
+            text = body;
+            break;
+        }
+    }
     addMessageText(text, true);
 }
 
