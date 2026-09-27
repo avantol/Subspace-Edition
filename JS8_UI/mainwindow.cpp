@@ -1706,10 +1706,17 @@ void UI_Constructor::f11f12(int const n) {
         setFreq(freq() + 1);
 }
 
+// [#277 2026-09-27] ONE authority for "the radio is sitting on its
+// TRANSMIT frequency". Both readers below used to test this themselves,
+// and the second one tested something ELSE (m_transmitting) -- see
+// operatingDial().
+bool UI_Constructor::rigOnTxFrequency() const {
+    return m_rigState.ptt() && m_rigState.split();
+}
+
 Radio::Frequency UI_Constructor::dialFrequency() {
-    return Frequency{m_rigState.ptt() && m_rigState.split()
-                         ? m_rigState.tx_frequency()
-                         : m_rigState.frequency()};
+    return Frequency{rigOnTxFrequency() ? m_rigState.tx_frequency()
+                                        : m_rigState.frequency()};
 }
 
 // [#256 opdial 2026-09-18, operator] THE dial we are OPERATING on, as
@@ -1731,8 +1738,48 @@ Radio::Frequency UI_Constructor::dialFrequency() {
 // the API's DIAL/FREQ fields, which report what the radio is doing --
 // that is the honest answer for both, and the user report behind #249
 // was specifically that the display must follow the rig.
+// [#277 2026-09-27, FIELD RECURRENCE on 491.3] THE TAIL IS FIXED HERE
+// AFTER ALL, and the 2026-09-26 comment this replaces was wrong on its
+// facts. It claimed m_freqNominal had itself absorbed the stale value so
+// no test here could tell the difference. The captured recurrence
+// disproves that: the nominal stayed correct the whole time, because
+// #249's unkeyed branch only runs once the rig reports ptt FALSE, and by
+// then the emulation has already substituted the receive frequency, so
+// the nominal is never polluted in this configuration.
+//
+// THE ACTUAL DEFECT: this function and dialFrequency() described the
+// same keyed interval with two DIFFERENT predicates, and the two
+// intervals do not coincide. dialFrequency() switches to the transmit
+// frequency on the RIG STATE (ptt and split). This function switched to
+// the nominal on m_transmitting. m_transmitting clears when our own
+// waveform ends; the rig state keeps ptt asserted until the radio has
+// been told to unkey and the next poll confirms it. In between, this
+// function fell through to dialFrequency(), which was still inside its
+// transmit-artifact branch and handed back the transmit dial.
+// Field capture 2026-09-27, emulated split, IC-7300 on 14.115:
+//   19:02:32.905  stopTx, m_transmitting false
+//   19:02:32.908  entry "14115000" -> "off-entry"
+//                 dial=14115500 rig=14115500 nominal=14115000
+//                 ptt=TRUE tx=false          <- the 3 ms is the giveaway
+//   19:02:33.365  entry "off-entry" -> "14115000", ptt=false
+// 460 ms of off-entry, panes and waterfall cleared and redrawn for
+// nothing. Closed by asking rigOnTxFrequency() -- the same question
+// dialFrequency() asks -- so the two can no longer disagree.
+//
+// Stages of a keyed interval, all of them: armed with frames queued and
+// not yet keyed, no artifact exists and none is claimed; keyed and
+// transmitting, m_transmitting; tuning, m_tune; our waveform done but
+// the rig still reporting ptt with split, rigOnTxFrequency() (THIS
+// fix); ptt dropped but the radio still parked on the transmit dial,
+// EmulateSplitTransceiver::handle_update; emulated split with the split
+// flag false, the emulation already substitutes the receive frequency
+// while ptt is asserted.
+//
+// Cost, accepted and the same one #256 took: an operator who genuinely
+// retunes inside that window has the change registered when the window
+// closes rather than at the instant of the turn.
 Radio::Frequency UI_Constructor::operatingDial() {
-    if ((m_transmitting || m_tune) && m_freqNominal)
+    if ((m_transmitting || m_tune || rigOnTxFrequency()) && m_freqNominal)
         return Frequency{m_freqNominal};
     return dialFrequency();
 }
@@ -5322,13 +5369,24 @@ QString UI_Constructor::autoRouteGroupForDial() const {
 void UI_Constructor::applyEntryTransition(QString const &entryKey,
                                           bool bandChanged) {
     bool const startup = m_lastBand.isEmpty() && m_lastEntryKey.isEmpty();
+    // [#277 2026-09-26] The VALUES that produced this decision. Without
+    // them a spurious transition cannot be told from a real dial move
+    // after the fact: the 2026-09-26 blip at 18:37:54 left no way to
+    // know whether the rig had moved or been misread. dial is what
+    // operatingDial() returned and keyed the decision; rig is what the
+    // radio actually reported; nominal and txNominal say whether a
+    // transmit artifact was in play (equal = none).
     qWarning() << "[ENTRY] transition"
                << (m_lastEntryKey.isEmpty() ? QStringLiteral("off-entry")
                                             : m_lastEntryKey)
                << "->"
                << (entryKey.isEmpty() ? QStringLiteral("off-entry")
                                       : entryKey)
-               << "band changed=" << bandChanged;
+               << "band changed=" << bandChanged
+               << "| dial=" << operatingDial() << "rig=" << dialFrequency()
+               << "nominal=" << m_freqNominal
+               << "txNominal=" << m_freqTxNominal
+               << "ptt=" << m_rigState.ptt() << "tx=" << m_transmitting;
     if (!m_lastEntryKey.isEmpty())
         cacheActivity(m_lastEntryKey);
     if (!startup || m_config.reset_activity())
@@ -11363,17 +11421,45 @@ void UI_Constructor::clearSelection(bool keepBandRow) {
     statusChanged();
 }
 
+// [clickspeed 2026-09-27, operator ruling] A click on a station sets
+// THAT STATION'S speed. One fact, one authority: the clicked row
+// already carries the speed that reaches the station, so nothing else
+// needs to be remembered.
+//
+// This replaces a saved "previous standard speed" (m_prevStandardSubmode,
+// deleted with this change). That variable was written in ONE place --
+// the click that ENTERED Subspace -- and read on ANY click that left
+// it, so every other route into Subspace (the mode buttons, the Mode
+// menu, the API's MODE.SET_SPEED, the ARQ auto-switch) left the read
+// with nothing matching it. Worse, it was initialised to
+// Default::SUBMODE, and commit ea0447a4 (2026-04-08, "Default to
+// Subspace mode on fresh install") changed that constant from Normal
+// to Subspace -- so on a fresh session the "previous standard speed"
+// WAS Subspace and the return click was a silent no-op. Its
+// declaration still read `= 0  // saved standard mode`; the
+// constructor's initialiser list overrode it.
+// FIELD EVIDENCE (WM8Q, build 491, 2026-09-27): Subspace entered by
+// hand for a V3 native transfer, transfer abandoned, Normal row
+// clicked at 05:17:43Z to come back -- no-op, and nine ordinary
+// messages then aired at Subspace to stations running Normal.
+//
+// Scope widened deliberately (operator ruling 2026-09-27): the rule
+// now applies to EVERY speed pair, not just Subspace in and out. At
+// Normal, clicking a Fast station used to do nothing at all and the
+// reply went out at Normal, where that station could not hear it.
+// Accepted cost: an exploratory click on a row of a different speed
+// moves the operating speed, which reconfigures the decoder, the
+// waterfall and the frame period.
+//
+// The TX guard below is unchanged: a click during a transmission, or
+// with frames queued, still does not switch. setSubmode refuses in
+// that state anyway, so the guard keeps the refusal out of the log.
 void UI_Constructor::autoSwitchMode(int submode) {
     if (m_transmitting || m_txFrameCount > 0 || !m_txFrameQueue.isEmpty())
         return;  // don't switch mode during TX
     if (submode == m_nSubMode)
         return;
-    if (submode == Varicode::JS8CallFT2) {
-        m_prevStandardSubmode = m_nSubMode;
-        setSubmode(Varicode::JS8CallFT2);
-    } else if (m_nSubMode == Varicode::JS8CallFT2) {
-        setSubmode(m_prevStandardSubmode);
-    }
+    setSubmode(submode);
 }
 
 void UI_Constructor::clearCallsignSelected() { clearSelection(); }

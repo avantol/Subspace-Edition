@@ -1136,7 +1136,8 @@ class UI_Constructor : public QMainWindow {
     qint32 m_inGain = 0;
     qint32 m_idleMinutes = 0;
     qint32 m_nSubMode = 0;
-    qint32 m_prevStandardSubmode = 0;  // saved standard mode for click-to-switch
+    // [clickspeed 2026-09-27] m_prevStandardSubmode deleted -- a click
+    // now sets the clicked station's speed; see autoSwitchMode().
     bool m_submodeChanging{false}; // guard against recursive mode switch
     FrequencyList_v3::const_iterator m_frequency_list_fcal_iter;
     qint32 m_i3bit = 0;
@@ -2017,6 +2018,13 @@ class UI_Constructor : public QMainWindow {
                       QDateTime const &utcTimestamp);
     void spotAprsGrid(int dial, int offset, int snr, QString callsign,
                       QString grid);
+    // [#277 2026-09-27] THE ONE authority for "the radio is sitting on
+    // its TRANSMIT frequency". dialFrequency() reads it to choose which
+    // field of the rig state to report; operatingDial() reads it to know
+    // the reported dial is a transmit artifact. It is bounded by the RIG
+    // STATE, not by m_transmitting -- those two intervals do not
+    // coincide, which is the defect it exists to close.
+    bool rigOnTxFrequency() const;
     Radio::Frequency dialFrequency();
     // [#256] the dial we are OPERATING on: ignores the transmit-time
     // shift from split / "fake it". State about where we listen reads

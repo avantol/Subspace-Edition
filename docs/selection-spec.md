@@ -48,19 +48,29 @@ Single entry point for deselection. Deselect button and no-callsign clicks call 
 
 Single entry point for call-triggered mode switching. Replaces 4 duplicated blocks.
 
-**Behavior:**
+**Behavior (clickspeed, operator ruling 2026-09-27):**
 ```
-if submode == FT2 and current != FT2:
-    save current as m_prevStandardSubmode
-    switchSubmode(FT2)
-else if submode != FT2 and current == FT2:
-    switchSubmode(m_prevStandardSubmode)
+if transmitting or frames queued:
+    do nothing
+else if submode != current:
+    setSubmode(submode)
 ```
+
+A click sets the clicked station's speed, for every speed pair. The
+clicked row already carries the speed that reaches that station, so
+nothing is remembered between clicks.
 
 **Rules:**
 - Only called from `selectCallsign()` and band activity double-click.
 - Never called from `tableSelectionChanged` or display rebuilds.
-- Uses `switchSubmode()` (lightweight), never `setSubmode()`.
+- Uses `setSubmode()` — `switchSubmode()` no longer exists.
+
+**Superseded:** this used to switch only into and out of Subspace, and
+on the way out it restored a saved `m_prevStandardSubmode` rather than
+the clicked speed. That variable is deleted. It was written only by the
+click that entered Subspace, so every other route in left the read
+unmatched, and it was initialised to `Default::SUBMODE`, which has been
+Subspace since 2026-04-08, making the return click a silent no-op.
 
 ### `callsignSelected()` (modified)
 
@@ -155,8 +165,8 @@ All selection logic is handled by the explicit click handlers above.
 
 ## What Does NOT Change
 
-- `setSubmode()` / `setupJS8()` — unchanged, used by mode buttons and menu
-- `switchSubmode()` — unchanged, used by `autoSwitchMode()`
+- `setSubmode()` / `setupJS8()` — unchanged, used by mode buttons, the
+  Mode menu and `autoSwitchMode()`
 - `displayBandActivity()` / `displayCallActivity()` — unchanged
 - `displayTextForFreq()` — unchanged
 - `addMessageText()` — unchanged
@@ -168,8 +178,10 @@ All selection logic is handled by the explicit click handlers above.
 | Variable | Purpose | Written by | Read by |
 |----------|---------|-----------|---------|
 | `m_selectedCallsign` | Currently selected callsign | `selectCallsign()`, `clearSelection()` | `callsignSelected()`, `updateButtonDisplay()` |
-| `m_nSubMode` | Current operating mode | `setSubmode()`, `switchSubmode()` | everywhere |
-| `m_prevStandardSubmode` | Saved standard mode for FT2 toggle | `autoSwitchMode()` | `autoSwitchMode()` |
+| `m_nSubMode` | Current operating mode | `setSubmode()`, `setupJS8()` | everywhere |
+
+`m_prevStandardSubmode` was deleted 2026-09-27 (clickspeed). A click
+carries the speed it needs, so no saved speed is kept.
 
 ## Testing Checklist
 

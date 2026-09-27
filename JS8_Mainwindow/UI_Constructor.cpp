@@ -131,7 +131,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
       m_freqTxNominal{0}, m_XIT{0}, m_sec0{-1},
       m_RxLog{1}, // Write Date and Time to RxLog
       m_TRperiod{60}, m_inGain{0}, m_idleMinutes{0},
-      m_nSubMode{Default::SUBMODE}, m_prevStandardSubmode{Default::SUBMODE},
+      m_nSubMode{Default::SUBMODE},
       m_frequency_list_fcal_iter{m_config.frequencies()->begin()}, m_i3bit{0},
       m_btxok{false}, m_auto{false}, m_restart{false}, m_currentMessageType{-1},
       m_lastMessageType{-1}, m_tuneup{false}, m_isTimeToSend{false}, m_ihsym{0},
