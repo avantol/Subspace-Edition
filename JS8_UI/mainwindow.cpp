@@ -5861,9 +5861,13 @@ void UI_Constructor::addMessageText(QString text, bool clear,
     ui->extFreeTextMsgEdit->setFocus();
 }
 
-void UI_Constructor::confirmThenEnqueueMessage(int timeout, int priority,
-                                               QString message, int offset,
-                                               Callback c, bool autoReply) {
+// [opsec 2026-09-27] The confirmation dialog, extracted so there is ONE
+// of it. Two callers now: confirmThenEnqueueMessage() below, and the ARQ
+// capability answer, which on Yes must run its own direct-TX path rather
+// than join the message queue. Defaulting to No and self-destructing on
+// the timeout are unchanged -- an unattended station answers nothing.
+void UI_Constructor::confirmThenRun(int timeout, QString const &message,
+                                    Callback onYes) {
     SelfDestructMessageBox *m = new SelfDestructMessageBox(
         timeout, "Autoreply Confirmation Required",
         QString("A transmission is queued for autoreply:\n\n%1\n\nWould you "
@@ -5873,17 +5877,29 @@ void UI_Constructor::confirmThenEnqueueMessage(int timeout, int priority,
         QMessageBox::No, false, this);
 
     connect(m, &SelfDestructMessageBox::finished, this,
-            [this, m, priority, message, offset, c, autoReply](int) {
+            [m, onYes](int) {
                 // make sure we delete the message box later...
                 m->deleteLater();
 
-                if (m->result() == QMessageBox::Yes) {
-                    enqueueMessage(priority, message, offset, c, autoReply);
+                if (m->result() == QMessageBox::Yes && onYes) {
+                    onYes();
                 }
             });
 
     m->setWindowModality(Qt::NonModal);
     m->show();
+}
+
+void UI_Constructor::confirmThenEnqueueMessage(int timeout, int priority,
+                                               QString message, int offset,
+                                               Callback c, bool autoReply) {
+    QPointer<UI_Constructor> const self(this);
+    confirmThenRun(timeout, message,
+                   [self, priority, message, offset, c, autoReply]() {
+                       if (!self) return;
+                       self->enqueueMessage(priority, message, offset, c,
+                                            autoReply);
+                   });
 }
 
 void UI_Constructor::enqueueMessage(int priority, QString message, int offset,

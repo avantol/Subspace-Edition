@@ -340,6 +340,11 @@ class UI_Constructor : public QMainWindow {
     void prependMessageText(QString text);
     void addMessageText(QString text, bool clear = false,
                         bool selectFirstPlaceholder = false);
+    // [opsec 2026-09-27] ONE authority for the autoreply confirmation
+    // dialog. confirmThenEnqueueMessage() is the enqueueing caller;
+    // the ARQ capability answer is the other, and it must run its own
+    // direct-TX path on Yes rather than be enqueued.
+    void confirmThenRun(int timeout, QString const &message, Callback onYes);
     void confirmThenEnqueueMessage(int timeout, int priority, QString message,
                                    int offset, Callback c,
                                    bool autoReply = false);

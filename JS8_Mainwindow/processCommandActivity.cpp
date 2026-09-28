@@ -2297,6 +2297,34 @@ void UI_Constructor::processCommandActivity() {
                        << "from=" << d.from << "to=" << d.to;
         }
 
+        // [opsec 2026-09-27, operator ruling] AUTO OFF = NO CAPABILITY
+        // ANSWER AT ALL, directed, group or allcall alike.
+        //
+        // Answering "<peer> YES <level>" tells any listener that this
+        // station runs Subspace. That is an operational-security
+        // disclosure, and an unattended station must not make it on its
+        // own. Field reason: an EmComm lead saw his own station
+        // advertising the fact and objected.
+        //
+        // This REPLACES the previous behaviour. The gate below has
+        // always suppressed replies with AUTO off, but only to @ALLCALL
+        // and @HB, so a directed or custom-group "QUERY ARQ?" was
+        // answered regardless of the toggle. The capability answer also
+        // bypassed the confirmation dialog entirely (see the dispatch
+        // at the end of this function, now changed to honour it).
+        //
+        // Deliberately NOT exempted as a remote obligation. It is an
+        // obligation in protocol terms, which is why it skips the
+        // typing, open-buffer and active-session gates; it is not an
+        // obligation in operational-security terms, and the operator
+        // ruled that security wins here.
+        if (arqProtocolReply && !ui->actionModeAutoreply->isChecked()) {
+            qWarning() << "[REPLY-GATE] capability answer suppressed:"
+                       << "autoreply off, from=" << d.from
+                       << "to=" << d.to;
+            continue;
+        }
+
         // do not queue @ALLCALL replies if auto-reply is not checked
         if (!ui->actionModeAutoreply->isChecked() && isAllCall) {
             if (d.cmd == QStringLiteral(">")) {
@@ -2434,15 +2462,34 @@ void UI_Constructor::processCommandActivity() {
             // only ATTACHES frames to transfers already underway.
             QString const responseText = reply;
             QPointer<UI_Constructor> const self(this);
-            QTimer::singleShot(
-                ChunkedArq::ACK_TX_DELAY_MS, this,
-                [self, responseText]() {
-                    if (!self) return;
-                    qCWarning(chunkedarq_js8)
-                        << "[ARQ-RX] protocol reply via ACK path:"
-                        << responseText;
-                    self->onChunkedWantsResponseTx(responseText);
-                });
+            Callback const airIt = [self, responseText]() {
+                if (!self) return;
+                QTimer::singleShot(
+                    ChunkedArq::ACK_TX_DELAY_MS, self, [self, responseText]() {
+                        if (!self) return;
+                        qCWarning(chunkedarq_js8)
+                            << "[ARQ-RX] protocol reply via ACK path:"
+                            << responseText;
+                        self->onChunkedWantsResponseTx(responseText);
+                    });
+            };
+            // [opsec 2026-09-27, operator ruling] The capability answer
+            // now honours "Ask for confirmation before sending
+            // autoreply" like every other autoreply. It used to bypass
+            // the dialog deliberately, on the reasoning that the far
+            // end's negotiation times out in 20 s while the dialog runs
+            // for 90 s. That reasoning still holds and is now the
+            // ACCEPTED COST: with confirmation on, an answer the
+            // operator approves will usually arrive after the asking
+            // station has given up, so the practical effect is that
+            // capability is advertised only to a peer that asks again
+            // while somebody is at the keyboard. That is the intended
+            // posture -- no unattended disclosure -- not an oversight.
+            if (m_config.autoreply_confirmation()) {
+                confirmThenRun(90, reply, airIt);
+                continue;
+            }
+            airIt();
             continue;
         }
 
