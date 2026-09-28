@@ -904,6 +904,13 @@ class UI_Constructor : public QMainWindow {
                          QString const &sparsePath, int level) const;
     void notifyFormTransferAborted(QString const &peer,
                                    QString const &why); // [ICS213]
+    // [noreplyabort 2026-09-27] The ONE notice for a peer that never
+    // answered QUERY ARQ?. All three transfer kinds abort on silence
+    // and show this; notifyFormTransferAborted above stays for the
+    // different case of an affirmative "YES 1".
+    void notifyNegotiationNoReply(QString const &peer,
+                                  QString const &title,
+                                  QString const &extra = QString());
     // [BUILD 339 TODO #103] Session cache of peers' advertised ARQ
     // protocol levels, populated from "YES <level>" replies to
     // QUERY ARQ?. Key = FULL callsign (uppercased). A level >= 2

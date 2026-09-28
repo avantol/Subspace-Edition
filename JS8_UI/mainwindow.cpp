@@ -8700,6 +8700,37 @@ void UI_Constructor::startFileTransferViaArq(QString const &filePath,
 // The form FILE is already saved (writeFormFile ran before the send),
 // so the operator can hand it to a capable station via "Send file…" —
 // deliberately no extra UI for that (operator decision 2026-08-18).
+// [noreplyabort 2026-09-27, operator ruling + operator's wording] The
+// ONE notice for "the peer never answered QUERY ARQ?". Shown by all
+// three transfer kinds, because after this ruling all three abort on
+// silence rather than one aborting and two degrading to V1.
+//
+// The causes are listed rather than guessed at because silence is
+// genuinely ambiguous and we must not pretend otherwise: the query or
+// the two-frame reply is easily stepped on, and from Build 493 a
+// station with auto-reply off answers nothing at all by design.
+void UI_Constructor::notifyNegotiationNoReply(QString const &peer,
+                                              QString const &title,
+                                              QString const &extra) {
+    QString body = QStringLiteral(
+        "%1 did not reply to the protocol negotiation message.\n\n"
+        "Possible causes are:\n"
+        "- Not receiving the message, or\n"
+        "- Auto-reply is disabled, or\n"
+        "- Obsolete version of Subspace, or using a legacy JS8 "
+        "version.").arg(peer);
+    if (!extra.isEmpty())
+        body += QStringLiteral("\n\n") + extra;
+    auto *box = new QMessageBox(this);
+    box->setWindowTitle(title);
+    box->setText(body);
+    box->setIcon(QMessageBox::Warning);
+    box->setStandardButtons(QMessageBox::Ok);
+    box->setWindowModality(Qt::NonModal);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->show();
+}
+
 void UI_Constructor::notifyFormTransferAborted(QString const &peer,
                                                QString const &why) {
     auto *box = new QMessageBox(this);
@@ -8841,36 +8872,59 @@ void UI_Constructor::onCapQueryTimeout(int const gen) {
     bool const requiredV2 = m_pendingRequiresV2;
     QString path, link, pr;
     takeCapabilityNegotiation(&path, &link, &pr);
+    // [noreplyabort 2026-09-27, operator ruling] TWO SILENCES = ABORT,
+    // for EVERY transfer kind. This replaces the V1 fallback that file
+    // and link transfers used to take here; the form path already
+    // aborted and is now simply one of three.
+    //
+    // WHY THE FALLBACK WENT. Falling back to V1 treated silence as
+    // "assume the weakest peer", and silence does not mean that. The
+    // query or the two-frame reply is easily stepped on, and a fully
+    // capable station can be unable to answer: from Build 493 one with
+    // auto-reply off answers nothing by design, and any station
+    // answers nothing during an auto-route run or with transmit
+    // disabled. Degrading such a peer to V1 spends far more air than
+    // the transfer needs, for a limitation it does not have.
+    // Operator, 2026-09-27: "what i don't want to do is offer the
+    // degraded performance for no-reply to QUERY ARQ ... they may have
+    // the appropriate build for better performance, but can't reply."
+    //
+    // MEASURED: the last peer that ever answered "YES 1" to this
+    // station did so on 2026-08-10, seven weeks before this change. Of
+    // 43 capability replies logged since 2026-09-01, none was level 1
+    // (six level 2, ten level 3, twenty-seven level 4). The population
+    // the fallback existed to serve is not on the air.
+    //
+    // NOT a retry point: armCapQueryTimeout has already spent its one
+    // retry before reaching here, so a single stepped-on reply never
+    // lands in this branch.
+    //
+    // An affirmative "YES 1" is UNTOUCHED and still sends V1. That is
+    // the peer stating its capability, not silence, and it is handled
+    // at the capture site with its own wording.
+    //
+    // Silence is still never cached, so the next attempt re-queries
+    // and a peer that was merely stepped on succeeds then.
+    QString title = QStringLiteral("File not sent");
+    QString extra;
     if (requiredV2) {
-        // [ICS213 v1gate] Form transfer: no "YES 2/3" arrived —
-        // immediate exit, NO V1 fallback. Silence is not cached
-        // (may be QRM), so a later attempt re-queries.
-        qCWarning(chunkedarq_js8)
-            << "[FT-TX] form transfer aborted — no capability reply"
-            << "from" << pr;
-        notifyFormTransferAborted(
-            pr, QStringLiteral("no reply to QUERY ARQ?"));
-        return;
+        title = QStringLiteral("ICS-213 form not sent");
+        // [noreplyabort] The old wording here said the form "can still
+        // be sent with Send file...". After this ruling that path
+        // negotiates too and would stop the same way, so the sentence
+        // would have sent the operator round a loop.
+        extra = QStringLiteral(
+            "The form file is saved in the ICS213 folder and can be "
+            "sent later.");
+    } else if (!link.isEmpty()) {
+        title = QStringLiteral("Web link not sent");
     }
     qCWarning(chunkedarq_js8)
-        << "[FT-TX] no capability reply from" << pr
-        << "— proceeding with V1 (not cached; silence may be QRM)";
-    if (!link.isEmpty()) {
-        // Legacy link.txt fallback for the parked link.
-        QString const linkPath = QDir::cleanPath(
-            QStandardPaths::writableLocation(
-                QStandardPaths::TempLocation)
-            + QStringLiteral("/link.txt"));
-        if (QFile f(linkPath); f.open(QIODevice::WriteOnly |
-                                      QIODevice::Truncate)) {
-            f.write(link.toUtf8());
-            f.write("\n");
-            f.close();
-            startFileTransferWithFormat(linkPath, pr, 1);
-        }
-        return;
-    }
-    startFileTransferWithFormat(path, pr, 1);
+        << "[FT-TX] transfer aborted — no capability reply from" << pr
+        << "kind=" << (requiredV2 ? "form"
+                                  : (link.isEmpty() ? "file" : "link"))
+        << "(not cached; silence may be QRM)";
+    notifyNegotiationNoReply(pr, title, extra);
 }
 
 void UI_Constructor::startFileTransferWithFormat(
