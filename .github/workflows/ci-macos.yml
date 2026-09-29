@@ -45,8 +45,51 @@ jobs:
         # formula ("No formulae or casks found"), which failed both
         # runners on builds 472/473 -- and our ffmpeg configure line
         # enables no external codecs, so it was never used.
-        brew install autoconf automake libtool pkgconf git lame libass libtool libvorbis \
-          libvpx opus sdl shtool texi2html theora wget x264 x265 xvid nasm create-dmg
+        #
+        # [macintel 2026-09-29] Build 495 FAILED here on the INTEL runner
+        # only, after 51 minutes, before any of our code was compiled.
+        # Homebrew stopped shipping prebuilt binaries for Intel macOS
+        # ("as-of September 2026, announced August 2025"), so every
+        # dependency now compiles from source on the runner. openssl@3
+        # was built as a dependency of libass and then could not be
+        # linked:
+        #     The `brew link` step did not complete successfully
+        #     Could not symlink bin/openssl
+        #     Target /usr/local/bin/openssl
+        #     is a symlink belonging to openssl@1.1
+        # The runner image pre-installs openssl@1.1 and it owns that
+        # path. Unlink it first so the newer one can take the link.
+        # Unlink, NOT uninstall: anything already built against 1.1
+        # keeps working through its own Cellar path.
+        # Guarded because the arm64 runner does not have it, and a
+        # future image may drop it -- a missing formula here is not a
+        # failure. Nothing else is masked: the install below still fails
+        # the job if it fails.
+        #
+        # [macdeps 2026-09-29] THE CODEC LIST IS GONE. Build 478
+        # (2026-09-09) removed the ffmpeg cache/build/save steps as dead,
+        # but left the brew line that fed them -- half the job. These
+        # existed ONLY for that ffmpeg build: lame, libass, libvorbis,
+        # libvpx, opus, sdl, shtool, texi2html, theora, x264, x265, xvid,
+        # nasm, wget. Nothing after the install step touches any of them
+        # (Qt comes from install-qt-action; libusb, Hamlib, fftw and
+        # Boost are fetched with curl or git and built with
+        # configure/make; create-dmg makes the package). libass is also
+        # what dragged openssl in, so this removes the root of the Intel
+        # failure rather than stepping around it -- the unlink above
+        # stays as a guard, since a future formula may pull openssl
+        # again.
+        # WHAT IS LEFT AND WHY:
+        #   autoconf automake libtool  -- libusb's ./bootstrap.sh and
+        #                                 Hamlib's ./bootstrap run
+        #                                 autoreconf
+        #   pkgconf                    -- configure/CMake dependency
+        #                                 discovery
+        #   git                        -- Hamlib is git-cloned
+        #   create-dmg                 -- builds the .dmg artifact
+        # (libtool was also listed twice; deduplicated.)
+        brew unlink openssl@1.1 || echo "openssl@1.1 not linked; nothing to do"
+        brew install autoconf automake libtool pkgconf git create-dmg
 
     - name: Cache libusb 1.0.29
       id: cache-usb
