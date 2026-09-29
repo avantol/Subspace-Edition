@@ -2322,6 +2322,18 @@ void UI_Constructor::processCommandActivity() {
             qWarning() << "[REPLY-GATE] capability answer suppressed:"
                        << "autoreply off, from=" << d.from
                        << "to=" << d.to;
+            // [autoreplynudge 2026-09-28] Tell the operator once why.
+            // DIRECTED only: an @ALLCALL or @HB capability probe is
+            // somebody sweeping the band, not somebody trying to send
+            // to this station, and a prompt for that would be noise.
+            // Hedged on purpose: all three transfer kinds send the
+            // SAME query, and a human can send it by hand from the
+            // query menu with no transfer intent at all, so this one
+            // cannot state what is coming.
+            if (!isAllCall)
+                offerAutoreplyEnable(d.from,
+                    tr("It appears that %1 wants to send you a file, "
+                       "ICS-213 form, or web link.").arg(d.from));
             continue;
         }
 
@@ -2486,7 +2498,20 @@ void UI_Constructor::processCommandActivity() {
             // while somebody is at the keyboard. That is the intended
             // posture -- no unattended disclosure -- not an oversight.
             if (m_config.autoreply_confirmation()) {
-                confirmThenRun(90, reply, airIt);
+                // [confirmcoalesce 2026-09-28] Deadline DERIVED, not
+                // chosen: the asker stops waiting after its own reply
+                // window, so an answer approved later than that is
+                // wasted air. The window less our own two frames of
+                // reply airtime is what the operator actually has --
+                // about 21 s at Normal, about 10 s at Subspace, against
+                // the 90 s an ordinary autoreply gets.
+                int const windowMs =
+                    ChunkedArq::replyTimeoutMsForSubmode(
+                        d.submode, ChunkedArq::CAP_QUERY_REPLY_FRAMES)
+                    - ChunkedArq::CAP_QUERY_REPLY_FRAMES
+                          * ChunkedArq::periodMsForSubmode(d.submode);
+                confirmThenRun(qMax(1, windowMs / 1000),
+                               ConfirmKind::Capability, reply, airIt);
                 continue;
             }
             airIt();

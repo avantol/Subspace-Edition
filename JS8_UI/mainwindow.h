@@ -215,6 +215,12 @@ class UI_Constructor : public QMainWindow {
     using FrequencyDelta = Radio::FrequencyDelta;
     using Mode = Modes::Mode;
 
+    // [confirmcoalesce 2026-09-28] The three questions the ONE
+    // confirmation box can be holding at once. Declared here rather
+    // than beside confirmThenRun() because that sits in a slots
+    // section, which moc refuses to parse type declarations in.
+    enum class ConfirmKind { Autoreply, Capability, IncomingTransfer };
+
     explicit UI_Constructor(QString const &program_info,
                             QDir const &temp_directory, bool multiple,
                             MultiSettings *settings, QWidget *parent = nullptr);
@@ -344,7 +350,39 @@ class UI_Constructor : public QMainWindow {
     // dialog. confirmThenEnqueueMessage() is the enqueueing caller;
     // the ARQ capability answer is the other, and it must run its own
     // direct-TX path on Yes rather than be enqueued.
-    void confirmThenRun(int timeout, QString const &message, Callback onYes);
+    //
+    // [confirmcoalesce 2026-09-28] It now COALESCES. Measured worst
+    // case before this: thirteen directed messages addressed to us
+    // arrived in one second, each raising its own box with its own
+    // countdown, stacked. One box now holds them all, grouped by what
+    // is being asked. ConfirmKind and the pending list live outside
+    // this section -- moc does not parse type or data declarations
+    // inside a slots section.
+    // onNo runs on No and on the timeout -- the same answer either way,
+    // and a caller that keeps a record needs to hear it in both.
+    void confirmThenRun(int timeoutSeconds, ConfirmKind kind,
+                        QString const &line, Callback onYes,
+                        Callback onNo = Callback(),
+                        QString const &owner = QString());
+    // [acceptwithdraw 2026-09-29] Drop a question that has become moot,
+    // WITHOUT answering it either way: the thing it asked about is gone,
+    // so neither callback runs. Closes the box if nothing is left.
+    void withdrawConfirm(ConfirmKind kind, QString const &owner);
+    // Rebuild the open box's text and pull its countdown in to the
+    // earliest deadline now pending.
+    void refreshConfirmBox();
+    // Yes runs every pending action; No and the timeout run none. The
+    // next question still asks -- nothing is suppressed afterwards.
+    void resolveConfirmBox(bool accepted);
+    // [autoreplynudge 2026-09-28] Offer to turn auto-reply back on,
+    // once per session, with a "Don't ask again" that persists. `what`
+    // names what the far station was trying to do.
+    // [acceptonce 2026-09-29] `peer` is the station the prompt is about.
+    // Saying yes here IS acceptance of that station's transfer: this
+    // prompt asks the WIDER question ("answer automatically at all"),
+    // and being asked the narrower one straight afterwards was the
+    // defect -- field 04:03:26Z yes, 04:04:31Z acknowledgement held.
+    void offerAutoreplyEnable(QString const &peer, QString const &headline);
     void confirmThenEnqueueMessage(int timeout, int priority, QString message,
                                    int offset, Callback c,
                                    bool autoReply = false);
@@ -1802,6 +1840,53 @@ class UI_Constructor : public QMainWindow {
     // Common/ListBy.
     QString m_bandListBy = QStringLiteral("offset");
     QPriorityQueue<PrioritizedMessage> m_txMessageQueue; // messages to be sent
+
+    // [confirmcoalesce 2026-09-28] The ONE confirmation box and what it
+    // is currently holding. Each entry carries its own real deadline;
+    // the box's countdown runs to the earliest of them.
+    // [acceptonce 2026-09-29] onNo exists because a question that is
+    // dropped has to be RECORDED as answered somewhere, or the asker
+    // asks again the next time it wants the same thing. Field 04:02-
+    // 04:07Z: the same incoming transfer raised the acceptance question
+    // three times and died at chunk 1 of 3. It is the symmetric half of
+    // onYes, not a new mechanism.
+    // [acceptwithdraw 2026-09-29] `owner` is what the question is ABOUT
+    // -- the station, for an incoming transfer. Without it an entry had
+    // no identity, so nothing could withdraw it when the thing it asked
+    // about went away, and the answer landed on a transfer that no
+    // longer existed. Empty for the kinds that ask about no one.
+    struct PendingConfirm {
+        ConfirmKind kind;
+        QString     line;
+        qint64      deadlineMs;   // absolute, epoch ms
+        Callback    onYes;
+        Callback    onNo;
+        QString     owner;
+    };
+    QList<PendingConfirm>            m_pendingConfirms;
+    QPointer<SelfDestructMessageBox> m_confirmBox;
+    // [nosuppress 2026-09-29, operator ruling] `m_confirmSuppressed`
+    // lived here and is DELETED. It stopped the program asking after a
+    // decline until the operator showed presence; the coalescing above
+    // is what actually fixed the pile-up, so it bought nothing and cost
+    // questions answered no without ever being shown. Inherited
+    // behaviour, now restored: ask every time.
+
+    // [autoreplynudge 2026-09-28] Auto-reply off now really means off:
+    // no capability answer, and no acknowledgement of an inbound text
+    // ARQ transfer either, so the transfer dies. This tells the
+    // operator once per session WHY, and offers the one switch that
+    // fixes it. Not timed, because the transfer it refers to has
+    // already failed and the decision can wait.
+    bool                      m_autoreplyNudgeShown = false;
+    QPointer<QMessageBox>     m_autoreplyNudgeBox;
+    // [confirmcoalesce] Per-peer acceptance of an inbound text ARQ
+    // session when confirmation is on: absent = never asked, Pending =
+    // asked and waiting, Accepted, Declined. Declined stays declined
+    // for the life of that session, so the sender's three retries do
+    // not each re-ask.
+    enum class RxAccept { Pending, Accepted, Declined };
+    QHash<QString, RxAccept>  m_rxAcceptState;
     QQueue<QPair<QString, int>> m_txFrameQueue;          // frames to be sent
     QQueue<ActivityDetail> m_rxActivityQueue; // all rx activity queue
     QQueue<CommandDetail>

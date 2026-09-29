@@ -22,6 +22,8 @@
 #include "JS8_Include/SettingsGroup.h"
 
 #include <QThread>
+#include <QCheckBox>   // [autoreplynudge] "Don't ask again" in the prompt
+#include <QPushButton> // [yesorder] tooltips on the prompt's own buttons
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
@@ -2001,6 +2003,12 @@ bool UI_Constructor::eventFilter(QObject *object, QEvent *event) {
         // reset the Tx watchdog
         resetIdleTimer();
         tx_watchdog(false);
+        // [nosuppress 2026-09-29, operator ruling] A confirmation re-arm
+        // used to live here, because 494.1 stopped asking after a
+        // decline until the operator showed presence. That suppression
+        // is gone -- the coalescing was what fixed the pile-up, and the
+        // inherited behaviour is to ask every time -- so there is
+        // nothing to re-arm.
         break;
 
     case QEvent::ChildAdded:
@@ -5866,35 +5874,299 @@ void UI_Constructor::addMessageText(QString text, bool clear,
 // capability answer, which on Yes must run its own direct-TX path rather
 // than join the message queue. Defaulting to No and self-destructing on
 // the timeout are unchanged -- an unattended station answers nothing.
-void UI_Constructor::confirmThenRun(int timeout, QString const &message,
-                                    Callback onYes) {
-    SelfDestructMessageBox *m = new SelfDestructMessageBox(
-        timeout, "Autoreply Confirmation Required",
-        QString("A transmission is queued for autoreply:\n\n%1\n\nWould you "
-                "like to send this transmission?")
-            .arg(message),
-        QMessageBox::Question, QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No, false, this);
+// [confirmcoalesce 2026-09-28, operator ruling] ONE box, gaining
+// entries while it is open, instead of one box per reply.
+//
+// MEASURED, across every diagnostic log on this machine: directed
+// messages addressed to us arrive in the same second 1 at a time on
+// 5357 occasions, 2 to 4 on 276, 5 to 9 on 96, and 10 to 13 on 9. The
+// worst seen is thirteen. Each one that draws a reply used to raise
+// its own box with its own countdown, stacked on the last.
+//
+// The countdown runs to the EARLIEST deadline pending, and every
+// deadline is derived from constants that already exist rather than
+// chosen: an ordinary autoreply has no protocol deadline and keeps its
+// 90 s, a capability answer gets the asker's reply window for the
+// speed it arrived at, an incoming transfer gets the sender's whole
+// retry budget. On expiry EVERYTHING listed is declined and the box
+// closes (operator, 2026-09-28: "i think it's reasonable to lose that
+// transfer" -- so no partial-expiry bookkeeping).
+void UI_Constructor::confirmThenRun(int timeoutSeconds, ConfirmKind kind,
+                                    QString const &line, Callback onYes,
+                                    Callback onNo, QString const &owner) {
+    // [nosuppress 2026-09-29, operator ruling] There is NO "stop asking
+    // until the operator shows up" rule any more. 494.1 added one and
+    // justified it as preventing the pile-up; that justification was
+    // wrong. The COALESCING prevents the pile-up, completely -- without
+    // suppression you get one box at a time, which is exactly what the
+    // inherited code did. So suppression bought nothing and cost a lot:
+    // it answered no to questions that were never shown, and after
+    // 494.10 that meant tearing down incoming transfers from ANY
+    // station, with no time limit, until a key or mouse press.
+    // LEGACY, which this restores: every reply raises its own box, every
+    // time, 90 s, default No; a timeout declines that one reply and
+    // nothing else, and the next reply asks again whether or not anyone
+    // is there. Predictability beats cleverness.
+    qint64 const deadline = QDateTime::currentMSecsSinceEpoch()
+                          + qint64(timeoutSeconds) * 1000;
+    m_pendingConfirms.append(
+        PendingConfirm{kind, line, deadline, onYes, onNo, owner});
 
-    connect(m, &SelfDestructMessageBox::finished, this,
-            [m, onYes](int) {
-                // make sure we delete the message box later...
-                m->deleteLater();
+    if (!m_confirmBox) {
+        auto *m = new SelfDestructMessageBox(
+            timeoutSeconds, "Autoreply Confirmation Required", QString(),
+            QMessageBox::Question, QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No, false, this);
+        // [#212 2026-09-28] NEVER steal focus. Root-caused 2026-09-03:
+        // a dialog that raised and activated itself during an ARQ
+        // receive took the keyboard from another application and the
+        // operator's keystrokes were transmitted ("IT NEE" aired at
+        // 22:42:06). This box appears unbidden, so it announces itself
+        // and does not grab.
+        m->setAttribute(Qt::WA_ShowWithoutActivating, true);
+        m->setWindowModality(Qt::NonModal);
+        m_confirmBox = m;
+        connect(m, &SelfDestructMessageBox::finished, this, [this, m](int) {
+            m->deleteLater();
+            resolveConfirmBox(m->result() == QMessageBox::Yes);
+        });
+        refreshConfirmBox();
+        m->show();
+        QApplication::alert(this, 0);   // attention flash, not focus
+        return;
+    }
+    refreshConfirmBox();
+}
 
-                if (m->result() == QMessageBox::Yes && onYes) {
-                    onYes();
-                }
-            });
+// [confirmcoalesce] Render the pending list and pull the countdown in.
+void UI_Constructor::refreshConfirmBox() {
+    if (!m_confirmBox) return;
+    struct Group { ConfirmKind kind; char const *heading; };
+    static Group const groups[] = {
+        {ConfirmKind::Autoreply, "Transmissions queued for autoreply:"},
+        {ConfirmKind::Capability, "Capability answers:"},
+        {ConfirmKind::IncomingTransfer,
+         "Incoming transfers awaiting acceptance:"},
+    };
+    // Cap the rendered list so a busy band cannot grow the box past the
+    // screen; the measured worst case is thirteen at once.
+    int const kMaxShown = 8;
+    int shown = 0, hidden = 0;
+    QString body;
+    for (auto const &g : groups) {
+        QStringList lines;
+        for (auto const &p : m_pendingConfirms) {
+            if (p.kind != g.kind) continue;
+            if (shown < kMaxShown) { lines << "  " + p.line; ++shown; }
+            else ++hidden;
+        }
+        if (lines.isEmpty()) continue;
+        if (!body.isEmpty()) body += QStringLiteral("\n");
+        body += QString::fromLatin1(g.heading) + "\n"
+              + lines.join(QStringLiteral("\n")) + "\n";
+    }
+    if (hidden > 0)
+        body += QStringLiteral("\n  ...and %1 more\n").arg(hidden);
+    body += QStringLiteral("\nAllow these?");
+    m_confirmBox->setText(body);
 
-    m->setWindowModality(Qt::NonModal);
-    m->show();
+    qint64 const now = QDateTime::currentMSecsSinceEpoch();
+    qint64 earliest = -1;
+    for (auto const &p : m_pendingConfirms)
+        if (earliest < 0 || p.deadlineMs < earliest) earliest = p.deadlineMs;
+    if (earliest > 0)
+        m_confirmBox->shortenTimeout(
+            qMax(1, int((earliest - now + 999) / 1000)));
+}
+
+// [autoreplynudge 2026-09-28, operator ruling] With auto-reply off this
+// station answers no capability interrogation and acknowledges no
+// inbound text transfer, so both fail. That is deliberate. What was
+// missing is that the operator never learned it, and the far station
+// gave up for a reason only visible in a log.
+//
+// NOT TIMED and NOT MODAL on purpose: the transfer this refers to has
+// ALREADY failed, so there is nothing to race. The goal is that the
+// NEXT attempt succeeds (operator, 2026-09-28). Fire and forget.
+//
+// ONCE PER SESSION, and "Don't ask again" persists for ever. The new
+// key lives under its own Ss group; no existing key changes shape.
+void UI_Constructor::offerAutoreplyEnable(QString const &peer,
+                                          QString const &headline) {
+    if (m_autoreplyNudgeShown || m_autoreplyNudgeBox) {
+        qCWarning(mainwindow_js8)
+            << "[CONFIRM] autoreply prompt already shown this session";
+        return;
+    }
+    if (m_settings->value("SsAutoreplyNudge/DontAskAgain", false).toBool()) {
+        qCWarning(mainwindow_js8)
+            << "[CONFIRM] autoreply prompt suppressed: don't-ask-again set";
+        return;
+    }
+    m_autoreplyNudgeShown = true;
+    qCWarning(mainwindow_js8) << "[CONFIRM] autoreply prompt:" << headline;
+
+    auto *box = new QMessageBox(this);
+    box->setWindowTitle(QStringLiteral("Auto-reply is off"));
+    // [autoreplynudge 2026-09-28] The headline is passed in whole,
+    // because the two cases know different things. A QUERY ARQ? only
+    // SUGGESTS what is coming -- all three transfer kinds send the same
+    // query, and a human can send it by hand -- so that case hedges. An
+    // inbound text transfer is not a guess: the chunks are arriving.
+    box->setText(
+        QStringLiteral(
+            "%1\n\n"
+            "Auto-reply is turned off, so this station did not answer "
+            "and the attempt did not complete.\n\n"
+            "Enable auto-reply so the next attempt can succeed?")
+            .arg(headline));
+    box->setIcon(QMessageBox::Question);
+    // [autoreplynudge 2026-09-28, operator ruling] Two ways to say yes.
+    // The toggle itself is NOT persisted -- legacy behaviour: every
+    // session starts from the "Turn autoreply on at startup" checkbox in
+    // Settings -- so a plain Yes fixes today and the same prompt returns
+    // tomorrow. The second button writes that checkbox, which is the
+    // setting this prompt is really about, instead of leaving the
+    // operator to go hunting for it.
+    // [yesorder 2026-09-28, operator] ALL THREE share ONE role on
+    // purpose. QMessageBox lays buttons out by ROLE using the platform's
+    // own convention, so Accept and Reject roles come out in a different
+    // left-to-right order on Windows, macOS and Linux. Buttons in the
+    // SAME role group keep the order they were added in, everywhere.
+    // Escape and the default are set explicitly, because ActionRole
+    // gives neither for free.
+    auto *sessionBtn = box->addButton(tr("Yes, for this session only"),
+                                      QMessageBox::ActionRole);
+    auto *alwaysBtn =
+        box->addButton(tr("Yes, for every session (recommended)"),
+                       QMessageBox::ActionRole);
+    auto *noBtn = box->addButton(tr("No"), QMessageBox::ActionRole);
+    QString const yesTip = QStringLiteral(
+        "'Yes, for every session' is recommended.\n"
+        "('Session' means: 'From program startup until you exit "
+        "the program')");
+    sessionBtn->setToolTip(yesTip);
+    alwaysBtn->setToolTip(yesTip);
+    box->setDefaultButton(noBtn);
+    box->setEscapeButton(noBtn);
+    auto *never = new QCheckBox(QStringLiteral("Don't ask again"), box);
+    box->setCheckBox(never);
+    box->setWindowModality(Qt::NonModal);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    // [#212] Unbidden, and it fires in the very window the focus-theft
+    // capture came from. Announce, do not grab.
+    box->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    QString const key = peer.toUpper();
+    QPointer<UI_Constructor> const self(this);
+    connect(box, &QMessageBox::finished, this,
+            [self, box, never, sessionBtn, alwaysBtn, key](int) {
+        if (!self) return;
+        if (never->isChecked())
+            self->m_settings->setValue("SsAutoreplyNudge/DontAskAgain", true);
+        auto const *clicked = box->clickedButton();
+        if (clicked != sessionBtn && clicked != alwaysBtn)
+            return;
+        self->ui->actionModeAutoreply->setChecked(true);
+        // [acceptonce 2026-09-29, operator ruling] The wider yes answers
+        // the narrower question. This prompt already names the station,
+        // so a yes is recorded as accepting that station's transfer and
+        // the acceptance box is never raised for it. Field 2026-09-29:
+        // yes at 04:03:26Z, then the acceptance question at ~04:04Z and
+        // the acknowledgement held at 04:04:31Z -- the operator was
+        // asked twice for one transfer and it died at 1 of 3.
+        // Nothing new is stored: this fills in the SAME record the
+        // second question would have filled in.
+        if (!key.isEmpty()) {
+            self->m_rxAcceptState.insert(key, RxAccept::Accepted);
+            qCWarning(mainwindow_js8)
+                << "[CONFIRM] enable-yes also accepts transfer from" << key;
+        }
+        if (clicked == alwaysBtn) {
+            self->m_config.set_autoreply_on_at_startup(true);
+            qCWarning(mainwindow_js8)
+                << "[CONFIRM] operator enabled auto-reply for EVERY session"
+                << "(startup setting written)";
+        } else {
+            qCWarning(mainwindow_js8)
+                << "[CONFIRM] operator enabled auto-reply for this session";
+        }
+    });
+    m_autoreplyNudgeBox = box;
+    box->show();
+    // [#212 CORRECTION 2026-09-28] raise() is NOT the focus thief --
+    // activateWindow() is. The filed remedy said show-without-
+    // activating plus a flash and never said to drop raise(); dropping
+    // it put this prompt BEHIND the main window, where the operator
+    // never saw it (field, 18:08:23Z: the session reached Receiving,
+    // the acknowledgement was suppressed as designed, and no prompt
+    // was visible). Stack it on top, do not take the keyboard.
+    box->raise();
+    QApplication::alert(this, 0);
+}
+
+// [confirmcoalesce] Yes runs every pending action. No and the timeout
+// run none -- the timed box clicks its default, which is No -- and both
+// suppress further boxes until the operator shows presence.
+// [acceptwithdraw 2026-09-29] The thing a question asked about is gone,
+// so the question goes with it -- NEITHER callback runs, because "moot"
+// is not "refused". Without this the box stayed up after its transfer
+// ended (operator Halt is the easy way in), the operator answered it,
+// and the answer was recorded against a station with nothing in flight
+// -- where nothing ever cleared it again, because the event that clears
+// it is the end of a transfer and that had already happened. Every
+// later transfer from that station was then refused in silence.
+void UI_Constructor::withdrawConfirm(ConfirmKind const kind,
+                                     QString const &owner) {
+    if (owner.isEmpty()) return;
+    int const before = m_pendingConfirms.size();
+    m_pendingConfirms.removeIf([kind, &owner](PendingConfirm const &p) {
+        return p.kind == kind &&
+               p.owner.compare(owner, Qt::CaseInsensitive) == 0;
+    });
+    if (m_pendingConfirms.size() == before) return;
+    qCWarning(mainwindow_js8)
+        << "[CONFIRM] withdrawn (no longer applies):" << owner;
+    if (!m_confirmBox) return;
+    if (m_pendingConfirms.isEmpty()) {
+        // Nothing left to ask. Closing runs resolveConfirmBox with an
+        // empty list, which is why that function returns early instead
+        // of treating an empty close as a decline.
+        m_confirmBox->close();
+        return;
+    }
+    refreshConfirmBox();
+}
+
+void UI_Constructor::resolveConfirmBox(bool const accepted) {
+    auto const pending = m_pendingConfirms;
+    m_pendingConfirms.clear();
+    m_confirmBox = nullptr;
+    // [acceptwithdraw 2026-09-29] An empty box was not declined -- it
+    // was emptied by withdrawal and closed. Nothing to run, and NOT a
+    // reason to suppress the next one.
+    if (pending.isEmpty()) return;
+    if (accepted) {
+        for (auto const &p : pending)
+            if (p.onYes) p.onYes();
+        return;
+    }
+    // [acceptonce 2026-09-29] No and the timeout still run no ACTION --
+    // that is unchanged. What they now do is let the asker record that
+    // the question was answered, so it is not put again.
+    for (auto const &p : pending)
+        if (p.onNo) p.onNo();
+    // [nosuppress 2026-09-29, operator ruling] Nothing is suppressed
+    // afterwards. The next question asks again, as the inherited code
+    // always did.
+    qCWarning(mainwindow_js8)
+        << "[CONFIRM] declined" << pending.size() << "pending";
 }
 
 void UI_Constructor::confirmThenEnqueueMessage(int timeout, int priority,
                                                QString message, int offset,
                                                Callback c, bool autoReply) {
     QPointer<UI_Constructor> const self(this);
-    confirmThenRun(timeout, message,
+    confirmThenRun(timeout, ConfirmKind::Autoreply, message,
                    [self, priority, message, offset, c, autoReply]() {
                        if (!self) return;
                        self->enqueueMessage(priority, message, offset, c,
@@ -7285,7 +7557,24 @@ void UI_Constructor::on_actionModeSubspaceDecode_toggled(bool checked) {
 #endif
 }
 
-void UI_Constructor::on_actionModeAutoreply_toggled(bool) {
+void UI_Constructor::on_actionModeAutoreply_toggled(bool const on) {
+    // [acceptonce 2026-09-29, operator ruling] Turning auto-reply back
+    // OFF re-arms the offer to turn it on. The once-per-session flag was
+    // set when the prompt appeared and nothing ever cleared it, so after
+    // enable-then-disable the next transfer failed in silence -- the one
+    // outcome this prompt exists to prevent. This is the missing
+    // symmetric half of setting the flag, not a new rule.
+    // "Don't ask again" is checked separately and still wins, so the
+    // operator keeps the permanent off switch.
+    // The idle watchdog also turns auto-reply off (and restores it when
+    // its dialog is dismissed), so it re-arms too. That is right: while
+    // the watchdog has it off, a transfer really does fail, and the
+    // operator is the one person who does not yet know it.
+    if (!on) {
+        m_autoreplyNudgeShown = false;
+        qCWarning(mainwindow_js8)
+            << "[CONFIRM] autoreply turned off; enable prompt re-armed";
+    }
     // update the HB ack option (needs autoreply on)
     prepareHeartbeatMode(canCurrentModeSendHeartbeat() &&
                          ui->actionModeJS8HB->isChecked());
@@ -8229,6 +8518,83 @@ void UI_Constructor::on_sendIcs213FormAction_triggered() {
     QString const peer = resolveArqFilePeer();
     if (peer.isEmpty())
         return;
+    // [autoreplynudge 2026-09-28, operator ruling] An ICS-213 is a
+    // request that expects an answer, and the answer comes back as an
+    // inbound ARQ file transfer. With auto-reply off this station
+    // acknowledges no inbound transfer, so the form would go out and
+    // the reply could never arrive. Stop it HERE, before anything is
+    // transmitted, rather than let the operator discover it after the
+    // fact (operator, 2026-09-28: "we don't allow it to start unless
+    // auto-reply is enabled, a dialog asks to do exactly that").
+    // This prompt is not in the ARQ window, so it carries none of the
+    // #212 focus risk the other two do.
+    if (!ui->actionModeAutoreply->isChecked()) {
+        auto *box = new QMessageBox(this);
+        box->setWindowTitle(QStringLiteral("ICS-213 form not sent"));
+        box->setText(
+            QStringLiteral(
+                "An ICS-213 form expects a reply, and the reply arrives "
+                "as a file transfer.\n\n"
+                "Auto-reply is turned off, so this station would not "
+                "acknowledge that reply and it could never be "
+                "received.\n\n"
+                "Enable auto-reply and open the form?"));
+        box->setIcon(QMessageBox::Question);
+        // [autoreplynudge 2026-09-28] Same two ways to say yes as the
+        // other prompt, for the same reason: the toggle is not
+        // persisted, so a session-only yes brings this dialog straight
+        // back next time the operator sends a form.
+        // [yesorder 2026-09-28] Same one-role-group trick as the other
+        // prompt, so the order is identical on every OS.
+        auto *sessionBtn = box->addButton(tr("Yes, for this session only"),
+                                          QMessageBox::ActionRole);
+        auto *alwaysBtn =
+            box->addButton(tr("Yes, for every session (recommended)"),
+                           QMessageBox::ActionRole);
+        auto *noBtn = box->addButton(tr("No"), QMessageBox::ActionRole);
+        QString const yesTip = QStringLiteral(
+        "'Yes, for every session' is recommended.\n"
+        "('Session' means: 'From program startup until you exit "
+        "the program')");
+        sessionBtn->setToolTip(yesTip);
+        alwaysBtn->setToolTip(yesTip);
+        box->setDefaultButton(noBtn);
+        box->setEscapeButton(noBtn);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        // [nopreaccept 2026-09-29, operator ruling] This yes turns
+        // auto-reply on and NOTHING ELSE. It deliberately does NOT
+        // pre-accept the addressee's incoming transfer, unlike the other
+        // two enable prompts.
+        // WHY THE DIFFERENCE: those two name the station whose transfer
+        // is arriving right then, and the acceptance box would land
+        // seconds later about that same transfer -- one transfer, one
+        // question. Here the reply is human-paced, minutes or longer,
+        // and nothing identifies it in advance, so a pre-acceptance is
+        // not a permission for the reply at all: it is a blanket
+        // permission for that station until something clears it. It then
+        // helps where it was not meant to (an unrelated transfer soon
+        // after sails through) and misses where it was (anything
+        // multi-part arriving from that station in the gap ends a
+        // session, which clears the record, and the reply gets the box
+        // anyway).
+        // Turning auto-reply on is what made the reply receivable in the
+        // first place; skipping a confirmation the operator switched on
+        // deliberately is not this dialog's to give away.
+        QPointer<UI_Constructor> const self(this);
+        connect(box, &QMessageBox::finished, this,
+                [self, box, sessionBtn, alwaysBtn](int) {
+            if (!self) return;
+            auto const *clicked = box->clickedButton();
+            if (clicked != sessionBtn && clicked != alwaysBtn)
+                return;
+            if (clicked == alwaysBtn)
+                self->m_config.set_autoreply_on_at_startup(true);
+            self->ui->actionModeAutoreply->setChecked(true);
+            self->on_sendIcs213FormAction_triggered();  // now it passes
+        });
+        box->show();
+        return;
+    }
     if (m_ics213Dialog) { // single instance
         m_ics213Dialog->raise();
         m_ics213Dialog->activateWindow();
@@ -11294,9 +11660,15 @@ void UI_Constructor::syncIcs213ArqGate() {
 // the reply goes back to whoever sent the form.
 void UI_Constructor::openIcs213Reply(QString const &savedPath,
                                      QString const &fromCall) {
+    // [#212 2026-09-28] Demoted with the other two. This function has
+    // exactly ONE caller, the ARQ delivery hook, so it is always
+    // unbidden: a form arrives and this opens by itself, possibly while
+    // the operator is typing in another application. Announce, do not
+    // grab. (An operator-invoked ICS-213 send is a different function
+    // and still activates, correctly.)
     if (m_ics213ReplyDialog) {
-        m_ics213ReplyDialog->raise();
-        m_ics213ReplyDialog->activateWindow();
+        m_ics213ReplyDialog->raise();   // [#212] stacking only
+        QApplication::alert(this, 0);
         return;
     }
     auto *dlg = new ICS213Dialog(
@@ -11323,8 +11695,12 @@ void UI_Constructor::openIcs213Reply(QString const &savedPath,
                                         /*requireLevel2=*/true, sparse);
             });
     syncIcs213ArqGate(); // menu off while open; seed busy state
+    // [#212 2026-09-28] Unbidden: see the note at the top of this
+    // function. Shown without activating, with an attention flash.
+    dlg->setAttribute(Qt::WA_ShowWithoutActivating, true);
     dlg->show();
-    dlg->raise();
+    dlg->raise();   // [#212] stacking only; activateWindow() is the thief
+    QApplication::alert(this, 0);
 }
 
 QString UI_Constructor::callsignSelected(bool) {

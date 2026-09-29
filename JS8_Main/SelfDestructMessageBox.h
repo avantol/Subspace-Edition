@@ -24,6 +24,14 @@ class SelfDestructMessageBox : public QMessageBox {
 
     void setShowCountdown(bool countdown) { m_show_countdown = countdown; }
 
+    // [confirmcoalesce 2026-09-28] A coalescing box gains entries while
+    // it is open, and a later entry can carry an EARLIER deadline than
+    // the one the box was built with. The countdown must be able to
+    // move in, never out, so the earliest real deadline always governs.
+    void shortenTimeout(int seconds) {
+        if (seconds > 0 && seconds < m_timeout) m_timeout = seconds;
+    }
+
     void stopTimer();
 
   private slots:

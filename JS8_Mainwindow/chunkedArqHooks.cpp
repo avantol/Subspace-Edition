@@ -132,6 +132,73 @@ void UI_Constructor::onChunkedWantsResponseTx(QString const &text) {
             << "active):" << text.left(40);
         return;
     }
+    // [autoreplynudge 2026-09-28, operator ruling] Auto-reply off now
+    // means off for an inbound text transfer too. Without the
+    // acknowledgement the sender exhausts its retries and reports the
+    // failure, which is the intended outcome: the operator asked for a
+    // station that does not answer on its own. The prompt raised at
+    // session start explains it and offers the switch.
+    //
+    // This is the reversal recorded in Build 494's message, made
+    // deliberately (operator, 2026-09-28: "i'm re-thinking that, how to
+    // interpret auto-reply disabled more strictly, but with an
+    // opportunity to enable it").
+    //
+    // Our own OUTBOUND transfers are untouched: their chunks do not
+    // come through here, and the peer's acknowledgements are the peer's
+    // business.
+    if (!ui->actionModeAutoreply->isChecked()) {
+        qCWarning(chunkedarq_js8)
+            << "[REPLY-GATE] ARQ response suppressed (autoreply off):"
+            << text.left(40);
+        // [autoreplynudge FIX 2026-09-28] The prompt lives HERE, at the
+        // point the acknowledgement is actually withheld, because that
+        // is the one place true for EVERY inbound transfer.
+        // IT WAS ON THE RECEIVE-SESSION "Receiving" TRANSITION, AND THAT
+        // WAS THE BUG: a ONE-CHUNK text message never enters that phase.
+        // It goes straight to Idle/delivered, which is why the banner
+        // there says "MULTI-PART MSG IN PROGRESS". Field, 19:01:53Z:
+        //   [RX-SESSION] -> Idle ( delivered ): peer= "K9AVT" was 1 / 1
+        //   [REPLY-GATE] ARQ response suppressed (autoreply off)
+        // -- acknowledgement correctly withheld, no prompt, because the
+        // session never passed through Receiving. A two-chunk message
+        // 50 minutes earlier did, and the prompt appeared.
+        // The destination callsign is the first token of the wire text,
+        // which is how the payload is built.
+        //
+        // [2026-09-28] TWO WORDINGS, and the difference matters to the
+        // operator: "an ARQ transfer" for a file, ICS-213 form or web
+        // link, "a text message" for operator text. An earlier version
+        // said "a text message" for everything and was wrong on screen
+        // during a file transfer (field, 2026-09-28).
+        // This point has only the acknowledgement it is withholding
+        // ("<peer> ACK <n>"), so the kind is read from the receive
+        // session, which already holds it.
+        QString const who = text.section(QLatin1Char(' '), 0, 0).toUpper();
+        bool const wire = m_chunkedArq && m_chunkedArq->rxIsWireTransfer(who);
+        offerAutoreplyEnable(who, wire
+            ? tr("%1 is sending you an ARQ transfer "
+                 "(file, form, or web link).").arg(who)
+            : tr("%1 is sending you a text message.").arg(who));
+        return;
+    }
+    // [confirmcoalesce 2026-09-28] Confirmation on: hold the
+    // acknowledgement until the operator accepts the session. The
+    // destination callsign is the first token of the wire text, which
+    // is how the payload is built ("<destination> <body>"). Declined
+    // stays declined for the life of the session, so the sender's three
+    // retries do not each re-ask.
+    if (m_config.autoreply_confirmation()) {
+        QString const who = text.section(QLatin1Char(' '), 0, 0).toUpper();
+        if (auto const it = m_rxAcceptState.constFind(who);
+            it != m_rxAcceptState.constEnd() &&
+            *it != RxAccept::Accepted) {
+            qCWarning(chunkedarq_js8)
+                << "[REPLY-GATE] ARQ response held (session not accepted):"
+                << text.left(40);
+            return;
+        }
+    }
     // [TODO.md #57 build 268] Before sending an ACK / NACK, snapshot
     // any draft text the operator has typed into the outgoing-msg
     // widget. stopTx() restores it once the response TX completes.
@@ -1319,9 +1386,21 @@ void UI_Constructor::promptAndSaveReceivedFile(
         }
     });
 
+    // [#212 2026-09-28] THIS IS THE DIALOG THE FIELD CAPTURE CAUGHT.
+    // Root-caused 2026-09-03: an ARQ text delivery raised and activated
+    // this box, which took the keyboard from whatever application the
+    // operator was typing in; their keystrokes and Enter landed in the
+    // outgoing box and were TRANSMITTED -- the fragment "IT NEE" aired
+    // at 22:42:06, four seconds after our own "ACK 1". The box was
+    // innocent of everything except stealing focus.
+    // A window that arrives UNBIDDEN announces itself and does not
+    // grab. A window the operator just asked for still activates; that
+    // distinction is what separates this site from the menu and
+    // right-click openers, which are unchanged.
+    box->setAttribute(Qt::WA_ShowWithoutActivating, true);
     box->show();
-    box->raise();
-    box->activateWindow();
+    box->raise();   // [#212] stacking only; activateWindow() is the thief
+    QApplication::alert(this, 0);
 }
 
 // [TODO #107] V3 TX hook: transmit one native chunk — the marker text
@@ -1473,8 +1552,39 @@ void UI_Constructor::onRxSessionChanged(QString const &peer,
                                         int const phase,
                                         int const chunkId,
                                         int const totalChunks) {
-    Q_UNUSED(peer);  // single-operator: latest session renders
-    if (phase == static_cast<int>(ChunkedArq::RxPhase::Receiving)) {
+    QString const peerKey = peer.toUpper();
+    // [acceptwithdraw 2026-09-29] TERMINAL FIRST. Forget the operator's
+    // answer when the transfer is OVER, and withdraw the question it
+    // raised. A box outliving its own transfer was how an answer ended
+    // up recorded against a station with nothing in flight -- and there
+    // nothing ever cleared it again, because the event that clears it is
+    // the end of a transfer and that had already happened.
+    // Idle is the only terminal phase; delivered, halted and evicted all
+    // land there. Stalled is cosmetic -- the line that logs it says
+    // "session stays live" -- and clearing on Stalled was what made one
+    // transfer ask three times (field 2026-09-29, 04:04 to 04:07).
+    // The answer is cleared at all because it is kept per STATION, not
+    // per transfer, so leaving it would silently decide that station's
+    // next transfer too.
+    if (phase == static_cast<int>(ChunkedArq::RxPhase::Idle)) {
+        m_rxAcceptState.remove(peerKey);
+        withdrawConfirm(ConfirmKind::IncomingTransfer, peerKey);
+    }
+    // [acceptwithdraw 2026-09-29] A REFUSED transfer raises no banner.
+    // Refusing cannot stop the sender -- the protocol has no word for
+    // "refused", only acknowledge and resend -- so its chunks keep
+    // arriving and each first chunk rebuilds the session. Without this
+    // the banner came back on every retransmission and went on telling
+    // the operator to wait for the very transfer just refused.
+    // The rebuilt session is deliberately left alive to be evicted
+    // normally: that eviction IS the terminal above, and it is what lets
+    // the station ask again for a LATER transfer instead of being
+    // refused for ever.
+    bool const refused = m_rxAcceptState.value(peerKey,
+                                               RxAccept::Pending) ==
+                         RxAccept::Declined;
+    if (phase == static_cast<int>(ChunkedArq::RxPhase::Receiving) &&
+        !refused) {
         QString const progress =
             (chunkId > 0 && totalChunks > 0)
                 ? tr(" (%1/%2)").arg(chunkId).arg(totalChunks)
@@ -1492,6 +1602,92 @@ void UI_Constructor::onRxSessionChanged(QString const &peer,
         m_rxBannerText.clear();
     }
     refreshOutgoingPlaceholder();
+    // [acceptwithdraw 2026-09-29] The acceptance question runs LAST on
+    // purpose. When it is refused on the spot -- the suppressed path,
+    // where no box is ever shown -- the refusal ends the session, and
+    // ending it emits the terminal event back into THIS function.
+    // Asking before the banner meant that nested call cleared the
+    // banner and then this frame, still handling "starting", put it
+    // straight back up for a transfer that no longer existed.
+    if (phase == static_cast<int>(ChunkedArq::RxPhase::Receiving)) {
+        // [autoreplynudge / confirmcoalesce 2026-09-28] Session start is
+        // the ONE place to decide about an inbound transfer. Never per
+        // chunk: a fifty-chunk transfer would ask fifty times, and the
+        // acknowledgement carries a turnaround hold computed to land it
+        // inside the sender's receive window, which a human decision
+        // would discard.
+        QString const key = peer.toUpper();
+        // [autoreplynudge FIX 2026-09-28] The auto-reply prompt USED to
+        // be raised here and is not any more: this transition only
+        // happens for a MULTI-PART message, so a one-chunk text never
+        // reached it. It now lives at the acknowledgement-suppression
+        // point in onChunkedWantsResponseTx, which every inbound
+        // transfer passes through. One fact, one place.
+        //
+        // The ACCEPTANCE question below stays here on purpose. It is a
+        // per-session decision, and a one-chunk message has nothing to
+        // accept: by the time it could be asked the text is already
+        // delivered, and the only thing the acknowledgement still does
+        // is tell the sender it arrived.
+        if (ui->actionModeAutoreply->isChecked() &&
+            m_config.autoreply_confirmation() &&
+                   !m_rxAcceptState.contains(key)) {
+            // Auto-reply on with confirmation: ask, ONCE per session,
+            // in the coalesced box. The sender makes four attempts,
+            // each waiting one acknowledgement budget, so the operator
+            // has that whole span to answer -- minutes at Normal, about
+            // two at Subspace. Answer Yes partway through and the next
+            // retransmission is simply acknowledged.
+            m_rxAcceptState.insert(key, RxAccept::Pending);
+            int const budgetMs =
+                (1 + ChunkedArq::DEFAULT_MAX_RETRIES)
+                * ChunkedArq::ackTimeoutMsForSubmode(m_nSubMode);
+            QPointer<UI_Constructor> const self(this);
+            confirmThenRun(
+                qMax(1, budgetMs / 1000), ConfirmKind::IncomingTransfer,
+                m_chunkedArq->rxIsWireTransfer(key)
+                    ? tr("%1, ARQ transfer (file, form, or web link)")
+                          .arg(peer)
+                    : tr("%1, text message").arg(peer),
+                [self, key]() {
+                    if (!self) return;
+                    self->m_rxAcceptState.insert(key, RxAccept::Accepted);
+                },
+                // [acceptonce 2026-09-29, operator ruling] No, the
+                // timeout, and the suppressed path all END the question
+                // for the rest of this transfer. Before this the record
+                // was left at pending, and pending is not an answer: the
+                // next time the transfer resumed the guard below saw
+                // nothing recorded and asked again. Field 2026-09-29,
+                // ONE transfer: held at 04:04:31Z, 04:05:42Z and
+                // 04:06:52Z, asked three times, dead at 1 of 3.
+                // RxAccept::Declined already existed and was never
+                // written by anything.
+                [self, key, peer]() {
+                    if (!self) return;
+                    // [acceptonce 2026-09-29, operator ruling] A refusal
+                    // ENDS the transfer. Before this it cancelled
+                    // nothing: the acknowledgement was withheld and the
+                    // session ran on, so the sender retransmitted for
+                    // its whole budget and the in-progress banner kept
+                    // telling the operator to wait for the very thing
+                    // just refused.
+                    // ORDER MATTERS. Ending the session emits the
+                    // terminal event, and THAT is what clears the
+                    // acceptance record -- so end first, then write the
+                    // refusal, or the refusal is wiped by its own halt
+                    // and the next chunk asks all over again.
+                    if (self->m_chunkedArq)
+                        self->m_chunkedArq->haltRxPeer(peer);
+                    self->m_rxAcceptState.insert(key, RxAccept::Declined);
+                    qCWarning(chunkedarq_js8)
+                        << "[REPLY-GATE] transfer REFUSED and ended:" << key;
+                },
+                // [acceptwithdraw 2026-09-29] Who the question is about,
+                // so the transfer ending can withdraw it.
+                key);
+        }
+    }
 }
 
 void UI_Constructor::restoreArqPlaceholder() {

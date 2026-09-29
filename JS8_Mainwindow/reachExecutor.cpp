@@ -1357,9 +1357,14 @@ void UI_Constructor::autoRouteReachStopped(QString const &reason) {
         }
         box->setText(text);
     }
+    // [#212 2026-09-28] Demoted with the ARQ received box. An
+    // auto-route verdict arrives minutes into a run that the operator
+    // started and then walked away from, so it is exactly the unbidden
+    // kind that must not take the keyboard. Announce, do not grab.
+    box->setAttribute(Qt::WA_ShowWithoutActivating, true);
     box->show();
-    box->raise();
-    box->activateWindow();
+    box->raise();   // [#212] stacking only; activateWindow() is the thief
+    QApplication::alert(this, 0);
 }
 
 // Speed restore with retry (audit item 14: the python's atexit fired

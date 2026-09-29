@@ -345,6 +345,34 @@ void Manager::haltAll() {
     }
 }
 
+// [acceptonce 2026-09-29, operator ruling] haltAll's receive half, for
+// one station. Deliberately NOT a call into haltAll: sends, negotiation
+// and the transmit idle poll are none of a refusal's business -- a
+// refusal is about the one transfer coming IN.
+bool Manager::haltRxPeer(QString const &peer) {
+    auto it = m_recv.find(peer);
+    if (it == m_recv.end()) {
+        return false;
+    }
+    qCWarning(chunkedarq_js8) << "[ARQ] haltRxPeer:" << peer;
+    // [acceptwithdraw 2026-09-29] ORDER IS SAFETY, not taste. rxSessionEnd
+    // EMITS, and a slot is free to touch m_recv -- which would invalidate
+    // this iterator and leave the erase below writing through a dangling
+    // one. So everything that needs the entry happens first, the emit
+    // happens next, and the removal is by KEY afterwards. Nothing in the
+    // tree does that today; this makes it not matter if something does.
+    if (it.value().quietTimer) {
+        it.value().quietTimer->stop();
+    }
+    for (QTimer *t : it.value().evictTimers) {
+        if (t) t->stop();
+    }
+    clearNativeState(it.value());
+    rxSessionEnd(peer, it.value(), "refused");
+    m_recv.remove(peer);
+    return true;
+}
+
 // [WIRE-NORMALIZE 2026-06-12 build 257]
 // JS8's Varicode/Huffman freetext encoding inserts a space after the
 // "MSG TO:" directed-cmd marker even when the wire body lacks one.

@@ -34,6 +34,7 @@
 #include <QList>
 #include <QLoggingCategory>
 #include <QObject>
+#include <QRegularExpression>  // [autoreplynudge] rxIsWireTransfer()
 #include <QSet>
 #include <QString>
 
@@ -935,6 +936,39 @@ class Manager : public QObject {
         return false;
     }
 
+    // [autoreplynudge 2026-09-28] Is the live receive session from this
+    // peer a machine-built WIRE transfer -- file, ICS-213 form or web
+    // link -- rather than operator text?
+    //
+    // The auto-reply prompt has to name what is arriving, and the place
+    // it is raised (the withheld acknowledgement) sees only "<peer> ACK
+    // <n>". An earlier wording guessed "a text message" and said it in
+    // front of the operator during a file transfer. This reads what the
+    // session ALREADY holds -- no new state, nothing cached.
+    //
+    // Two ways to be a wire transfer. A V1/V2 text-carried body starts
+    // with the "F/Vn " or "L/Vn " marker on chunk 1. A V3 native
+    // transfer carries its payload as raw binary, so the binary
+    // assemblies or an open native window are themselves the answer.
+    bool rxIsWireTransfer(QString const &peer) const {
+        auto it = m_recv.constFind(peer.toUpper());
+        if (it == m_recv.constEnd()) it = m_recv.constFind(peer);
+        if (it == m_recv.constEnd()) return false;
+        if (it.value().nativeWin.active ||
+            !it.value().binaryAssemblies.isEmpty() ||
+            !it.value().binaryTotalBytes.isEmpty()) {
+            return true;
+        }
+        static QRegularExpression const wireRe{
+            QStringLiteral(R"(^[FL]/V\d+(\s|$))")};
+        for (auto const &assembly : it.value().assemblies) {
+            QString const lead = assembly.value(1).trimmed();
+            if (!lead.isEmpty() && wireRe.match(lead).hasMatch())
+                return true;
+        }
+        return false;
+    }
+
     bool hasActiveRxWindow() const {
         for (auto it = m_recv.constBegin(); it != m_recv.constEnd();
              ++it) {
@@ -964,6 +998,27 @@ class Manager : public QObject {
      *        each SendState goes away with the SendState itself.
      */
     void haltAll();
+
+    /**
+     * @brief End ONE station's receive session, exactly as haltAll ends
+     *        every one: session terminal, timers stopped, partial
+     *        assemblies dropped, the entry removed.
+     *
+     * [acceptonce 2026-09-29, operator ruling] Refusing an incoming
+     * transfer used to cancel NOTHING -- it withheld the acknowledgement
+     * and left the session running, so the sender kept retransmitting
+     * for its whole budget (about 69 s at Subspace, 3.4 min at Normal),
+     * the in-progress banner kept re-raising and telling the operator to
+     * wait for the transfer just refused, and the session sat there
+     * until the five-minute stale eviction. Halt was the only way out
+     * and it kills every transfer, including wanted ones.
+     *
+     * Nothing new happens here: this is haltAll's receive half applied
+     * to one entry. Sends are untouched.
+     *
+     * @return true if a session was ended.
+     */
+    bool haltRxPeer(QString const &peer);
 
     /**
      * @brief One collect-watchdog expiry for @a peer's native window

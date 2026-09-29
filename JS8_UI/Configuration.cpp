@@ -853,6 +853,18 @@ bool Configuration::autoreply_on_at_startup() const {
     }
     return m_->autoreply_on_at_startup_;
 }
+// [autoreplynudge 2026-09-28] "Yes, for every session" on the auto-reply
+// prompt writes the SAME setting the Settings checkbox does, by the same
+// route the other runtime setters use. The getter above still refuses to
+// report it on when the callsign or grid is empty; that guard is
+// untouched, so this cannot switch on a station that is not configured
+// to transmit.
+void Configuration::set_autoreply_on_at_startup(bool const on) {
+    if (m_->autoreply_on_at_startup_ != on) {
+        m_->autoreply_on_at_startup_ = on;
+        m_->write_settings();
+    }
+}
 bool Configuration::autoreply_confirmation() const {
     return m_->autoreply_confirmation_;
 }

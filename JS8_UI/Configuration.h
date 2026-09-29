@@ -164,6 +164,12 @@ class Configuration final : public QObject {
     bool spot_to_aprs_relay() const;
     bool transmit_directed() const;
     bool autoreply_on_at_startup() const;
+    // [autoreplynudge 2026-09-28] Set from the "Yes, for every session"
+    // button on the auto-reply prompt, so the operator never has to go
+    // hunting in Settings for the checkbox the prompt is really about.
+    // Same shape as the existing runtime setters: cached member then
+    // write_settings(), so the value survives a clean exit.
+    void set_autoreply_on_at_startup(bool on);
     bool autoreply_confirmation() const;
     bool heartbeat_anywhere() const;
     bool heartbeat_qso_pause() const;
