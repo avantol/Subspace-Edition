@@ -1186,8 +1186,11 @@ class UI_Constructor : public QMainWindow {
     qint32 m_inGain = 0;
     qint32 m_idleMinutes = 0;
     qint32 m_nSubMode = 0;
-    // [clickspeed 2026-09-27] m_prevStandardSubmode deleted -- a click
-    // now sets the clicked station's speed; see autoSwitchMode().
+    // [clickspeed 2026-09-27] m_prevStandardSubmode deleted.
+    // [dblclickspeed 2026-09-30] Only a DOUBLE-click on the callsign list
+    // or the band activity adopts the station's speed; single clicks,
+    // menus and the centre-pane double-click select without touching it.
+    // See autoSwitchMode().
     bool m_submodeChanging{false}; // guard against recursive mode switch
     FrequencyList_v3::const_iterator m_frequency_list_fcal_iter;
     qint32 m_i3bit = 0;
@@ -1694,6 +1697,7 @@ class UI_Constructor : public QMainWindow {
     void reachExplain(void const *cand);
     QString reachResolveGrid(QString const &square);
     void reachRefreshBook();
+    void reachRebuildCandidates();   // [livecands] pool/walk/firstHops, per move
     void reachSend(QString const &wire);
     void reachOnTxComplete();
     void reachOnFrame(ActivityDetail const &d);

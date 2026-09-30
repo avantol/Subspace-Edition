@@ -678,98 +678,33 @@ void UI_Constructor::reachRefreshBook() {
         bookAddEdge(l.hearer, l.heard, l.whenMs, l.snr, l.source);
 }
 
-void UI_Constructor::reachStart(QString const &target, int maxMoves,
-                                QString const &via) {
-    if (m_reach.active) {
-        reachLog(QStringLiteral("already reaching %1 -- stop it first")
-                     .arg(m_reach.target));
-        return;
-    }
-    if (!m_reachTimer) {
-        m_reachTimer = new QTimer(this);
-        m_reachTimer->setSingleShot(true);
-        m_reachTimer->setTimerType(Qt::PreciseTimer);
-        connect(m_reachTimer, &QTimer::timeout,
-                this, &UI_Constructor::reachTick);
-    }
-    QString T = target.toUpper().trimmed();        // LITERAL, never base
-    if (!Radio::is_callsign(T) && !isGridSquare(T)) {
-        reachLog(QStringLiteral("%1 is neither a callsign nor a grid "
-                                "square").arg(T));
-        return;
-    }
-    m_reach = ReachState{};
-    m_reach.forcedVia = via.toUpper().trimmed();
-    m_reach.active = true;
-    m_reach.target = T;
-    m_reach.maxMoves = qBound(1, maxMoves, 12);
-    m_reach.startMs = DriftingDateTime::currentMSecsSinceEpoch();
-    m_reach.band = m_config.bands()->find(operatingDial()); // [#256]
-    m_reach.learnedAt0 = g_book.learned.size();   // [#196]
-
-    // Speed pin (attempt.py:102-128): Normal for the whole attempt,
-    // refusal aborts, restored on every exit incl. app quit.
-    if (m_nSubMode != Varicode::JS8CallNormal) {
-        if (!txIdleNow()) {
-            reachLog(QStringLiteral("cannot pin Normal speed (tx busy)"
-                                    " -- refusing to start"));
-            m_reach = ReachState{};
-            return;
-        }
-        m_reach.savedSubmode = m_nSubMode;
-        setSubmode(Varicode::JS8CallNormal);
-        reachLog(QStringLiteral("speed pinned to Normal (app was at %1;"
-                                " restored on exit)")
-                     .arg(m_reach.savedSubmode));
-    }
-
-    // [habitstore] resurrect the durable habit record once per
-    // process -- asked-vs-forwarded and called-vs-answered follow
-    // stations across restarts now ("we're throwing away good data").
-    if (!g_eventsLoaded) {
-        g_eventsLoaded = true;
-        int n = 0;
-        for (auto const &r : m_spotMapWindow->reachEvents()) {
-            if (r.kind == QLatin1String("fwd"))
-                g_relayOutcomes[r.band].append(
-                    {r.when * 1000, r.ok, r.station});
-            else if (r.kind == QLatin1String("ans"))
-                g_ansOutcomes[r.band].append(
-                    {r.when * 1000, r.ok, r.station});
-            ++n;
-        }
-        if (n)
-            reachLog(QStringLiteral("habit record loaded: %1 events "
-                                    "(90-day retention)").arg(n));
-    }
-
-    reachRefreshBook();
-
-    // [#180 gridtarget, ported verbatim from gridtarget.py] A GRID
-    // is a first-class target: resolve it to the best reachable
-    // occupant, screened (receive-only warns and sinks, never
-    // refused), then run the normal loop. A square whose only
-    // occupants are monitors that report us is a PARTIAL SUCCESS:
-    // delivery-in provable, two-way not.
-    if (isGridSquare(m_reach.target)) {
-        // Resolution runs on the 6-char square: precision beyond
-        // that is far below the 120-250 km candidate radius, and
-        // Geodesic takes 4/6-char grids.
-        QString const chosen =
-            reachResolveGrid(m_reach.target.left(6));
-        if (chosen.isEmpty()) {
-            reachStop(QStringLiteral("no reachable station in %1")
-                          .arg(m_reach.target));
-            return;
-        }
-        m_reach.target = chosen;
-        T = chosen;
-    }
+// [livecands 2026-09-30] The candidate list -- pool, walk, firstHops
+// -- is DERIVED from the book, so it is re-derived every time the book
+// is (attempt start and before every move), the way edges and
+// stations already are. Until now it was built once in reachStart and
+// never again, and g_book.pool was never even cleared between
+// attempts: after the first attempt filled its 40, every later
+// attempt's own hearers were appended behind the old names and then
+// trimmed OFF THE END (line "while pool.size() > kPoolLimit"). Both
+// showed on 2026-09-30 18:57Z: six stations answered "@MAGNET QUERY
+// CALL KC1VXQ?" (W0IFM at -3 dB, 45 s old), each was written to the
+// book as learned, and the next ranking listed the same 38 names as
+// the previous attempt's -- none of the six -- so an @ALLCALL shout
+// outbid an empty relay list (0.0005 vs W3BFO 0.0002). The 2026-08-30
+// "shout responders always get their try" rule sits inside the
+// ranking loop and could only ever reach responders already listed.
+// Same family as the 2026-09-21 KR1FLE second shout.
+void UI_Constructor::reachRebuildCandidates() {
+    QString const T = m_reach.target;
+    QStringList const before = g_book.walk;
+    g_book.pool.clear();
+    g_book.walk.clear();
+    g_book.firstHops.clear();
 
     // ---- pool: the python's two crude facts, screened -------------
     // (livemodel.py:343-413 LiveBoard: hearers of the target ordered
     // by freshness, then geography near the target; is_routable on
-    // BOTH branches; phantom edges — no snr AND never seen keying —
+    // BOTH branches; phantom edges -- no snr AND never seen keying --
     // are evidence of nothing, live.py:286-302; limit 40.)
     QString const me = m_config.my_callsign().trimmed().toUpper();
     QString const tGrid = m_spotMapWindow->knownGrid(T);
@@ -890,6 +825,113 @@ void UI_Constructor::reachStart(QString const &target, int maxMoves,
             }
         }
     }
+
+    // Visible truth: who joined the list since the last derivation
+    // (a fresh YES answerer, a station newly heard hearing us).
+    if (!before.isEmpty()) {
+        QStringList joined;
+        for (QString const &c : g_book.walk)
+            if (!before.contains(c))
+                joined << c;
+        if (!joined.isEmpty())
+            reachLog(QStringLiteral("    candidates rebuilt: %1 in the "
+                                    "walk, joined: %2")
+                         .arg(g_book.walk.size())
+                         .arg(joined.join(QLatin1Char(' '))));
+    }
+}
+
+void UI_Constructor::reachStart(QString const &target, int maxMoves,
+                                QString const &via) {
+    if (m_reach.active) {
+        reachLog(QStringLiteral("already reaching %1 -- stop it first")
+                     .arg(m_reach.target));
+        return;
+    }
+    if (!m_reachTimer) {
+        m_reachTimer = new QTimer(this);
+        m_reachTimer->setSingleShot(true);
+        m_reachTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_reachTimer, &QTimer::timeout,
+                this, &UI_Constructor::reachTick);
+    }
+    QString T = target.toUpper().trimmed();        // LITERAL, never base
+    if (!Radio::is_callsign(T) && !isGridSquare(T)) {
+        reachLog(QStringLiteral("%1 is neither a callsign nor a grid "
+                                "square").arg(T));
+        return;
+    }
+    m_reach = ReachState{};
+    m_reach.forcedVia = via.toUpper().trimmed();
+    m_reach.active = true;
+    m_reach.target = T;
+    m_reach.maxMoves = qBound(1, maxMoves, 12);
+    m_reach.startMs = DriftingDateTime::currentMSecsSinceEpoch();
+    m_reach.band = m_config.bands()->find(operatingDial()); // [#256]
+    m_reach.learnedAt0 = g_book.learned.size();   // [#196]
+
+    // Speed pin (attempt.py:102-128): Normal for the whole attempt,
+    // refusal aborts, restored on every exit incl. app quit.
+    if (m_nSubMode != Varicode::JS8CallNormal) {
+        if (!txIdleNow()) {
+            reachLog(QStringLiteral("cannot pin Normal speed (tx busy)"
+                                    " -- refusing to start"));
+            m_reach = ReachState{};
+            return;
+        }
+        m_reach.savedSubmode = m_nSubMode;
+        setSubmode(Varicode::JS8CallNormal);
+        reachLog(QStringLiteral("speed pinned to Normal (app was at %1;"
+                                " restored on exit)")
+                     .arg(m_reach.savedSubmode));
+    }
+
+    // [habitstore] resurrect the durable habit record once per
+    // process -- asked-vs-forwarded and called-vs-answered follow
+    // stations across restarts now ("we're throwing away good data").
+    if (!g_eventsLoaded) {
+        g_eventsLoaded = true;
+        int n = 0;
+        for (auto const &r : m_spotMapWindow->reachEvents()) {
+            if (r.kind == QLatin1String("fwd"))
+                g_relayOutcomes[r.band].append(
+                    {r.when * 1000, r.ok, r.station});
+            else if (r.kind == QLatin1String("ans"))
+                g_ansOutcomes[r.band].append(
+                    {r.when * 1000, r.ok, r.station});
+            ++n;
+        }
+        if (n)
+            reachLog(QStringLiteral("habit record loaded: %1 events "
+                                    "(90-day retention)").arg(n));
+    }
+
+    reachRefreshBook();
+
+    // [#180 gridtarget, ported verbatim from gridtarget.py] A GRID
+    // is a first-class target: resolve it to the best reachable
+    // occupant, screened (receive-only warns and sinks, never
+    // refused), then run the normal loop. A square whose only
+    // occupants are monitors that report us is a PARTIAL SUCCESS:
+    // delivery-in provable, two-way not.
+    if (isGridSquare(m_reach.target)) {
+        // Resolution runs on the 6-char square: precision beyond
+        // that is far below the 120-250 km candidate radius, and
+        // Geodesic takes 4/6-char grids.
+        QString const chosen =
+            reachResolveGrid(m_reach.target.left(6));
+        if (chosen.isEmpty()) {
+            reachStop(QStringLiteral("no reachable station in %1")
+                          .arg(m_reach.target));
+            return;
+        }
+        m_reach.target = chosen;
+        T = chosen;
+    }
+
+    // [livecands 2026-09-30] pool/walk/firstHops derive from the book
+    // here AND before every move -- see reachRebuildCandidates().
+    reachRebuildCandidates();
 
     // #173 named-target screen (attempt.py:195-210): warn, never
     // refuse -- BOTH halves this time (audit item 37).
@@ -1406,6 +1448,7 @@ void UI_Constructor::reachNextMove() {
     // finishes its verdict and the attempt stops.
     bool const overBudget = m_reach.moveNo >= m_reach.maxMoves;
     reachRefreshBook();   // [livebook] the store may know more now
+    reachRebuildCandidates();   // [livecands] ...and so may the list
     // [relayalive 2026-08-27, operator: "do not exclude is
     // consistent" -- downgrade instead] A relaying station must
     // transmit; its on-the-air factor runs on its newest TRANSMIT

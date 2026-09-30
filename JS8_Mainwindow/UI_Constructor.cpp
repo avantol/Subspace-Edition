@@ -1545,7 +1545,13 @@ UI_Constructor::UI_Constructor(QString const &program_info,
 
                     qWarning() << "[UI] dblclick center: selecting" << callsign
                                << "lineSubmode=" << lineSubmode;
-                    selectCallsign(callsign, lineSubmode);
+                    // [dblclickspeed 2026-09-30, operator ruling] "Only a
+                    // double-click on the callsign list and the band
+                    // activity should change speed." A double-click on a
+                    // line in the centre pane selects the station and
+                    // LEAVES THE SPEED ALONE; lineSubmode stays in the log
+                    // above for diagnosis only.
+                    selectCallsign(callsign);
 
                     // Build 122: prefer the callsign list's live offset
                     // (per-frame fresh + sub-band-aware preserved as of

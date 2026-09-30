@@ -9997,8 +9997,11 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
         QString rowCall;
         if (auto *ci = ui->tableWidgetRXAll->item(row, BACallsign))
             rowCall = ci->data(Qt::UserRole).toString();
+        // [dblclickspeed 2026-09-30, operator ruling] A single click
+        // SELECTS; it no longer changes the speed. Only a double-click
+        // here or on the callsign list does -- see cellDoubleClicked.
         if (!rowCall.isEmpty())
-            selectCallsign(rowCall, rowSubmode);
+            selectCallsign(rowCall);
         else
             clearSelection(true /* keepBandRow */);
         return;
@@ -10073,8 +10076,10 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
         }
     }
 
+    // [dblclickspeed 2026-09-30] single click selects only; speed is the
+    // double-click's job (below).
     if (!call.isEmpty())
-        selectCallsign(call, rowSubmode);
+        selectCallsign(call);
     else
         clearSelection();
 }
@@ -10097,6 +10102,16 @@ void UI_Constructor::on_tableWidgetRXAll_cellDoubleClicked(int row, int col) {
     auto speedItem = ui->tableWidgetRXAll->item(row, BASpeed);
     int rowSubmode = speedItem ? speedItem->data(Qt::UserRole).toInt() : -1;
     bool rowIsFT2 = (rowSubmode == Varicode::JS8CallFT2);
+
+    // [dblclickspeed 2026-09-30, operator ruling] "Only a double-click on
+    // the callsign list and the band activity should change speed." The
+    // single click above selected the station and left the speed alone;
+    // THIS is where the row's speed is adopted. Build 492 had it on every
+    // click and accepted "exploratory clicks move the speed" as the cost;
+    // that cost is no longer accepted. Same call selectCallsign used to
+    // make for us -- nothing else moves.
+    if (rowSubmode >= 0)
+        autoSwitchMode(rowSubmode);
 
     // [bandcall] Callsign mode: the history is the STATION's frames,
     // gathered across every offset bucket and both submode classes
@@ -10253,15 +10268,14 @@ void UI_Constructor::on_tableWidgetCalls_cellClicked(int row, int /*col*/) {
 
     displayBandActivity();
 
-    // Read callsign and submode from the clicked row
+    // Read the callsign from the clicked row. [dblclickspeed 2026-09-30,
+    // operator ruling] A single click SELECTS; it no longer changes the
+    // speed. Only a double-click here or on the band activity does.
     auto item = ui->tableWidgetCalls->item(row, 0);
     if (item) {
         auto call = item->data(Qt::UserRole).toString();
-        int submode = -1;
-        if (m_callActivity.contains(call))
-            submode = m_callActivity[call].submode;
         if (!call.isEmpty())
-            selectCallsign(call, submode);
+            selectCallsign(call);
     }
 }
 
@@ -10269,6 +10283,14 @@ void UI_Constructor::on_tableWidgetCalls_cellDoubleClicked(int row, int col) {
     on_tableWidgetCalls_cellClicked(row, col);
 
     auto call = callsignSelected();
+    // [dblclickspeed 2026-09-30, operator ruling] The double-click is
+    // where the station's speed is adopted; the single click above only
+    // selected. Same lookup the single click used to make.
+    if (m_callActivity.contains(call)) {
+        int const stationSubmode = m_callActivity[call].submode;
+        if (stationSubmode >= 0)
+            autoSwitchMode(stationSubmode);
+    }
     ui->extFreeTextMsgEdit->clear();
     addMessageText(call);
 
@@ -11910,6 +11932,16 @@ void UI_Constructor::clearSelection(bool keepBandRow) {
 // The TX guard below is unchanged: a click during a transmission, or
 // with frames queued, still does not switch. setSubmode refuses in
 // that state anyway, so the guard keeps the refusal out of the log.
+// [dblclickspeed 2026-09-30, operator ruling] "Only a double-click on the
+// callsign list and the band activity should change speed." The click
+// paths that reach here are now EXACTLY two: on_tableWidgetCalls_
+// cellDoubleClicked and on_tableWidgetRXAll_cellDoubleClicked. Single
+// clicks, right-click menus (they route through the single-click
+// handlers) and the centre-pane double-click select without touching
+// the speed. selectCallsign()'s submode parameter is no longer passed by
+// any caller; it stays so the API and monitor paths keep their signature.
+// Protocol-driven switches (ARQ, auto-route, MODE.SET_SPEED) are not
+// clicks and are unchanged.
 void UI_Constructor::autoSwitchMode(int submode) {
     if (m_transmitting || m_txFrameCount > 0 || !m_txFrameQueue.isEmpty())
         return;  // don't switch mode during TX
