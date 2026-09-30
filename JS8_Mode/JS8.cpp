@@ -2490,7 +2490,68 @@ template <typename Mode> class DecodeMode {
             float xdt;
             float conf;
         };
-        std::unordered_map<Decode, Best, Decode::Hash> decodes;
+        // [STATIONSPLIT 2026-09-30, operator-ruled, EXPERIMENT -- revertible]
+        // One entry per codeword is WRONG when several STATIONS send the
+        // same words in the same slot: they collapse to one emission and
+        // the rest are lost, unseen and unlogged.
+        // MEASURED on air: four broadcasts drawing 10-14 identical replies
+        // each produced exactly ONE surviving frame per distinct bit
+        // pattern per mode (2026-09-30 00:37:30 is the clearest -- twelve
+        // stations, and mode A emitted two frames because two patterns
+        // were present, not because two stations were heard).
+        // Whole-record deficit before this: 73-100% loss in slots where
+        // the payload matched, against a 1% propagation baseline.
+        //
+        // So a codeword now holds a LIST of instances, one per distinct
+        // PLACE in the passband. The alias filter below decides what
+        // counts as a distinct place -- it must, because the Build 361
+        // ghost this map was shaped around is ALSO at a different
+        // frequency, so frequency alone cannot separate a ghost from a
+        // second station.
+        std::unordered_map<Decode, std::vector<Best>, Decode::Hash> decodes;
+        // Alias geometry, from the Build 361 note above: the downsample
+        // skirt folds a strong signal to +/- k * (12000/NDOWN) Hz. Both
+        // constants are the mode's own -- nothing invented here.
+        //   gap within a tone spacing of k * spacing, k >= 0  -> the SAME
+        //     signal (k = 0, re-decoded) or its alias (k >= 1): collapse,
+        //     keeping the better SNR, exactly as before.
+        //   any other gap -> a DIFFERENT STATION: emit it too.
+        constexpr float aliasSpacing = 12000.0f / float(Mode::NDOWN);
+        constexpr float toneSpacing  = 12000.0f / float(Mode::NSPS);
+        // k = 0: the same signal re-decoded. Collapses regardless of SNR.
+        auto const samePlace = [](float a, float b) {
+            return std::fabs(a - b) <= toneSpacing;
+        };
+        // k >= 1: the alias geometry matches. NOT sufficient on its own --
+        // see the SNR gate at the use site.
+        auto const aliasGeometry = [](float a, float b) {
+            float const gap = std::fabs(a - b);
+            float const k   = std::round(gap / aliasSpacing);
+            return k >= 1.0f &&
+                   std::fabs(gap - k * aliasSpacing) <= toneSpacing;
+        };
+        // [STATIONSPLIT-SNR 2026-09-30, operator-ruled] Alias geometry alone
+        // is not enough, and the simulator plus the field record say why:
+        //   - the MAGNET net sits on a 200 Hz ladder (field 2003/2204/2404),
+        //     and Normal's alias spacing is ALSO 200 Hz, so genuine
+        //     neighbours are indistinguishable from k=1 ghosts by frequency
+        //     at ANY tolerance. Sim on the real frequencies: geometry-only
+        //     lost 3 of 12 at Normal and 8 of 12 at Turbo, every one to
+        //     this shadow.
+        //   - the three real ghosts in seven months of ALL.TXT (2026-08-07
+        //     Turbo k=2, 2026-09-06 and 2026-09-11 Normal k=1) all sit
+        //     19, 42 and 21 dB below their true signal; the wrongly
+        //     collapsed genuine pairs in the sims differed by 14 dB at most.
+        // So a ghost is: alias geometry AND far weaker. This margin is a
+        // CHOSEN value between those two populations, three samples on the
+        // ghost side -- recorded as such, not derived. It errs toward the
+        // ghost side (4 dB margin) because that failure is a VISIBLE line at
+        // noise SNR, while the other failure is a station lost in silence.
+        // A genuine neighbour more than this far below a strong station on
+        // an alias multiple is still lost; that is the residual.
+        // Note the -8 dB ghost of 2026-09-06: a "below the noise floor" test
+        // would have missed it, which is why this is a DIFFERENCE.
+        constexpr int GHOST_SNR_MARGIN_DB = 15;
         auto const ttl = std::chrono::seconds{Mode::NTXDUR * 2};
         m_softCombiner.flush(ttl);
 
@@ -2545,13 +2606,41 @@ template <typename Mode> class DecodeMode {
                     Best const best{snr, f1, xdt,
                                     1.0f - nharderrors / 60.0f};
 
-                    if (auto [it, inserted] =
-                            decodes.try_emplace(std::move(*decode), best);
-                        inserted || it->second.snr < snr) {
-                        improved = true;
+                    // [STATIONSPLIT 2026-09-30] Collapse onto an existing
+                    // instance ONLY if this is the same signal or its
+                    // alias; otherwise it is another station and joins the
+                    // list. "Improved" keeps its old meaning -- anything
+                    // new or better -- so the pass loop is unchanged.
+                    auto &instances = decodes[*decode];
+                    bool viaGhostGate = false;
+                    auto const at = std::find_if(
+                        instances.begin(), instances.end(),
+                        [&](Best const &b) {
+                            if (samePlace(b.f1, f1)) return true;
+                            if (!aliasGeometry(b.f1, f1)) return false;
+                            // [STATIONSPLIT-SNR] alias geometry matches: it
+                            // is a ghost only if one side is far weaker.
+                            viaGhostGate =
+                                std::abs(b.snr - snr) >= GHOST_SNR_MARGIN_DB;
+                            return viaGhostGate;
+                        });
 
-                        if (!inserted)
-                            it->second = best;
+                    if (at == instances.end()) {
+                        instances.push_back(best);
+                        improved = true;
+                    } else {
+                        // Bounded: one line per ghost actually collapsed --
+                        // the field-visible confirmation of the gate.
+                        if (viaGhostGate)
+                            qWarning() << "[STATIONSPLIT] alias ghost collapsed:"
+                                       << "kept" << std::max(at->snr, snr) << "dB"
+                                       << "dropped" << std::min(at->snr, snr) << "dB"
+                                       << "at" << (at->snr >= snr ? f1 : at->f1)
+                                       << "Hz, submode" << Mode::NSUBMODE;
+                        if (at->snr < snr) {
+                            *at = best;
+                            improved = true;
+                        }
                     }
                 }
             }
@@ -2563,19 +2652,32 @@ template <typename Mode> class DecodeMode {
                 break;
         }
 
-        // Deferred emission: one event per unique codeword, from the
-        // best-SNR instance (see [ALIAS-GHOST FIX] above).
+        // Deferred emission, still best-SNR-per-instance so the Build 361
+        // ghost cannot beat its own true signal -- but now ONE EVENT PER
+        // PLACE, not one per codeword. [STATIONSPLIT 2026-09-30]
 
-        for (auto const &[decode, best] : decodes) {
-            emitEvent(JS8::Event::Decoded{data.params.nutc, best.snr,
-                                          best.xdt - Mode::ASTART, best.f1,
-                                          decode.data, decode.type, best.conf,
-                                          Mode::NSUBMODE});
+        std::size_t emitted = 0;
+        for (auto const &[decode, instances] : decodes) {
+            // Bounded: fires only for a codeword that genuinely had more
+            // than one place, which is the whole point of the change.
+            if (instances.size() > 1)
+                qWarning() << "[STATIONSPLIT] emitting" << instances.size()
+                           << "stations sharing one codeword, submode"
+                           << Mode::NSUBMODE;
+            for (auto const &best : instances) {
+                emitEvent(JS8::Event::Decoded{
+                    data.params.nutc, best.snr, best.xdt - Mode::ASTART,
+                    best.f1, decode.data, decode.type, best.conf,
+                    Mode::NSUBMODE});
+                ++emitted;
+            }
         }
 
-        // Let the caller know how many unique decodes we discovered, if any.
+        // Let the caller know how many decodes we discovered, if any. This
+        // now counts INSTANCES, not codewords -- two stations saying the
+        // same thing are two decodes.
 
-        return decodes.size();
+        return emitted;
     }
 };
 

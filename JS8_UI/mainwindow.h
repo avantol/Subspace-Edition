@@ -1796,12 +1796,33 @@ class UI_Constructor : public QMainWindow {
     // exactly one frame) and must pass regardless of arrival time.
     // Frames without absPos (standard period decoder) fall back to
     // the legacy time-window check via `when`.
+    // [FREQDEDUP 2026-09-30] `offset` is back. It was carried in this
+    // cache before POS-DEDUP replaced the value in July, and its absence
+    // is why identical content from DIFFERENT STATIONS counts as one
+    // transmission. A duplicate is the same transmission seen twice, and
+    // a transmission is identified by WHEN and WHERE -- never by what it
+    // said. Content is payload, not identity.
+    // -1 = unknown; an unknown offset never matches, so it cannot cause
+    // a false suppression.
     struct FrameOccurrence {
         QDateTime    when;
         std::int64_t absPos;   // 0 = unknown (standard decoder)
+        int          offset = -1;   // audio Hz; -1 = unknown
     };
-    struct FrameCacheEntry {
+    // [PLACEKEY 2026-09-30] One history PER PLACE. With a content-only
+    // key and a single 3-deep ring, four stations sharing one codeword
+    // evicted each other round-robin: field 02:25:11-15Z, the same four
+    // "STORED" frames re-emitted once per decode call, four times each,
+    // the log reading "offset= 2003 matched offset= 2635 / 2346 / 2155"
+    // -- station 2003's own record was never among the three. Now each
+    // distinct place keeps its own MAX_OCC occurrences, so a station's
+    // history is only ever displaced by ITSELF. POS-DEDUP's semantics --
+    // a 3-deep absPos/time history of one transmission -- are unchanged,
+    // merely made per place. The key stays content-only, so the
+    // self-decode seed and the mode-agnostic intent are untouched.
+    struct FramePlace {
         static constexpr int MAX_OCC = 3;
+        int offset = -1;             // representative Hz; -1 = unknown
         FrameOccurrence occ[MAX_OCC];
         int n = 0;
         void add(FrameOccurrence const &o) {
@@ -1810,6 +1831,38 @@ class UI_Constructor : public QMainWindow {
                 occ[i] = occ[i - 1];
             occ[0] = o;
             n = std::min(n + 1, MAX_OCC);
+        }
+    };
+    struct FrameCacheEntry {
+        std::vector<FramePlace> places;
+        // The place within `tol` Hz of `offset`, or nullptr. An unknown
+        // offset (-1) matches only an unknown place, never a real one.
+        FramePlace const *find(int offset, int tol) const {
+            for (auto const &p : places) {
+                if (offset < 0 || p.offset < 0) {
+                    if (offset == p.offset) return &p;
+                    continue;
+                }
+                if (std::abs(p.offset - offset) <= tol) return &p;
+            }
+            return nullptr;
+        }
+        void add(FrameOccurrence const &o, int tol) {
+            auto *p = const_cast<FramePlace *>(find(o.offset, tol));
+            if (!p) {
+                places.push_back(FramePlace{});
+                p = &places.back();
+                p->offset = o.offset;
+            }
+            p->add(o);
+        }
+        // Newest occurrence across every place; invalid if none.
+        QDateTime newest() const {
+            QDateTime t;
+            for (auto const &p : places)
+                if (p.n > 0 && (!t.isValid() || p.occ[0].when > t))
+                    t = p.occ[0].when;
+            return t;
         }
     };
     using FrameCache =

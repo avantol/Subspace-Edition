@@ -2882,10 +2882,12 @@ void UI_Constructor::decodeDone() {
     // Safe floor: the L2 ring holds 7.5 s, so an entry older than
     // one period (>= 15 s via the mode-agnostic key 0) can no longer
     // be re-decoded from the ring and carries no dedup value.
+    // [PLACEKEY 2026-09-30] age by the newest occurrence across every
+    // place; an entry with no places is empty.
     std::erase_if(m_messageDupeCache, [](auto const &it) {
-        return it.second.n == 0 ||
-               it.second.occ[0].when.secsTo(
-                   QDateTime::currentDateTimeUtc()) >
+        auto const newest = it.second.newest();
+        return !newest.isValid() ||
+               newest.secsTo(QDateTime::currentDateTimeUtc()) >
                    JS8::Submode::period(it.first.submode);
     });
 
@@ -6917,8 +6919,16 @@ bool UI_Constructor::prepareNextMessageFrame() {
     // dedup checks (self-frames are bit-exact by definition); the
     // seed has no absPos so the FT2 time-window rule applies —
     // widened to 12 s in processDecodeEvent for exactly this case.
+    // [FREQDEDUP 2026-09-30] The seed MUST carry our own transmit offset.
+    // The dupe test now requires the frequencies to agree as well as the
+    // time, and this seed used to store nothing -- leave it at nothing and
+    // our self-decode arrives at our TX offset, fails to match, and our
+    // own transmissions start appearing in the conversation window, which
+    // is the exact regression this seed exists to prevent. Same value the
+    // transmit path logs, so the seed and the self-decode agree.
     m_messageDupeCache[FrameCacheKey(0, frame)].add(
-        {QDateTime::currentDateTimeUtc(), 0});
+        {QDateTime::currentDateTimeUtc(), 0, freq() + m_XIT},
+        JS8::Submode::rxThreshold(m_nSubMode));   // [PLACEKEY] its own place
 
     // [TODO #107] Native-binary frame: the 12-char container holds RAW
     // payload bits, not varicode — a DecodedText build here would

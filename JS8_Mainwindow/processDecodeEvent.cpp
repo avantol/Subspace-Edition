@@ -102,6 +102,28 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 // (standard period decoder) keep the legacy
                 // time-window rule.
                 constexpr std::int64_t POS_DUPE_SPAN = 30240;
+                // [FREQDEDUP 2026-09-30, operator-ruled] A duplicate is the
+                // same transmission seen twice: same TIME (or ring position)
+                // AND same PLACE. Content-only keying judged two stations
+                // answering in one slot with the same words to be one
+                // transmission. MEASURED, whole on-air record, slots where
+                // 3+ stations began a multi-frame message together:
+                //   continuations differed  969 slots,  1% lost
+                //   all shared one payload   51 slots, 73% lost
+                //   none survived at all     53 slots,100% lost
+                // 402 of the 438 lost frames sat in the 10% of slots with
+                // identical payloads. Tolerance is rxThreshold, the same
+                // the buffer matcher uses -- no new constant.
+                // [PLACEKEY 2026-09-30] ...and only THIS PLACE's own history
+                // may call it a duplicate. See FrameCacheEntry: a shared
+                // 3-deep ring let four stations evict each other and re-emit
+                // every decode call (field 02:25:11-15Z, four copies each).
+                // Residual: two stations INSIDE rxThreshold with identical
+                // text still collide -- TODO #265's root, a continuation
+                // frame carries no sender.
+                int const evOffset = decodedtext.frequencyOffset();
+                int const placeTol =
+                    JS8::Submode::rxThreshold(decodedtext.submode());
                 if (auto const it = m_messageDupeCache.find(dedupeKey);
                     it != m_messageDupeCache.end()) {
                     auto const now = QDateTime::currentDateTimeUtc();
@@ -117,24 +139,36 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                         (decodedtext.submode() == Varicode::JS8CallFT2)
                             ? 12.0
                             : 0.5 * JS8::Submode::period(decodedtext.submode());
-                    for (int i = 0; i < it->second.n; ++i) {
-                        auto const &o = it->second.occ[i];
-                        bool dupe;
-                        if (ev.absPos > 0 && o.absPos > 0) {
-                            dupe = std::llabs(ev.absPos - o.absPos)
-                                       < POS_DUPE_SPAN;
-                        } else {
-                            dupe = o.when.secsTo(now) < window;
+                    if (auto const *place = it->second.find(evOffset, placeTol)) {
+                        for (int i = 0; i < place->n; ++i) {
+                            auto const &o = place->occ[i];
+                            bool dupe;
+                            if (ev.absPos > 0 && o.absPos > 0) {
+                                dupe = std::llabs(ev.absPos - o.absPos)
+                                           < POS_DUPE_SPAN;
+                            } else {
+                                dupe = o.when.secsTo(now) < window;
+                            }
+                            if (dupe) {
+                                // Promoted from qCDebug 2026-09-30: this
+                                // drop never reached the diagnostic log.
+                                qCWarning(mainwindow_js8)
+                                    << "[DECODE-EVENT] DUPLICATE, skipping frame="
+                                    << decodedtext.frame()
+                                    << "absPos=" << ev.absPos
+                                    << "matched=" << o.absPos
+                                    << "offset=" << evOffset
+                                    << "age=" << o.when.secsTo(now) << "s";
+                                return;
+                            }
                         }
-                        if (dupe) {
-                            qCDebug(mainwindow_js8)
-                                << "[DECODE-EVENT] DUPLICATE, skipping frame="
-                                << decodedtext.frame()
-                                << "absPos=" << ev.absPos
-                                << "matched=" << o.absPos
-                                << "age=" << o.when.secsTo(now) << "s";
-                            return;
-                        }
+                    } else {
+                        // One line per NEW place, not one per other station.
+                        qCWarning(mainwindow_js8)
+                            << "[DECODE-EVENT] kept: same content, new place --"
+                            << "frame=" << decodedtext.frame()
+                            << "offset=" << evOffset
+                            << "places already=" << it->second.places.size();
                     }
                 }
 #if 0
@@ -154,7 +188,8 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
 #endif
                 // if the frame is valid, record this occurrence!
                 m_messageDupeCache[dedupeKey].add(
-                    {QDateTime::currentDateTimeUtc(), ev.absPos});
+                    {QDateTime::currentDateTimeUtc(), ev.absPos, evOffset},
+                    placeTol);
 
                 // [TODO #107] Native-binary (V3) frame: hand the raw
                 // 72 bits to the binary reassembler and STOP. The
