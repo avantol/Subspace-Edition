@@ -74,6 +74,30 @@ QString StoragePaths::settingsFileName() {
            QStringLiteral(".ini");
 }
 
+QString StoragePaths::gridsDbPath() {
+    return settingsDirectory() + QLatin1Char('/') + pathApplicationName() +
+           QStringLiteral("-grids.db");
+}
+
+QString StoragePaths::instanceSuffix() {
+    // "JS8Call" -> "", "JS8Call - arq" -> " - arq".
+    QString suffix = pathApplicationName();
+    if (suffix.startsWith(QStringLiteral("JS8Call")))
+        suffix.remove(0, 7);
+    return suffix;
+}
+
+QString StoragePaths::reachIntelDbPath() {
+    // The default instance keeps the file it has always had.
+    return settingsDirectory() + QStringLiteral("/js8reach-intel") +
+           instanceSuffix() + QStringLiteral(".db");
+}
+
+QString StoragePaths::instanceTempDir() {
+    return QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+           QLatin1Char('/') + pathApplicationName();
+}
+
 QString StoragePaths::pathApplicationName() {
     QString name = QCoreApplication::applicationName();
     name.replace(QStringLiteral("Subspace Edition"),

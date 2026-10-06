@@ -6,6 +6,7 @@
  */
 
 #include "mainwindow.h"
+#include "JS8_Main/StoragePaths.h"   // [#288] per-instance paths
 #include "JS8_Widgets/ScreenRescue.h" // [#246]
 #include "JS8_UI/SpeechBalloon.h" // [#255] close live hints at shutdown
 
@@ -467,10 +468,16 @@ UI_Constructor::~UI_Constructor() {
         // this force-exit (operator-observed 2026-07-24, Default→IC-7300
         // switch). Remove the lock ourselves so the force-exit is
         // actually recoverable — the whole point of forcing it. Path
-        // mirrors main.cpp (TempLocation + "JS8Call.lock").
+        // mirrors main.cpp: TempLocation + pathApplicationName() +
+        // ".lock". [#288] The literal "JS8Call.lock" that stood here
+        // was the DEFAULT instance's lock: a --rig-name instance
+        // force-exiting removed the OTHER instance's lock and left its
+        // own orphaned, so its next launch blocked on "Another
+        // instance may be running".
         QString const lockPath =
             QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-            QStringLiteral("/JS8Call.lock");
+            QLatin1Char('/') + StoragePaths::pathApplicationName() +
+            QStringLiteral(".lock");
         if (QFile::remove(lockPath)) {
             qWarning() << "[SHUTDOWN] removed stale lock" << lockPath
                        << "so relaunch comes up clean";
@@ -9150,10 +9157,10 @@ void UI_Constructor::sendWebLink(QString const &url,
             qCWarning(chunkedarq_js8)
                 << "[LT-TX] legacy link.txt fallback for peer="
                 << peer << "(level=" << level << ")";
-            QString const linkPath = QDir::cleanPath(
-                QStandardPaths::writableLocation(
-                    QStandardPaths::TempLocation)
-                + QStringLiteral("/link.txt"));
+            // [#288] this instance's temp dir, not the shared one
+            QString const linkPath =
+                m_config.temp_dir().absoluteFilePath(
+                    QStringLiteral("link.txt"));
             QFile linkFile(linkPath);
             if (!linkFile.open(QIODevice::WriteOnly |
                                QIODevice::Truncate)) {
@@ -10028,37 +10035,29 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
         if (call.isEmpty()) {
             QString rowText = msgItem->text();
             if (!rowText.isEmpty()) {
-                int lastColon = -1;
-                for (int i = rowText.length() - 1; i >= 0; --i) {
-                    if (rowText[i] == ':') { lastColon = i; break; }
-                }
-                if (lastColon > 0) {
-                    int ws = lastColon - 1;
+                // [#240 layer 1b, 2026-10-02] The sender is the FIRST
+                // "CALL: " in the row, validated by the one shape
+                // authority -- not the LAST colon with a loose letter+
+                // digit test, which took "JS8MESH:" from a mesh body.
+                for (int i = 0; i < rowText.length() && call.isEmpty(); ++i) {
+                    if (rowText[i] != ':')
+                        continue;
+                    int ws = i - 1;
                     while (ws >= 0 && (rowText[ws].isLetterOrNumber() || rowText[ws] == '/'))
                         --ws;
                     ++ws;
-                    QString cand = rowText.mid(ws, lastColon - ws).trimmed();
-                    if (cand.length() >= 3 && cand.length() <= 15) {
-                        bool hl = false, hd = false;
-                        for (auto ch : cand) {
-                            if (ch.isLetter()) hl = true;
-                            if (ch.isDigit()) hd = true;
-                        }
-                        if (hl && hd && cand != m_config.my_callsign())
-                            call = cand;
-                    }
+                    QString const cand = rowText.mid(ws, i - ws).trimmed();
+                    if (cand.length() >= 3 && cand.length() <= 15 &&
+                        Varicode::isValidCallsign(cand, nullptr) &&
+                        cand != m_config.my_callsign())
+                        call = cand;
                 }
                 if (call.isEmpty()) {
                     QString first = rowText.trimmed().split(' ').first();
-                    if (first.length() >= 3 && first.length() <= 10) {
-                        bool hl = false, hd = false;
-                        for (auto ch : first) {
-                            if (ch.isLetter()) hl = true;
-                            if (ch.isDigit()) hd = true;
-                        }
-                        if (hl && hd && first != m_config.my_callsign())
-                            call = first;
-                    }
+                    if (first.length() >= 3 && first.length() <= 10 &&
+                        Varicode::isValidCallsign(first, nullptr) &&
+                        first != m_config.my_callsign())
+                        call = first;
                 }
             }
         }

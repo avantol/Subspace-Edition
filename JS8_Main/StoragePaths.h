@@ -37,6 +37,32 @@ QString settingsDirectory();
 // both resolve the .ini through this ([oneinstance] TODO #226).
 QString settingsFileName();
 
+// [#287 2026-10-02] ONE authority for the two per-instance databases
+// that sit beside the settings file. The grid bank:
+// settingsDirectory()/<pathApplicationName()>-grids.db (the name
+// SpotMapWindow always used). The routing corpus the log miner
+// writes and auto-route reads: settingsDirectory()/js8reach-intel.db
+// for the default instance (its historical name, so no re-mine on
+// upgrade) and js8reach-intel - <rig>.db for a --rig-name instance.
+// Before this the miner hard-coded the default instance's paths, so
+// a second instance mined the first one's logs and both wrote one
+// corpus.
+QString gridsDbPath();
+QString reachIntelDbPath();
+
+// [#288] The multi-instance suffix alone: "" for the default
+// instance, " - <rig>" for --rig-name <rig>, " - test" for test mode.
+// For names that must keep their historical default-instance form and
+// gain the suffix only when there is one (the corpus, the diag log).
+QString instanceSuffix();
+
+// [#288] This instance's private scratch directory,
+// <TempLocation>/<pathApplicationName()> -- the one main() creates and
+// Configuration::temp_dir() serves. For code that has no Configuration
+// at hand (dialogs). Shared TempLocation paths with a fixed name are
+// NOT per-instance: two instances would write the same file.
+QString instanceTempDir();
+
 // applicationName() with the "Subspace Edition" display brand
 // substituted back to "JS8Call". Multi-instance rig/test suffixes
 // are preserved. Use this whenever the runtime brand is being baked

@@ -25,6 +25,7 @@
 #include "JS8_UI/mainwindow.h"
 #include "JS8_UI/SpotMapWindow.h"   // also provides Geodesic.h
 #include "JS8_Main/SelfDestructMessageBox.h" // [modegate]
+#include "JS8_Main/StoragePaths.h"           // [#287] corpus path
                                     // (which has no include guard)
 #include "JS8_Main/DriftingDateTime.h"
 #include "JS8_Mode/JS8Submode.h"
@@ -637,9 +638,7 @@ void UI_Constructor::reachRefreshBook() {
     // Corpus edges (livemodel.py:150-157, :373-376): second source,
     // fresher wins; 8 of 12 candidates once lived only here.
     if (!g_book.intelOpen) {
-        QString const path =
-            QDir::home().filePath(QStringLiteral(
-                ".config/js8reach-intel.db"));
+        QString const path = StoragePaths::reachIntelDbPath(); // [#287]
         if (QFile::exists(path)) {
             auto db = QSqlDatabase::addDatabase(
                 QStringLiteral("QSQLITE"),

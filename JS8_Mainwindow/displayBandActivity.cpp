@@ -8,6 +8,7 @@
 #include "JS8_UI/mainwindow.h"
 
 #include "JS8_Main/ChunkedArq.h"
+#include "JS8_Widgets/BandActivityMessageDelegate.h"   // [#240] one callsign-prefix authority
 
 // [bandcall] Shared "CALL: " prefix parse -- the ONE authority for
 // attributing a frame to its sender in the band activity view (was
@@ -434,12 +435,11 @@ void UI_Constructor::displayBandActivity() {
             // have their own tips). Bold callsign: patterns for
             // readability.
             {
-                auto fullTip = joined.toHtmlEscaped();
-                static const QRegularExpression callRe(R"((\b(?=[A-Z0-9/]*[0-9])[A-Z0-9/]{3,15}:)(?=\s))");
-                fullTip.replace(callRe, "<br/><b>\\1</b>");
-                if (fullTip.startsWith("<br/>"))
-                    fullTip = fullTip.mid(5);
-                fullTip = QString("<div style='white-space:nowrap;'>%1</div>").arg(fullTip);
+                // [#240] the delegate's ONE authority, not a copy:
+                // one line per group, each group's sender bold
+                auto const fullTip =
+                    BandActivityMessageDelegate::rowTooltipHtml(groupData,
+                                                                joined);
                 callItem->setToolTip(fullTip);
                 offsetItem->setToolTip(fullTip);
                 tdriftItem->setToolTip(fullTip);

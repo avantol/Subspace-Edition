@@ -234,8 +234,13 @@ int main(int argc, char *argv[]) {
             if (diagEnabled) {
                 auto timestamp = QDateTime::currentDateTimeUtc()
                     .toString("yyyyMMdd_HHmmss");
+                // [#288] The instance suffix keeps two instances
+                // started in the same second out of one file
+                // ("js8call-diag-<stamp>Z - arq.log"); the default
+                // instance's name is unchanged.
                 auto logPath = StoragePaths::settingsDirectory() +
-                               "/js8call-diag-" + timestamp + "Z.log";
+                               "/js8call-diag-" + timestamp + "Z" +
+                               StoragePaths::instanceSuffix() + ".log";
                 new TraceFile(logPath);
                 qWarning() << "[DIAG] Diagnostic logging enabled:" << logPath;
             }

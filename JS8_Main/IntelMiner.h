@@ -35,6 +35,7 @@ class IntelMiner : public QObject {
 public:
     struct Result {
         bool skipped = false; // logs unchanged since last mine
+        bool resumed = false; // [#287] read only the appended bytes
         bool ok = false;
         int directedLines = 0;
         int probes = 0;
@@ -55,6 +56,10 @@ public:
     // (the "Rebuild routing knowledge" menu action).
     Result mine(QString const &myCall, QString const &myGrid,
                 bool force);
+
+    // [#287] Idle I/O class + lowest CPU priority for the CALLING
+    // thread; the worker calls it before mine().
+    static void lowerThreadToBackground();
 
     // Paths overridable for the bench acceptance run.
     QString directedPath;

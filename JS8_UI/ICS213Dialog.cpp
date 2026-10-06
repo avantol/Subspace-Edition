@@ -11,6 +11,7 @@
 #include "ui_ICS213Dialog.h"
 
 #include "JS8_Main/DriftingDateTime.h"
+#include "JS8_Main/StoragePaths.h"   // [#288] per-instance paths
 
 #include <QFile>
 #include <QFileInfo>
@@ -460,10 +461,9 @@ bool ICS213Dialog::writeFormFile(QString *outPath) {
     // the original sender's answered level.
     m_sparseWirePath.clear();
     if (m_replyMode) {
-        QString const dir =
-            QStandardPaths::writableLocation(
-                QStandardPaths::TempLocation) +
-            QStringLiteral("/js8call-ics213-wire");
+        // [#288] per-instance scratch, not the shared temp root
+        QString const dir = StoragePaths::instanceTempDir() +
+                            QStringLiteral("/ics213-wire");
         if (QDir{}.mkpath(dir)) {
             QString const sp =
                 dir + QLatin1Char('/') +
@@ -592,9 +592,8 @@ QString ICS213Dialog::writeTrimmedWireCopy(QString const &fullPath) {
         content.remove(emptyCompactReplySection());
     else
         return fullPath; // nothing to trim (XML / already trimmed)
-    QString const dir =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-        QStringLiteral("/js8call-ics213-wire");
+    QString const dir = StoragePaths::instanceTempDir() +
+                        QStringLiteral("/ics213-wire");   // [#288]
     if (!QDir{}.mkpath(dir)) return fullPath;
     // SAME basename — the transfer header (and the reply REF chain)
     // key on the filename.

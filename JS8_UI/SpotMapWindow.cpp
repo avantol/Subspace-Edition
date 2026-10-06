@@ -116,11 +116,8 @@ SpotMapWindow::SpotMapWindow(QSettings *settings,
     // authority before any feed can run. File sits beside the
     // settings ini, honoring the per-instance suffix ([multiinst]).
     {
-        QString const dir =
-            QFileInfo{m_settings->fileName()}.absolutePath();
-        if (m_gridDb.open(dir + QLatin1Char('/') +
-                          StoragePaths::pathApplicationName() +
-                          QStringLiteral("-grids.db"))) {
+        // [#287] The path authority is shared with the log miner.
+        if (m_gridDb.open(StoragePaths::gridsDbPath())) {
             m_gridByCall = m_gridDb.loadAll();
             // [#168 part 3] Restore happens in setStation(), not
             // here: m_myGrid is unknown at ctor time (bearings) and

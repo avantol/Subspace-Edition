@@ -7,7 +7,18 @@
  */
 #include "IntelMiner.h"
 #include "Radio.h"
+#include "StoragePaths.h"
 #include <QThread>
+
+#if defined(Q_OS_LINUX)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#elif defined(Q_OS_WIN)
+#include <windows.h>
+#elif defined(Q_OS_MAC)
+#include <sys/resource.h>
+#endif
 
 #include <QDateTime>
 #include <QDir>
@@ -15,6 +26,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QRegularExpression>
 #include <QSqlDatabase>
@@ -60,6 +74,7 @@ QString const kSchema = QStringLiteral(
     "CREATE TABLE IF NOT EXISTS edges ("
     " hearer TEXT, heard TEXT, last_when INTEGER,"
     " n INTEGER DEFAULT 0, snr INTEGER, source TEXT,"
+    " snr_when INTEGER,"   // [#287] when `snr` was observed (-1/NULL none)
     " PRIMARY KEY (hearer, heard));"
     "CREATE TABLE IF NOT EXISTS edge_events ("
     " ts INTEGER, hearer TEXT, heard TEXT, source TEXT);"
@@ -99,6 +114,7 @@ struct Edge {
     qint64 lastWhen = 0;
     int n = 0;
     int snr = std::numeric_limits<int>::min(); // min() = NULL
+    qint64 snrWhen = -1;   // [#287] stamp of the observation `snr` is from
     QString source;
 };
 struct EdgeEvent { qint64 ts; QString hearer, heard, source; };
@@ -116,11 +132,37 @@ qint64 epochUtc(QString const &s) {   // mine.py:118 -- stamps are UTC
 } // namespace
 
 IntelMiner::IntelMiner(QObject *parent) : QObject(parent) {
-    QString const home = QDir::homePath();
-    directedPath = home + QStringLiteral("/.local/share/JS8Call/DIRECTED.TXT");
-    allTxtPath = home + QStringLiteral("/.local/share/JS8Call/ALL.TXT");
-    gridsDbPath = home + QStringLiteral("/.config/JS8Call-grids.db");
-    intelDbPath = home + QStringLiteral("/.config/js8reach-intel.db");
+    // [#287 2026-10-02] THIS instance's files, through the same
+    // authorities every other store uses. The previous literals
+    // (~/.local/share/JS8Call/..., ~/.config/JS8Call-grids.db,
+    // ~/.config/js8reach-intel.db) were the DEFAULT instance's paths:
+    // a --rig-name instance mined the other rig's logs, never its
+    // own, and both instances wrote one corpus through one fixed
+    // temp name, each deleting the other's in-progress file.
+    QString const data = StoragePaths::dataLocation();
+    directedPath = data + QStringLiteral("/DIRECTED.TXT");
+    allTxtPath = data + QStringLiteral("/ALL.TXT");
+    gridsDbPath = StoragePaths::gridsDbPath();
+    intelDbPath = StoragePaths::reachIntelDbPath();
+}
+
+// [#287 mineonce] The bootstrap mine reads the whole of ALL.TXT and
+// DIRECTED.TXT -- minutes on a multi-year file -- and a sequential read
+// of that size on a spinning disk starves the GUI thread's own small
+// synchronous disk operations at startup (field report 2026-10-02:
+// blank screen until "the grid thread exits"). Idle I/O class and
+// lowest CPU priority for this thread only; the GUI's I/O goes first.
+void IntelMiner::lowerThreadToBackground() {
+#if defined(Q_OS_LINUX)
+    // ioprio_set(IOPRIO_WHO_PROCESS, 0 = calling thread,
+    //            IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0))
+    syscall(SYS_ioprio_set, 1, 0, (3 << 13));
+    setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19);
+#elif defined(Q_OS_WIN)
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+#elif defined(Q_OS_MAC)
+    setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE);
+#endif
 }
 
 IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
@@ -136,12 +178,37 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
         return c.section(QLatin1Char('/'), 0, 0) == meBase;
     };
 
-    // ---- unchanged-logs skip (bookmark; design item 2) ------------
+    // ---- bookmark: skip / resume / full (#287 part 3) ---------------
+    // [#287 2026-10-02, operator: "scan only the new part"] Every log
+    // byte is read ONCE. The corpus is whole-file aggregates, so a
+    // resume needs more than a seek; the previous mine left in meta:
+    //  - the byte offset just past the last COMPLETE line read in each
+    //    file, and the first 64 bytes of each file (rotation check);
+    //  - "carry": the pairings still OPEN at the old end -- our QUERY
+    //    CALL sends awaiting YES (PROBE_WINDOW_S), relay asks awaiting
+    //    a forward (900 s), our probes awaiting an answer or presence
+    //    (PROBE_WINDOW_S / +-600 s), the recent sighting stamps those
+    //    need, and a QUERY CALL first frame awaiting its tail;
+    //  - mined_at, so the 30-day-half-life weights in the stations
+    //    rows (loaded back below) can be re-decayed.
+    // Edges and activity merge in SQL (ON CONFLICT DO UPDATE); the
+    // event tables append. Stamp equal -> skip. A shrunk or rotated
+    // file, a schema change, a changed callsign or force -> the full
+    // mine as before (temp db + rename).
     QFileInfo const dIn{directedPath}, aIn{allTxtPath};
     QString const stamp =
         QStringLiteral("%1:%2:%3:%4")
             .arg(dIn.size()).arg(dIn.lastModified().toSecsSinceEpoch())
             .arg(aIn.size()).arg(aIn.lastModified().toSecsSinceEpoch());
+    auto headOf = [](QString const &path) {
+        QFile f{path};
+        if (!f.open(QIODevice::ReadOnly))
+            return QString{};
+        return QString::fromLatin1(f.read(64).toHex());
+    };
+    bool incremental = false;
+    qint64 startD = 0, startA = 0, prevMinedAt = 0, prevLastTs = 0;
+    QJsonObject carry;
     if (!force && QFileInfo::exists(intelDbPath)) {
         QString const conn = QStringLiteral("intelminer_probe");
         {
@@ -149,12 +216,43 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
             db.setDatabaseName(intelDbPath);
             if (db.open()) {
+                QHash<QString, QString> meta;
                 QSqlQuery q{db};
-                if (q.exec(QStringLiteral(
-                        "SELECT value FROM meta WHERE key='sources_stamp'"))
-                    && q.next() && q.value(0).toString() == stamp) {
+                if (q.exec(QStringLiteral("SELECT key, value FROM meta")))
+                    while (q.next())
+                        meta.insert(q.value(0).toString(),
+                                    q.value(1).toString());
+                if (meta.value(QStringLiteral("sources_stamp")) == stamp) {
                     r.skipped = true;
                     r.ok = true;
+                } else if (meta.value(QStringLiteral("schema_version")) ==
+                               kSchemaVersion &&
+                           meta.value(QStringLiteral("mycall")) == me &&
+                           meta.contains(QStringLiteral("directed_offset")) &&
+                           meta.contains(QStringLiteral("all_offset"))) {
+                    startD = meta.value(QStringLiteral("directed_offset"))
+                                 .toLongLong();
+                    startA = meta.value(QStringLiteral("all_offset"))
+                                 .toLongLong();
+                    prevMinedAt =
+                        meta.value(QStringLiteral("mined_at")).toLongLong();
+                    prevLastTs =
+                        meta.value(QStringLiteral("last_ts")).toLongLong();
+                    bool const sameD =
+                        dIn.size() >= startD &&
+                        meta.value(QStringLiteral("directed_head")) ==
+                            headOf(directedPath);
+                    bool const sameA =
+                        aIn.size() >= startA &&
+                        meta.value(QStringLiteral("all_head")) ==
+                            headOf(allTxtPath);
+                    if (sameD && sameA) {
+                        incremental = true;
+                        carry = QJsonDocument::fromJson(
+                                    meta.value(QStringLiteral("carry"))
+                                        .toUtf8())
+                                    .object();
+                    }
                 }
             }
         }
@@ -163,6 +261,11 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
             qCWarning(miner_js8) << "[MINER] logs unchanged -- skip";
             return r;
         }
+    }
+    if (!incremental) {
+        startD = 0;
+        startA = 0;
+        prevLastTs = 0;
     }
 
     // ---- regexes (mine.py:62-158), compiled once ------------------
@@ -250,6 +353,121 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
     struct QcallReply { qint64 ts; QString who; int snr; qint64 age; };
     QVector<QcallReply> qcallReplies;
     int skewed = 0;
+    // Our probes (ALL.TXT) -- hoisted out of the ALL.TXT block so the
+    // carry can seed them and the write can carry them on.
+    struct Sent { qint64 ts; QString target, cmd; };
+    QVector<Sent> sent, carrySent;
+    qint64 qcallAwait = -1;
+    // Newest stamp seen in this run: the horizon every "still open"
+    // test is measured against when the carry is built.
+    qint64 lastTs = prevLastTs;
+    auto noteTs = [&](qint64 ts) {
+        if (ts <= now + 3600)
+            lastTs = qMax(lastTs, ts);
+    };
+
+    // ---- carry-in (#287 part 3) -------------------------------------
+    if (incremental) {
+        auto ll = [](QJsonValue const &v) { return v.toVariant().toLongLong(); };
+        for (auto const v : carry.value(QStringLiteral("qcallSends")).toArray()) {
+            auto const o = v.toObject();
+            qcallSends.append({ll(o.value(QStringLiteral("ts"))),
+                               o.value(QStringLiteral("target")).toString()});
+        }
+        for (auto const v : carry.value(QStringLiteral("relayAsks")).toArray()) {
+            auto const o = v.toObject();
+            relayAsks.append({ll(o.value(QStringLiteral("ts"))),
+                              o.value(QStringLiteral("asked")).toString(),
+                              o.value(QStringLiteral("by")).toString()});
+        }
+        for (auto const v : carry.value(QStringLiteral("sent")).toArray()) {
+            auto const o = v.toObject();
+            sent.append({ll(o.value(QStringLiteral("ts"))),
+                         o.value(QStringLiteral("target")).toString(),
+                         o.value(QStringLiteral("cmd")).toString()});
+        }
+        auto const rx = carry.value(QStringLiteral("rx")).toObject();
+        for (auto it = rx.begin(); it != rx.end(); ++it)
+            for (auto const t : it.value().toArray())
+                rxByCall[it.key()].append(ll(t));
+        qcallAwait = carry.contains(QStringLiteral("qcallAwait"))
+                         ? ll(carry.value(QStringLiteral("qcallAwait")))
+                         : -1;
+        // Stations rows back; the two 30-day-half-life sums decay by
+        // the time since they were written.
+        double const decay =
+            std::pow(0.5, (now - prevMinedAt) / (30.0 * 86400.0));
+        QString const conn = QStringLiteral("intelminer_resume");
+        {
+            QSqlDatabase db =
+                QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            db.setDatabaseName(intelDbPath);
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+            if (db.open()) {
+                QSqlQuery q{db};
+                if (q.exec(QStringLiteral(
+                        "SELECT call, first_heard, last_heard, heard_count,"
+                        " snr_n, snr_sum, snr_min, snr_max, rev_snr_n,"
+                        " rev_snr_last, rev_snr_best, rev_last, resp_count,"
+                        " spont_count, relay_seen, relay_asked, relay_done,"
+                        " to_us, grid FROM stations")))
+                    while (q.next()) {
+                        St &s = stations[q.value(0).toString()];
+                        auto iv = [&q](int col, qint64 sentinel) {
+                            return q.value(col).isNull()
+                                       ? sentinel
+                                       : q.value(col).toLongLong();
+                        };
+                        s.firstHeard = iv(1, -1);
+                        s.lastHeard = iv(2, -1);
+                        s.heardCount = q.value(3).toInt();
+                        s.snrN = q.value(4).toInt();
+                        s.snrSum = q.value(5).toInt();
+                        s.snrMin = int(iv(6, std::numeric_limits<int>::max()));
+                        s.snrMax = int(iv(7, std::numeric_limits<int>::min()));
+                        s.revSnrN = q.value(8).toInt();
+                        s.revSnrLast =
+                            int(iv(9, std::numeric_limits<int>::min()));
+                        s.revSnrBest =
+                            int(iv(10, std::numeric_limits<int>::min()));
+                        s.revLast = iv(11, -1);
+                        s.respCount = q.value(12).toInt();
+                        s.spontCount = q.value(13).toInt();
+                        s.relaySeen = q.value(14).toInt();
+                        s.relayAsked = q.value(15).toDouble() * decay;
+                        s.relayDone = q.value(16).toDouble() * decay;
+                        s.toUs = q.value(17).toInt();
+                        s.grid = q.value(18).toString();
+                    }
+            }
+        }
+        QSqlDatabase::removeDatabase(conn);
+    }
+
+    // Byte-offset line reader (#287 part 3): raw bytes, UTF-8 decoded
+    // per line, returns the offset just past the last COMPLETE line. A
+    // trailing partial line (the app may be mid-write) is left for the
+    // next run. -1 = interrupted.
+    auto readLines = [&](QString const &path, qint64 start,
+                         auto &&fn) -> qint64 {
+        QFile f{path};
+        if (!f.open(QIODevice::ReadOnly))
+            return start;
+        if (start > 0 && !f.seek(start))
+            return start;
+        qint64 end = start;
+        while (!f.atEnd()) {
+            QByteArray raw = f.readLine();
+            if (raw.isEmpty() || !raw.endsWith('\n'))
+                break;
+            end += raw.size();
+            while (raw.endsWith('\n') || raw.endsWith('\r'))
+                raw.chop(1);
+            if (!fn(QString::fromUtf8(raw)))
+                return -1;
+        }
+        return end;
+    };
 
     auto edgeAdd = [&](QString const &hearer, QString const &heard,
                        qint64 ts, int snr, bool haveSnr,
@@ -269,8 +487,17 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
         if (ts > e.lastWhen) {
             e.lastWhen = ts;
             e.source = source;
-            if (haveSnr)
-                e.snr = snr;
+        }
+        // [#287] The snr follows ITS OWN time, not the edge's: the
+        // newest observation that carried one wins, whatever order
+        // the observations are applied in. Before this a QUERY CALL
+        // answer's snr (applied in the settle step, after the whole
+        // file) lost to any later reply that carried no snr -- so a
+        // full mine and a resumed mine disagreed on 4 of 45,156 edges
+        // (measured 2026-10-02), the resumed one being right.
+        if (haveSnr && ts > e.snrWhen) {
+            e.snr = snr;
+            e.snrWhen = ts;
         }
     };
     auto sighting = [&](QString const &call, qint64 ts, int snr,
@@ -295,30 +522,28 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
     };
 
     // ---- DIRECTED.TXT (mine.py:298-440) ---------------------------
+    qint64 endD = startD, endA = startA;
     {
-        QFile f{directedPath};
-        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream in{&f};
-            QString line;
-            while (in.readLineInto(&line)) {
+        endD = readLines(directedPath, startD, [&](QString const &line) -> bool {
                 if (interrupted()) {
                     qCWarning(miner_js8) << "[MINER] aborted (shutdown)";
-                    return r;
+                    return false;
                 }
                 auto const m = reDirected.match(line);
                 if (!m.hasMatch())
-                    continue;
+                    return true;
                 QString text = m.captured(QStringLiteral("text"));
                 text.replace(diamond, QLatin1Char(' '));
                 text = text.trimmed();
                 auto const fm = reFrom.match(text);
                 if (!fm.hasMatch())
-                    continue; // continuation frame, no attribution
+                    return true; // continuation frame, no attribution
                 QString const sender =
                     fm.captured(QStringLiteral("from")).toUpper();
                 QString const rest =
                     fm.captured(QStringLiteral("rest")).trimmed();
                 qint64 const ts = epochUtc(m.captured(QStringLiteral("date")));
+                noteTs(ts);
                 r.directedLines += 1;
                 // [#178] QUERY CALL YES capture (mine.py:319-328)
                 auto const ym = reQcallYes.match(text.toUpper());
@@ -339,7 +564,7 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                          ym.captured(QStringLiteral("snr")).toInt(), secs});
                 }
                 if (isMe(sender))
-                    continue; // our own frames come from ALL.TXT
+                    return true; // our own frames come from ALL.TXT
                 sighting(sender, ts,
                          m.captured(QStringLiteral("snr")).toInt(),
                          m.captured(QStringLiteral("dial")).toDouble(),
@@ -384,7 +609,7 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 QStringList const parts =
                     body.split(QLatin1Char(' '), Qt::SkipEmptyParts);
                 if (parts.isEmpty())
-                    continue;
+                    return true;
                 QString to = parts.first().toUpper();
                 while (to.endsWith(QLatin1Char('>')))
                     to.chop(1);
@@ -442,24 +667,19 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 auto const gm = reGridTail.match(tail.toUpper());
                 if (gm.hasMatch())   // mine.py:435-439
                     stations[hearer].grid = gm.captured(1);
-            }
-        }
+                return true;
+            });
+        if (endD < 0)
+            return r;
     }
 
     // ---- ALL.TXT: probes + qcall sends + grid seeding -------------
     {
-        struct Sent { qint64 ts; QString target, cmd; };
-        QVector<Sent> sent;
-        qint64 qcallAwait = -1;
         QHash<QString, QHash<QString, QPair<int, qint64>>> seed; // call->grid4->(n,latest)
-        QFile f{allTxtPath};
-        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream in{&f};
-            QString line;
-            while (in.readLineInto(&line)) {
+        endA = readLines(allTxtPath, startA, [&](QString const &line) -> bool {
                 if (interrupted()) {
                     qCWarning(miner_js8) << "[MINER] aborted (shutdown)";
-                    return r;
+                    return false;
                 }
                 auto const m = reTx.match(line);
                 if (!m.hasMatch()) {
@@ -494,13 +714,14 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                             }
                         }
                     }
-                    continue;
+                    return true;
                 }
                 QString text = m.captured(QStringLiteral("text"));
                 text.replace(diamond, QLatin1Char(' '));
                 text = text.trimmed();
                 qint64 const tsTx =
                     epochUtc(m.captured(QStringLiteral("date")));
+                noteTs(tsTx);
                 QString const up = text.toUpper();
                 // [#178] two-frame QUERY CALL stitch (mine.py:453-471)
                 if (up.contains(QLatin1String("QUERY CALL"))) {
@@ -523,10 +744,10 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 }
                 auto const pm = reProbe.match(text);
                 if (!pm.hasMatch())
-                    continue;
+                    return true;
                 if (!pm.captured(QStringLiteral("me")).isEmpty() &&
                     !isMe(pm.captured(QStringLiteral("me"))))
-                    continue;
+                    return true;
                 QString const to =
                     pm.captured(QStringLiteral("to")).toUpper();
                 QStringList heads;
@@ -539,12 +760,18 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 }
                 QString const target = heads.isEmpty() ? to : heads.first();
                 if (target.startsWith(QLatin1Char('@')))
-                    continue; // broadcast: no single expected answerer
+                    return true; // broadcast: no single expected answerer
                 sent.append({tsTx, target,
                              pm.captured(QStringLiteral("cmd"))});
-            }
-        }
+                return true;
+            });
+        if (endA < 0)
+            return r;
         // credit answers + presence (mine.py:492-506)
+        // [#287 part 3] A probe whose answer/presence window reaches
+        // past the newest stamp is CARRIED, not written: the next run
+        // sees the rest of its window. Fully resolved ones are written
+        // now regardless.
         for (auto const &s : sent) {
             auto const &stamps = rxByCall.value(s.target);
             qint64 latency = -1;
@@ -555,10 +782,16 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 if (std::llabs(t - s.ts) <= 600)
                     present = true;
             }
+            bool const resolved = latency > 0 && present;
+            if (!resolved &&
+                s.ts + qMax<qint64>(PROBE_WINDOW_S, 600) > lastTs) {
+                carrySent.append(s);
+                continue;
+            }
             probes.append({s.ts, s.target, s.cmd, latency > 0 ? 1 : 0,
                            latency, present ? 1 : 0});
         }
-        r.probes = sent.size();
+        r.probes = sent.size() - carrySent.size();
 
         // corroborated grid seeding rows (>= 2 sightings of one grid)
         for (auto it = seed.constBegin(); it != seed.constEnd(); ++it) {
@@ -611,38 +844,93 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                 rep.ts - send.first <= PROBE_WINDOW_S)
                 edgeAdd(rep.who, send.second, rep.ts - rep.age, rep.snr,
                         true, QStringLiteral("querycall"));
+    QVector<RelayAsk> carryAsks;
     for (auto const &ask : relayAsks) {
         double const w =
             std::pow(0.5, (now - ask.ts) / (30.0 * 86400.0));
+        bool matched = false;
         for (auto const &fw : relayFwds.value(ask.asked)) {
             if (fw.first - ask.ts >= 0 && fw.first - ask.ts < 900 &&
                 fw.second == ask.by) {
                 stations[ask.asked].relayDone += w;
+                matched = true;
                 break;
             }
         }
+        // [#287 part 3] still inside its 900 s at the newest stamp and
+        // not yet forwarded: the next run may see the forward.
+        if (!matched && ask.ts + 900 > lastTs)
+            carryAsks.append(ask);
+    }
+    // ---- carry-out (#287 part 3) ------------------------------------
+    // A QUERY CALL send keeps pairing with NEW replies only (the old
+    // ones are never re-read), so carrying it cannot double-count.
+    QJsonObject carryOut;
+    {
+        QJsonArray sends;
+        for (auto const &send : qcallSends)
+            if (send.first + PROBE_WINDOW_S > lastTs)
+                sends.append(QJsonObject{{QStringLiteral("ts"), send.first},
+                                         {QStringLiteral("target"), send.second}});
+        QJsonArray asks;
+        for (auto const &ask : carryAsks)
+            asks.append(QJsonObject{{QStringLiteral("ts"), ask.ts},
+                                    {QStringLiteral("asked"), ask.asked},
+                                    {QStringLiteral("by"), ask.by}});
+        QJsonArray sentArr;
+        qint64 rxKeepFrom = lastTs - 600;
+        for (auto const &s : carrySent) {
+            sentArr.append(QJsonObject{{QStringLiteral("ts"), s.ts},
+                                       {QStringLiteral("target"), s.target},
+                                       {QStringLiteral("cmd"), s.cmd}});
+            rxKeepFrom = qMin(rxKeepFrom, s.ts - 600);
+        }
+        // Only the sighting stamps a carried probe can still need.
+        QJsonObject rx;
+        for (auto const &s : carrySent) {
+            if (rx.contains(s.target))
+                continue;
+            QJsonArray stamps;
+            for (qint64 t : rxByCall.value(s.target))
+                if (t >= rxKeepFrom)
+                    stamps.append(t);
+            if (!stamps.isEmpty())
+                rx.insert(s.target, stamps);
+        }
+        carryOut.insert(QStringLiteral("qcallSends"), sends);
+        carryOut.insert(QStringLiteral("relayAsks"), asks);
+        carryOut.insert(QStringLiteral("sent"), sentArr);
+        carryOut.insert(QStringLiteral("rx"), rx);
+        carryOut.insert(QStringLiteral("qcallAwait"), qcallAwait);
     }
 
-    // ---- write: temp db, then atomic rename (design item 3) -------
+    // ---- write (design item 3) --------------------------------------
+    // Full mine: temp db, then atomic rename, as before. Resume
+    // (#287 part 3): the live corpus, one transaction, merge-writes.
     QString const tmpPath = intelDbPath + QStringLiteral(".mining");
-    QFile::remove(tmpPath);
+    if (!incremental)
+        QFile::remove(tmpPath);
     bool wrote = false;
     {
         QString const conn = QStringLiteral("intelminer_out");
         {
             QSqlDatabase db =
                 QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
-            db.setDatabaseName(tmpPath);
+            db.setDatabaseName(incremental ? intelDbPath : tmpPath);
             if (db.open()) {
                 QSqlQuery q{db};
-                for (QString const &stmt :
-                     kSchema.split(QLatin1Char(';'), Qt::SkipEmptyParts))
-                    if (!stmt.trimmed().isEmpty() && !q.exec(stmt))
-                        qCWarning(miner_js8) << "[MINER] DDL failed:"
-                                             << q.lastError().text();
+                if (!incremental)
+                    for (QString const &stmt :
+                         kSchema.split(QLatin1Char(';'), Qt::SkipEmptyParts))
+                        if (!stmt.trimmed().isEmpty() && !q.exec(stmt))
+                            qCWarning(miner_js8) << "[MINER] DDL failed:"
+                                                 << q.lastError().text();
                 db.transaction();
+                // Stations: every row rewritten (a resume loaded them
+                // all back and re-decayed them).
                 q.prepare(QStringLiteral(
-                    "INSERT INTO stations (call, first_heard, last_heard,"
+                    "INSERT OR REPLACE INTO stations (call, first_heard,"
+                    " last_heard,"
                     " heard_count, snr_n, snr_sum, snr_min, snr_max,"
                     " rev_snr_n, rev_snr_last, rev_snr_best, rev_last,"
                     " relay_seen, relay_asked, relay_done, to_us, grid,"
@@ -681,8 +969,13 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                     q.addBindValue(s.spontCount);
                     q.exec();
                 }
+                // Activity and edges MERGE: counts add, the newer
+                // observation wins the edge's time/snr/source. On a
+                // fresh table the conflict never fires.
                 q.prepare(QStringLiteral(
-                    "INSERT INTO activity (call, hour, n) VALUES (?,?,?)"));
+                    "INSERT INTO activity (call, hour, n) VALUES (?,?,?)"
+                    " ON CONFLICT(call, hour) DO UPDATE SET"
+                    " n = n + excluded.n"));
                 for (auto it = activity.constBegin();
                      it != activity.constEnd(); ++it)
                     for (auto h = it.value().constBegin();
@@ -692,9 +985,37 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                         q.addBindValue(h.value());
                         q.exec();
                     }
+                if (incremental) {
+                    // A corpus written before snr_when existed: add the
+                    // column in place (readers select by name; no
+                    // schema-version bump, no forced full mine).
+                    bool hasSnrWhen = false;
+                    QSqlQuery ti{db};
+                    if (ti.exec(QStringLiteral("PRAGMA table_info(edges)")))
+                        while (ti.next())
+                            if (ti.value(1).toString() ==
+                                QLatin1String("snr_when"))
+                                hasSnrWhen = true;
+                    if (!hasSnrWhen)
+                        q.exec(QStringLiteral(
+                            "ALTER TABLE edges ADD COLUMN snr_when INTEGER"));
+                }
                 q.prepare(QStringLiteral(
                     "INSERT INTO edges (hearer, heard, last_when, n, snr,"
-                    " source) VALUES (?,?,?,?,?,?)"));
+                    " snr_when, source) VALUES (?,?,?,?,?,?,?)"
+                    " ON CONFLICT(hearer, heard) DO UPDATE SET"
+                    " n = n + excluded.n,"
+                    // Exactly edgeAdd()'s rules: time/source from the
+                    // STRICTLY newer observation; snr from the newer
+                    // snr-bearing observation (its own stamp).
+                    " source = CASE WHEN excluded.last_when > edges.last_when"
+                    "   THEN excluded.source ELSE edges.source END,"
+                    " snr = CASE WHEN excluded.snr_when >"
+                    "   COALESCE(edges.snr_when, -1)"
+                    "   THEN excluded.snr ELSE edges.snr END,"
+                    " snr_when = MAX(COALESCE(edges.snr_when, -1),"
+                    "   excluded.snr_when),"
+                    " last_when = MAX(edges.last_when, excluded.last_when)"));
                 for (auto it = edges.constBegin(); it != edges.constEnd();
                      ++it)
                     for (auto e = it.value().constBegin();
@@ -708,6 +1029,7 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                                     std::numeric_limits<int>::min()
                                 ? QVariant{}
                                 : QVariant{e.value().snr});
+                        q.addBindValue(qlonglong(e.value().snrWhen));
                         q.addBindValue(e.value().source);
                         q.exec();
                         r.edges += 1;
@@ -763,6 +1085,16 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
                         myGridIn.trimmed().toUpper());
                 setMeta(QStringLiteral("mined_at"), QString::number(now));
                 setMeta(QStringLiteral("sources_stamp"), stamp);
+                // [#287 part 3] the bookmark for the next run
+                setMeta(QStringLiteral("directed_offset"),
+                        QString::number(endD));
+                setMeta(QStringLiteral("all_offset"), QString::number(endA));
+                setMeta(QStringLiteral("directed_head"), headOf(directedPath));
+                setMeta(QStringLiteral("all_head"), headOf(allTxtPath));
+                setMeta(QStringLiteral("last_ts"), QString::number(lastTs));
+                setMeta(QStringLiteral("carry"),
+                        QString::fromUtf8(QJsonDocument(carryOut).toJson(
+                            QJsonDocument::Compact)));
                 if (interrupted()) {
                     db.rollback();
                     qCWarning(miner_js8)
@@ -778,7 +1110,7 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
         }
         QSqlDatabase::removeDatabase(conn);
     }
-    if (wrote) {
+    if (wrote && !incremental) {
         QFile::remove(intelDbPath);
         if (!QFile::rename(tmpPath, intelDbPath)) {
             qCWarning(miner_js8) << "[MINER] rename FAILED";
@@ -787,12 +1119,18 @@ IntelMiner::Result IntelMiner::mine(QString const &myCallIn,
     }
 
     r.ok = wrote;
+    r.resumed = incremental;
     r.stations = stations.size();
     r.sightings = sightings.size();
     r.events = edgeEvents.size();
     r.elapsedMs = timer.elapsed();
-    qCWarning(miner_js8).nospace()
-        << "[MINER] mined " << r.directedLines << " directed lines, "
+    QString const how =
+        incremental ? QStringLiteral("resumed at %1/%2 bytes; ")
+                          .arg(startD).arg(startA)
+                    : QStringLiteral("full mine; ");
+    qCWarning(miner_js8).nospace().noquote()
+        << "[MINER] " << how
+        << "mined " << r.directedLines << " directed lines, "
         << r.probes << " probes, " << r.stations << " stations, "
         << r.edges << " edges, " << r.sightings << " sightings, "
         << r.events << " events, " << r.logGrids.size()

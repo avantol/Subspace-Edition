@@ -737,6 +737,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // [#187 intelminer] Build/refresh the intel corpus from the
     // user's own logs, in the background, once the window is up.
     // Full re-mine (mine.py semantics); skipped when logs unchanged.
+    // [#287] Runs at idle I/O priority on this instance's own files.
     QTimer::singleShot(0, this, [this]() { startIntelMine(false); });
     if (ui->menuControl) {
         auto *rebuild = ui->menuControl->addAction(
@@ -1477,45 +1478,52 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 if (contentStart >= 0)
                     searchFrom = contentStart + 4;
 
-                // Scan for last CALLSIGN: pattern (handles multi-message lines)
+                // [#240 layer 1b, 2026-10-02] The SENDER is the FIRST
+                // "CALL: " of the message content, not the last: a tag
+                // later in the body ("... @MR06MC JS8MESH: LOUD") is
+                // text whatever its shape (JS8MESH passes the callsign
+                // test through the compound branch, like W1AW/100).
+                // The old backward scan took the LAST colon, so a
+                // double-click on a mesh line selected "JS8MESH". The
+                // shape test is the one authority, Varicode::
+                // isValidCallsign, as everywhere else in #240.
                 int lastColonPos = -1;
-                for (int i = lineText.length() - 1; i >= searchFrom; --i) {
-                    if (lineText[i] == ':') {
+                for (int i = searchFrom; i < lineText.length(); ++i) {
+                    if (lineText[i] != ':')
+                        continue;
+                    int ws = i - 1;
+                    while (ws >= searchFrom &&
+                           (lineText[ws].isLetterOrNumber() ||
+                            lineText[ws] == '/'))
+                        --ws;
+                    ++ws;
+                    QString const cand = lineText.mid(ws, i - ws).trimmed();
+                    if (cand.length() >= 3 && cand.length() <= 15 &&
+                        Varicode::isValidCallsign(cand, nullptr)) {
                         lastColonPos = i;
                         break;
                     }
                 }
 
                 if (lastColonPos > searchFrom) {
-                    // Extract word before the last colon
+                    // Extract word before that colon
                     int wordStart = lastColonPos - 1;
                     while (wordStart >= searchFrom && (lineText[wordStart].isLetterOrNumber() || lineText[wordStart] == '/'))
                         --wordStart;
                     ++wordStart;
                     QString candidate = lineText.mid(wordStart, lastColonPos - wordStart).trimmed();
 
-                    // Validate: 3-15 chars, has letters and digits (callsign pattern, allows /)
+                    // Already validated by the scan above (one authority)
                     if (candidate.length() >= 3 && candidate.length() <= 15) {
-                        bool hasLetter = false, hasDigit = false;
-                        for (auto ch : candidate) {
-                            if (ch.isLetter()) hasLetter = true;
-                            if (ch.isDigit()) hasDigit = true;
-                        }
-                        if (hasLetter && hasDigit) {
+                        {
                             // If it's exactly our own callsign, look for the target after the colon
                             // (WM8Q/P is NOT WM8Q — exact match required)
                             if (candidate == m_config.my_callsign()) {
                                 QString afterColon = lineText.mid(lastColonPos + 1).trimmed();
                                 QString target = afterColon.split(QRegularExpression("\\s+")).first();
-                                if (target.length() >= 3 && target.length() <= 10) {
-                                    bool tl = false, td = false;
-                                    for (auto ch : target) {
-                                        if (ch.isLetter()) tl = true;
-                                        if (ch.isDigit()) td = true;
-                                    }
-                                    if (tl && td)
-                                        callsign = target;
-                                }
+                                if (target.length() >= 3 && target.length() <= 10 &&
+                                    Varicode::isValidCallsign(target, nullptr))
+                                    callsign = target;   // one authority (#240)
                             } else {
                                 callsign = candidate;
                             }
@@ -3032,6 +3040,7 @@ void UI_Constructor::startIntelMine(bool force) {
     QString const grid = m_config.my_grid();
     QPointer<UI_Constructor> self{this};
     QThread *th = QThread::create([self, call, grid, force]() {
+        IntelMiner::lowerThreadToBackground();   // [#287] GUI I/O first
         IntelMiner miner;
         IntelMiner::Result const res = miner.mine(call, grid, force);
         if (self)

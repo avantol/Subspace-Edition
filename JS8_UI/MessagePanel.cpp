@@ -293,21 +293,23 @@ void MessagePanel::messageTableSelectionChanged(
   auto text = item->data(Qt::UserRole).toString();
   ui->messageTextEdit->setPlainText(text);
 
-  // Mark deselected as read in table
-  auto deselectedItemIndexes = deselected.indexes();
-
-  if (deselectedItemIndexes.empty()) {
-    return;
+  // [TODO #286, 2026-10-02] READ is keyed to ARRIVING at a message, not
+  // to leaving it. Upstream marked the DESELECTED row read, and only
+  // when a new row was selected in its place -- so a lone message (no
+  // other row to move to) could never be marked read by reading it,
+  // and its station stayed flagged, bold and pinned in Call Activity
+  // for good. The moment the text is on screen is the moment it is
+  // read; clearing the selection or closing the dock marks nothing,
+  // as before.
+  Q_UNUSED(deselected);
+  auto readFlagItem = ui->messageTableWidget->item(row, 0);
+  if (readFlagItem) {
+    readFlagItem->setText("");
+    readFlagItem->setData(Qt::UserRole, "");
   }
 
-  auto deselectedRowIndex = deselectedItemIndexes.first();
-  auto deselectedRow = deselectedRowIndex.row();
-  auto readFlagItem = ui->messageTableWidget->item(deselectedRow, 0);
-  readFlagItem->setText("");
-  readFlagItem->setData(Qt::UserRole, "");
-
   // Mark message read in DB
-  auto col = ui->messageTableWidget->item(deselectedRow, 1);
+  auto col = ui->messageTableWidget->item(row, 1);
   if (!col) {
     return;
   }

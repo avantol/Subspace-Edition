@@ -1,4 +1,5 @@
 #include "BandActivityMessageDelegate.h"
+#include "JS8_Main/Varicode.h"   // [#240] the callsign-shape authority
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -8,18 +9,74 @@
 #include <QToolTip>
 
 namespace {
-// Bold callsign patterns (CALL:) in HTML for tooltips, with line breaks
-QString boldCallsigns(const QString &text) {
-    QString html = text.toHtmlEscaped();
-    // Match CALLSIGN: — must contain at least one digit (real callsigns always do)
-    static const QRegularExpression re(R"((\b(?=[A-Z0-9/]*[0-9])[A-Z0-9/]{3,15}:)(?=\s))");
-    html.replace(re, "<br/><b>\\1</b>");
-    // Remove leading <br/> if text starts with a callsign
-    if (html.startsWith("<br/>"))
-        html = html.mid(5);
-    // Wrap in a wide container to prevent premature line wrapping
-    return QString("<div style='white-space:nowrap;'>%1</div>").arg(html);
+// The candidate shape: 3-15 of [A-Z0-9/] with a digit, then ": ".
+// A PRE-FILTER only -- acceptance is isSenderPrefix(), the one
+// authority (#240).
+QRegularExpression const &callPrefixRe() {
+    static const QRegularExpression re(
+        R"(\b((?=[A-Z0-9/]*[0-9])[A-Z0-9/]{3,15}: ))");
+    return re;
 }
+}
+
+bool BandActivityMessageDelegate::isSenderPrefix(const QString &captured,
+                                                 const QString &senderCall,
+                                                 bool atStart) {
+    QString candidate = captured.trimmed();
+    if (candidate.endsWith(QLatin1Char(':')))
+        candidate.chop(1);
+    if (candidate.length() < 3 || candidate.length() > 15 ||
+        !Varicode::isValidCallsign(candidate, nullptr))
+        return false;   // "2,KCNA" and the like
+    if (atStart)
+        return true;    // the group's opening sender
+    return !senderCall.isEmpty() &&
+           candidate.compare(senderCall, Qt::CaseInsensitive) == 0;
+}
+
+namespace {
+// One group's text as HTML: the sender prefix(es) bold, body plain.
+QString boldSenderBody(const QString &text, const QString &senderCall) {
+    QString html;
+    int lastEnd = 0;
+    auto it = callPrefixRe().globalMatch(text);
+    while (it.hasNext()) {
+        auto const match = it.next();
+        if (!BandActivityMessageDelegate::isSenderPrefix(
+                match.captured(0), senderCall, match.capturedStart() == 0))
+            continue;
+        html += text.mid(lastEnd, match.capturedStart() - lastEnd)
+                    .toHtmlEscaped();
+        QString const prefix = match.captured(0).trimmed();
+        html += QStringLiteral("<b>%1</b> ").arg(prefix.toHtmlEscaped());
+        lastEnd = match.capturedEnd();
+    }
+    html += text.mid(lastEnd).toHtmlEscaped();
+    return html;
+}
+QString wrapTooltip(const QString &body) {
+    // Wrap in a wide container to prevent premature line wrapping
+    return QStringLiteral("<div style='white-space:nowrap;'>%1</div>")
+        .arg(body);
+}
+}
+
+QString BandActivityMessageDelegate::boldCallsignsHtml(
+    const QString &text, const QString &senderCall) {
+    return wrapTooltip(boldSenderBody(text, senderCall));
+}
+
+QString BandActivityMessageDelegate::rowTooltipHtml(
+    const QVariantList &groups, const QString &joined) {
+    if (groups.isEmpty())
+        return boldCallsignsHtml(joined, QString());
+    QStringList lines;
+    for (auto const &g : groups) {
+        auto const map = g.toMap();
+        lines << boldSenderBody(map[QStringLiteral("text")].toString(),
+                                map[QStringLiteral("call")].toString());
+    }
+    return wrapTooltip(lines.join(QStringLiteral("<br/>")));
 }
 
 namespace {
@@ -103,16 +160,23 @@ void BandActivityMessageDelegate::paint(QPainter *painter,
         QFontMetrics fm(opt.font);
         QString elided = fm.elidedText(text, Qt::ElideLeft, textRect.width());
 
-        // Draw text with bold callsigns (CALL: pattern with at least one digit)
-        static const QRegularExpression callRe(R"(\b((?=[A-Z0-9/]*[0-9])[A-Z0-9/]{3,15}: ))");
+        // Draw text with the group's SENDER bold (#240 layer 1b)
+        QString const senderCall =
+            groups.isEmpty()
+                ? QString()
+                : groups[0].toMap()[QStringLiteral("call")].toString();
         QFont boldFont = opt.font;
         boldFont.setBold(true);
         int xPos = textRect.x();
         int remaining = textRect.width();
-        auto it = callRe.globalMatch(elided);
+        auto it = callPrefixRe().globalMatch(elided);
         int lastEnd = 0;
         while (it.hasNext() && remaining > 0) {
             auto match = it.next();
+            if (!isSenderPrefix(match.captured(0), senderCall,
+                                match.capturedStart() == 0 &&
+                                    elided.size() == text.size()))
+                continue;   // body text; drawn plain with the next segment
             // Draw text before the callsign (normal)
             if (match.capturedStart() > lastEnd) {
                 QString before = elided.mid(lastEnd, match.capturedStart() - lastEnd);
@@ -192,15 +256,19 @@ void BandActivityMessageDelegate::paint(QPainter *painter,
             : opt.palette.text().color();
         painter->setPen(textColor);
 
-        static const QRegularExpression callRe(R"(\b((?=[A-Z0-9/]*[0-9])[A-Z0-9/]{3,15}: ))");
         QFont boldFont = opt.font;
         boldFont.setBold(true);
         int xPos = textRect.x();
         int remaining = textRect.width();
-        auto it = callRe.globalMatch(elided);
+        QString const senderCall = map[QStringLiteral("call")].toString();
+        auto it = callPrefixRe().globalMatch(elided);
         int lastEnd = 0;
         while (it.hasNext() && remaining > 0) {
             auto match = it.next();
+            if (!isSenderPrefix(match.captured(0), senderCall,
+                                match.capturedStart() == 0 &&
+                                    elided.size() == text.size()))
+                continue;   // body text (#240 layer 1b)
             if (match.capturedStart() > lastEnd) {
                 QString before = elided.mid(lastEnd, match.capturedStart() - lastEnd);
                 painter->setFont(opt.font);
@@ -245,7 +313,8 @@ bool BandActivityMessageDelegate::helpEvent(QHelpEvent *event,
             QFontMetrics fm(opt.font);
             int cellWidth = opt.rect.width();
             if (fm.horizontalAdvance(text) > cellWidth) {
-                QToolTip::showText(event->globalPos(), boldCallsigns(text), view);
+                QToolTip::showText(event->globalPos(),
+                                   rowTooltipHtml(groups, text), view);
                 return true;
             }
         }
@@ -262,7 +331,8 @@ bool BandActivityMessageDelegate::helpEvent(QHelpEvent *event,
 
     auto map = groups[regionIndex].toMap();
     QString text = map["text"].toString();
-    QToolTip::showText(event->globalPos(), boldCallsigns(text), view);
+    QToolTip::showText(event->globalPos(),
+                       boldCallsignsHtml(text, map["call"].toString()), view);
     return true;
 }
 
