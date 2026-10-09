@@ -2701,6 +2701,16 @@ transmitting periods.</string>
                 </property>
                </widget>
               </item>
+              <item row="10" column="2">
+               <widget class="QCheckBox" name="wsjtx_simulate_check_box">
+                <property name="toolTip">
+                 <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Send Normal-speed decodes with the client id &quot;WSJT-X&quot;, so jtxsync, which accepts that id only, will use their time offsets to set the system clock.&lt;/p&gt;&lt;p&gt;Only Normal speed is relabelled. A Subspace decode reports a time offset of about +3.9 seconds by construction, which would move the clock about four seconds the wrong way.&lt;/p&gt;&lt;p&gt;Status, heartbeat and logged-QSO messages always keep this station's own id, so requests aimed at a real WSJT-X are never answered here. Other listeners, such as GridTracker, may show a second instance while this is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                </property>
+                <property name="text">
+                 <string>Simulate WSJT-X (for jtxsync)</string>
+                </property>
+               </widget>
+              </item>
               <item row="11" column="0">
                <widget class="QLabel" name="wsjtx_TTL_label">
                 <property name="text">

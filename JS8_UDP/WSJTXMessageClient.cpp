@@ -582,10 +582,14 @@ void WSJTXMessageClient::decode(bool is_new, QTime time, qint32 snr,
                                 float delta_time, quint32 delta_frequency,
                                 QString const &mode,
                                 QString const &message_text,
-                                bool low_confidence, bool off_air) {
+                                bool low_confidence, bool off_air,
+                                QString const &id_override) {
     if (m_->server_port_ && !m_->server_.isNull()) {
         QByteArray message;
-        NetworkMessage::Builder out{&message, NetworkMessage::Decode, m_->id_,
+        // [#291] This message only. m_->id_ is untouched, so Status,
+        // Heartbeat, Clear and QSOLogged keep announcing who we are.
+        auto const &id = id_override.isEmpty() ? m_->id_ : id_override;
+        NetworkMessage::Builder out{&message, NetworkMessage::Decode, id,
                                     m_->schema_};
         out << is_new << time << snr << delta_time << delta_frequency
             << mode.toUtf8() << message_text.toUtf8() << low_confidence

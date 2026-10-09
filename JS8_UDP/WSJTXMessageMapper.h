@@ -71,9 +71,13 @@ class WSJTXMessageMapper : public QObject {
      * @param message Decoded message text
      * @param low_confidence Whether decode confidence is low
      */
+    // [#291] id_override: non-empty stamps THIS Decode message with that
+    // client id ("WSJT-X" for jtxsync, Normal speed only). Everything
+    // else we send keeps our own id.
     void sendDecode(bool is_new, QTime time, qint32 snr, float delta_time,
                     quint32 delta_frequency, QString const &mode,
-                    QString const &message, bool low_confidence);
+                    QString const &message, bool low_confidence,
+                    QString const &id_override = {});
 
     /**
      * @brief Send a QSO Logged message

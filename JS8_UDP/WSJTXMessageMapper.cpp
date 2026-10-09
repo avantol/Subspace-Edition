@@ -95,7 +95,8 @@ void WSJTXMessageMapper::sendStatusUpdate(
 void WSJTXMessageMapper::sendDecode(bool is_new, QTime time, qint32 snr,
                                     float delta_time, quint32 delta_frequency,
                                     QString const &mode, QString const &message,
-                                    bool low_confidence) {
+                                    bool low_confidence,
+                                    QString const &id_override) {
     qCDebug(wsjtx_mapper_js8)
         << "WSJTXMessageMapper: sendDecode called"
         << "is_new:" << is_new << "time:" << time.toString("hh:mm:ss")
@@ -103,7 +104,7 @@ void WSJTXMessageMapper::sendDecode(bool is_new, QTime time, qint32 snr,
         << "delta_frequency:" << delta_frequency << "mode:" << mode
         << "message:" << message << "low_confidence:" << low_confidence;
     client_->decode(is_new, time, snr, delta_time, delta_frequency, mode,
-                    message, low_confidence, false);
+                    message, low_confidence, false, id_override);
 }
 
 /**

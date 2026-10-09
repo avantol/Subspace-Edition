@@ -136,11 +136,16 @@ class WSJTXMessageClient : public QObject {
      * @param message Decoded message text
      * @param low_confidence Whether decode confidence is low
      * @param off_air Whether this is an off-air decode
+     * @param id_override [#291] when non-empty, THIS message is stamped
+     *        with that client id instead of ours. Used only to announce
+     *        "WSJT-X" on Normal-speed decodes for jtxsync; every other
+     *        message type keeps our own id, so control messages aimed at
+     *        a real WSJT-X instance are never answered here.
      */
     Q_SLOT void decode(bool is_new, QTime time, qint32 snr, float delta_time,
                        quint32 delta_frequency, QString const &mode,
                        QString const &message, bool low_confidence,
-                       bool off_air);
+                       bool off_air, QString const &id_override = {});
 
     /**
      * @brief Send a Clear Decodes message

@@ -545,6 +545,11 @@ class UI_Constructor : public QMainWindow {
     void on_actionSettings_triggered();
     void openSettings(int tab = 0);
     void prepareApi();
+    // [#291 restartfix] Create or tear down the WSJT-X protocol client to
+    // match the current setting. Called from prepareApi(), so the enable
+    // checkbox takes effect on settings-accept like the TCP API's does,
+    // instead of only at the next launch.
+    void prepareWsjtxApi();
     void prepareSpotting();
     void on_spotButton_clicked(bool checked);
     void on_monitorButton_clicked(bool);

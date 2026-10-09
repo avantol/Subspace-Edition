@@ -915,80 +915,70 @@ UI_Constructor::UI_Constructor(QString const &program_info,
      * changes and disables the native JSON client if it conflicts with WSJT-X
      * on the same port/address.
      */
-    if (m_config.wsjtx_protocol_enabled()) {
-        QString id = QApplication::applicationName();
-        QString version = QApplication::applicationVersion();
-        QString revision = ""; // Get from your version system if available
-
-        m_wsjtxMessageClient = new WSJTXMessageClient{
-            id,
-            version,
-            revision,
-            m_config.wsjtx_server_name(),
-            m_config.wsjtx_server_port(),
-            m_config.wsjtx_interface_names(), // Use selected interfaces
-            m_config.wsjtx_TTL(),
-            this};
-
-        m_wsjtxMessageClient->enable(m_config.wsjtx_accept_requests());
-
-        m_wsjtxMessageMapper =
-            new WSJTXMessageMapper(m_wsjtxMessageClient, this, this);
-
-        // Disable native JSON client if it's using the same port/address as
-        // WSJT-X
-        if (m_config.wsjtx_server_port() == m_config.udp_server_port() &&
-            m_config.wsjtx_server_name() == m_config.udp_server_name()) {
-            m_messageClient->set_server_port(0); // Disable native JSON client
-        }
-
-        // Connect configuration changes
-        connect(&m_config, &Configuration::wsjtx_server_changed,
-                [this](QString const &server_name) {
+    // [#291 restartfix] The client and mapper are created and destroyed by
+    // prepareWsjtxApi(), which prepareApi() calls at startup and on every
+    // settings accept -- the pattern the TCP API server has always used.
+    // They used to be built HERE, inside `if (wsjtx_protocol_enabled())`,
+    // which ran once in this constructor and nowhere else: ticking the
+    // enable box did nothing until the next launch, silently, because
+    // every emission site tests `m_wsjtxMessageMapper && enabled` and the
+    // null mapper kept that false forever. Inherited from upstream 3.0.3,
+    // which still builds it the same way.
+    //
+    // These connections are now made ONCE and UNCONDITIONALLY. Inside the
+    // old `if` they existed only when the protocol happened to be enabled
+    // at startup; with the client now coming and going at runtime, leaving
+    // them there would connect them again on every re-enable and leave the
+    // lambdas holding a deleted client. Each one therefore null-checks.
+    connect(&m_config, &Configuration::wsjtx_server_changed,
+            [this](QString const &server_name) {
+                if (m_wsjtxMessageClient) {
                     m_wsjtxMessageClient->set_server(
                         server_name, m_config.wsjtx_interface_names());
-                    // Check if we need to disable native JSON client
-                    if (m_config.wsjtx_protocol_enabled() &&
-                        m_config.wsjtx_server_port() ==
-                            m_config.udp_server_port() &&
-                        server_name == m_config.udp_server_name()) {
-                        m_messageClient->set_server_port(0);
-                    } else if (m_config.wsjtx_protocol_enabled() &&
-                               m_config.wsjtx_server_port() !=
-                                   m_config.udp_server_port()) {
-                        m_messageClient->set_server_port(
-                            m_config.udp_server_port());
-                    }
-                });
-        connect(&m_config, &Configuration::wsjtx_server_port_changed,
-                [this](quint16 port) {
+                }
+                // Check if we need to disable native JSON client
+                if (m_config.wsjtx_protocol_enabled() &&
+                    m_config.wsjtx_server_port() ==
+                        m_config.udp_server_port() &&
+                    server_name == m_config.udp_server_name()) {
+                    m_messageClient->set_server_port(0);
+                } else if (m_config.wsjtx_protocol_enabled() &&
+                           m_config.wsjtx_server_port() !=
+                               m_config.udp_server_port()) {
+                    m_messageClient->set_server_port(
+                        m_config.udp_server_port());
+                }
+            });
+    connect(&m_config, &Configuration::wsjtx_server_port_changed,
+            [this](quint16 port) {
+                if (m_wsjtxMessageClient) {
                     m_wsjtxMessageClient->set_server_port(port);
-                    // Check if we need to disable native JSON client
-                    if (m_config.wsjtx_protocol_enabled() &&
-                        port == m_config.udp_server_port() &&
-                        m_config.wsjtx_server_name() ==
-                            m_config.udp_server_name()) {
-                        m_messageClient->set_server_port(0);
-                    } else if (m_config.wsjtx_protocol_enabled() &&
-                               port != m_config.udp_server_port()) {
-                        m_messageClient->set_server_port(
-                            m_config.udp_server_port());
-                    }
-                });
-        connect(&m_config, &Configuration::wsjtx_TTL_changed, this,
-                [this](int ttl) {
-                    if (m_wsjtxMessageClient) {
-                        m_wsjtxMessageClient->set_TTL(ttl);
-                    }
-                });
-        connect(&m_config, &Configuration::wsjtx_interfaces_changed,
-                [this](QStringList const &interfaces) {
-                    if (m_wsjtxMessageClient) {
-                        m_wsjtxMessageClient->set_server(
-                            m_config.wsjtx_server_name(), interfaces);
-                    }
-                });
-    }
+                }
+                // Check if we need to disable native JSON client
+                if (m_config.wsjtx_protocol_enabled() &&
+                    port == m_config.udp_server_port() &&
+                    m_config.wsjtx_server_name() ==
+                        m_config.udp_server_name()) {
+                    m_messageClient->set_server_port(0);
+                } else if (m_config.wsjtx_protocol_enabled() &&
+                           port != m_config.udp_server_port()) {
+                    m_messageClient->set_server_port(
+                        m_config.udp_server_port());
+                }
+            });
+    connect(&m_config, &Configuration::wsjtx_TTL_changed, this,
+            [this](int ttl) {
+                if (m_wsjtxMessageClient) {
+                    m_wsjtxMessageClient->set_TTL(ttl);
+                }
+            });
+    connect(&m_config, &Configuration::wsjtx_interfaces_changed,
+            [this](QStringList const &interfaces) {
+                if (m_wsjtxMessageClient) {
+                    m_wsjtxMessageClient->set_server(
+                        m_config.wsjtx_server_name(), interfaces);
+                }
+            });
 
     // decoder queue handler
     // connect (&m_decodeThread, &QThread::finished, m_notification,
@@ -1104,23 +1094,13 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     connect(&m_config, &Configuration::udp_server_port_changed, m_messageClient,
             &MessageClient::set_server_port);
 
-    // Disable native JSON client if WSJT-X protocol is enabled on the same
-    // port/address This prevents JSON PING messages from interfering with
-    // WSJT-X binary protocol
-    connect(
-        &m_config, &Configuration::wsjtx_protocol_enabled_changed, this,
-        [this](bool enabled) {
-            if (enabled &&
-                m_config.wsjtx_server_port() == m_config.udp_server_port() &&
-                m_config.wsjtx_server_name() == m_config.udp_server_name()) {
-                // Disable native JSON client to avoid conflicts with WSJT-X
-                // protocol
-                m_messageClient->set_server_port(0);
-            } else if (!enabled) {
-                // Re-enable native JSON client if WSJT-X is disabled
-                m_messageClient->set_server_port(m_config.udp_server_port());
-            }
-        });
+    // [#291 restartfix] The wsjtx_protocol_enabled_changed handler that
+    // stood here silenced or restored the native JSON client's port and
+    // nothing else -- it never created the WSJT-X client, which is why
+    // enabling the protocol appeared to do nothing until a restart.
+    // prepareWsjtxApi() now makes that same port decision as part of
+    // creating or destroying the client, so keeping this would leave two
+    // places deciding one thing.
     connect(&m_config, &Configuration::band_schedule_changed, this,
             [this]() { this->m_bandHopped = true; });
     connect(&m_config, &Configuration::auto_switch_bands_changed, this,

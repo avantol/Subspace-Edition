@@ -245,6 +245,19 @@ class Configuration final : public QObject {
     bool wsjtx_accept_requests() const;
 
     /**
+     * @brief Announce the client id "WSJT-X" on Normal-speed Decode
+     * messages, so jtxsync (which accepts that id only) will sample them.
+     *
+     * [#291] Normal speed ONLY. A Subspace decode reports a systematic
+     * +3.9 s delta time (measured, 30405 decodes), which would move the
+     * clock about four seconds the wrong way. Every other message type --
+     * Status, Heartbeat, Clear, QSOLogged -- keeps our own id, so we never
+     * answer control messages aimed at a real WSJT-X instance.
+     * @return true if simulating the WSJT-X id on Normal decodes
+     */
+    bool wsjtx_simulate_id() const;
+
+    /**
      * @brief Get selected network interface names for multicast
      * @return List of network interface names
      */

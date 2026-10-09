@@ -1573,6 +1573,69 @@ void UI_Constructor::prepareApi() {
     } else {
         emit apiStopServer();
     }
+
+    // [#291 restartfix] and the WSJT-X protocol client, for the same
+    // reason and in the same place: this runs at startup and on every
+    // settings accept.
+    prepareWsjtxApi();
+}
+
+// [#291 restartfix] Bring the WSJT-X protocol client into line with the
+// setting, creating or destroying it as needed. It used to be built only
+// in UI_Constructor's constructor, inside
+// `if (m_config.wsjtx_protocol_enabled())`, so enabling the protocol did
+// nothing until the next launch: the emission sites all test
+// `m_wsjtxMessageMapper && m_config.wsjtx_protocol_enabled()`, and a null
+// mapper held that false however many decodes went by, with no warning
+// anywhere. Field-diagnosed 2026-10-07 (eleven Normal decodes, not one
+// packet on the wire, not even the 15 s heartbeat). Inherited from
+// upstream 3.0.3, which still constructs it that way.
+//
+// The configuration-change connections live in the constructor and are
+// made unconditionally, so they survive the client coming and going and
+// each one null-checks it.
+void UI_Constructor::prepareWsjtxApi() {
+    bool const enabled = m_config.wsjtx_protocol_enabled();
+
+    if (enabled && !m_wsjtxMessageClient) {
+        m_wsjtxMessageClient = new WSJTXMessageClient{
+            QApplication::applicationName(),
+            QApplication::applicationVersion(),
+            QString{}, // revision
+            m_config.wsjtx_server_name(),
+            m_config.wsjtx_server_port(),
+            m_config.wsjtx_interface_names(),
+            m_config.wsjtx_TTL(),
+            this};
+        m_wsjtxMessageClient->enable(m_config.wsjtx_accept_requests());
+        m_wsjtxMessageMapper =
+            new WSJTXMessageMapper(m_wsjtxMessageClient, this, this);
+        qWarning() << "[WSJTX] protocol client started:"
+                   << m_config.wsjtx_server_name()
+                   << m_config.wsjtx_server_port()
+                   << "accept_requests=" << m_config.wsjtx_accept_requests();
+    } else if (!enabled && m_wsjtxMessageClient) {
+        // The mapper holds the client, so it goes first. deleteLater
+        // rather than delete: this can be reached from a settings accept
+        // while the client has signals in flight.
+        m_wsjtxMessageMapper->deleteLater();
+        m_wsjtxMessageMapper = nullptr;
+        m_wsjtxMessageClient->deleteLater();
+        m_wsjtxMessageClient = nullptr;
+        qWarning() << "[WSJTX] protocol client stopped";
+    }
+
+    // One authority for the shared-port decision, re-made whenever
+    // either side can have changed. The native UDP JSON client has to be
+    // silenced when WSJT-X occupies its host and port, and restored when
+    // it does not -- including when WSJT-X has just been switched off,
+    // which previously only happened via the enabled-changed handler.
+    if (enabled && m_config.wsjtx_server_port() == m_config.udp_server_port() &&
+        m_config.wsjtx_server_name() == m_config.udp_server_name()) {
+        m_messageClient->set_server_port(0);
+    } else {
+        m_messageClient->set_server_port(m_config.udp_server_port());
+    }
 }
 
 void UI_Constructor::prepareSpotting() {

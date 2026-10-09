@@ -363,12 +363,27 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                     // Send decode message
                     // Use "JS8" as the mode string (WSJT-X expects mode names
                     // like "FT8", "FT4", "JT9", etc.)
+                    // [#291] "Simulate WSJT-X (for jtxsync)": announce
+                    // the id jtxsync accepts, on NORMAL SPEED ONLY. It
+                    // samples the delta time to set the system clock,
+                    // and a Subspace decode reports a systematic +3.9 s
+                    // (measured over 30405 decodes), which would move
+                    // the clock about four seconds the wrong way. Other
+                    // speeds and every other message type keep our own
+                    // id, so we never answer a request aimed at a real
+                    // WSJT-X instance.
+                    QString idOverride;
+                    if (m_config.wsjtx_simulate_id() &&
+                        decodedtext.submode() == Varicode::JS8CallNormal)
+                        idOverride = QStringLiteral("WSJT-X");
+
                     m_wsjtxMessageMapper->sendDecode(
                         true, // is_new - always true for new decodes
                         decode_time, decodedtext.snr(), decodedtext.dt(),
                         static_cast<quint32>(decodedtext.frequencyOffset()),
                         "JS8", // mode string
-                        decodedtext.message(), decodedtext.isLowConfidence());
+                        decodedtext.message(), decodedtext.isLowConfidence(),
+                        idOverride);
                 }
 
                 ActivityDetail d = {};

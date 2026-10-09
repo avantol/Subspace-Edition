@@ -689,6 +689,7 @@ class Configuration::impl final : public QDialog {
     port_type wsjtx_server_port_;
     int wsjtx_TTL_;
     bool wsjtx_accept_requests_;
+    bool wsjtx_simulate_id_; // [#291]
     QStringList wsjtx_interface_names_;
     QString wsjtx_loopback_interface_name_;
     DataMode data_mode_;
@@ -954,6 +955,9 @@ auto Configuration::wsjtx_server_port() const -> port_type {
 int Configuration::wsjtx_TTL() const { return m_->wsjtx_TTL_; }
 bool Configuration::wsjtx_accept_requests() const {
     return m_->wsjtx_accept_requests_;
+}
+bool Configuration::wsjtx_simulate_id() const { // [#291]
+    return m_->wsjtx_simulate_id_;
 }
 QStringList Configuration::wsjtx_interface_names() const {
     return m_->wsjtx_interface_names_;
@@ -1707,6 +1711,12 @@ Configuration::impl::impl(Configuration *self, QDir const &temp_directory,
     connect(ui_->auto_switch_bands_check_box, &QCheckBox::clicked,
             ui_->stations_table_view, &QTableView::setEnabled);
 
+    // [#291] Simulating the WSJT-X id means nothing with the WSJT-X
+    // server off, so the sub-option follows its parent live -- same
+    // pattern as the line above.
+    connect(ui_->wsjtx_enable_check_box, &QCheckBox::clicked,
+            ui_->wsjtx_simulate_check_box, &QCheckBox::setEnabled);
+
     // Info button next to the Heartbeat / Hailing Network group label.
     // Pops a modeless explainer describing what Hailing is and why it
     // matters in Subspace mode. Text is intentionally in-app (not a URL)
@@ -2050,6 +2060,9 @@ void Configuration::impl::initialize_models() {
     ui_->wsjtx_server_port_spin_box->setValue(wsjtx_server_port_);
     ui_->wsjtx_TTL_spin_box->setValue(wsjtx_TTL_);
     ui_->wsjtx_accept_requests_check_box->setChecked(wsjtx_accept_requests_);
+    // [#291] meaningless with the WSJT-X server off, so it follows it
+    ui_->wsjtx_simulate_check_box->setChecked(wsjtx_simulate_id_);
+    ui_->wsjtx_simulate_check_box->setEnabled(wsjtx_protocol_enabled_);
     load_network_interfaces(ui_->wsjtx_interfaces_combo_box,
                             wsjtx_interface_names_);
     ui_->calibration_intercept_spin_box->setValue(calibration_.intercept);
@@ -2548,6 +2561,9 @@ void Configuration::impl::read_settings() {
     wsjtx_TTL_ = settings_->value("WSJTXTTL", 1).toInt();
     wsjtx_accept_requests_ =
         settings_->value("WSJTXAcceptRequests", false).toBool();
+    // [#291] ours, so an Ss* key rather than the upstream WSJTX* family
+    wsjtx_simulate_id_ =
+        settings_->value("SsWsjtxSimulateId", false).toBool();
     wsjtx_interface_names_ =
         settings_->value("WSJTXInterfaces", QStringList()).toStringList();
     tcp_server_name_ = settings_->value("TCPServer", "127.0.0.1").toString();
@@ -2805,6 +2821,7 @@ void Configuration::impl::write_settings() {
     settings_->setValue("WSJTXServerPort", wsjtx_server_port_);
     settings_->setValue("WSJTXTTL", wsjtx_TTL_);
     settings_->setValue("WSJTXAcceptRequests", wsjtx_accept_requests_);
+    settings_->setValue("SsWsjtxSimulateId", wsjtx_simulate_id_); // [#291]
     settings_->setValue("WSJTXInterfaces", wsjtx_interface_names_);
     settings_->setValue("TCPServer", tcp_server_name_);
     settings_->setValue("TCPServerPort", tcp_server_port_);
@@ -3523,6 +3540,8 @@ void Configuration::impl::accept() {
     }
 
     wsjtx_accept_requests_ = new_wsjtx_accept_requests;
+    // [#291] no signal: read at each decode, so it takes effect at once
+    wsjtx_simulate_id_ = ui_->wsjtx_simulate_check_box->isChecked();
 
     if (new_wsjtx_interfaces != wsjtx_interface_names_) {
         wsjtx_interface_names_ = new_wsjtx_interfaces;
