@@ -2590,6 +2590,10 @@ Varicode::SubmodeType Varicode::intToSubmode(int sm) {
     case Varicode::JS8CallFT2:
         return Varicode::JS8CallFT2;
 #endif
+#ifdef JS8_ENABLE_JTTY
+    case Varicode::JS8CallJTTY:
+        return Varicode::JS8CallJTTY;
+#endif
     };
     throw std::invalid_argument{
         boost::str(boost::format("Unexpected JS8 submode %1%") % sm)};

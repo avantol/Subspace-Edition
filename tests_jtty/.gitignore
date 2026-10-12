@@ -1,0 +1,6 @@
+# Standalone gate binaries built by build.sh; the sources and vectors are tracked.
+jtty_tbcc_test
+jtty_modem_test
+jtty_source_test
+jtty_receiver_test
+jtty_rx_file

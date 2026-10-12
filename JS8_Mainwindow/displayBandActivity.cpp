@@ -116,6 +116,12 @@ void UI_Constructor::displayBandActivity() {
         // Sort!
         auto const sort = getSortByReverse("bandActivity", "offset");
         auto keys = m_bandActivity.keys();
+#ifdef JS8_ENABLE_JTTY
+        // [JTTY] the JTTY map is merged here and nowhere else; a
+        // JTTY-only offset becomes a row of its own.
+        for (int key : m_jttyActivity.keys())
+            if (!m_bandActivity.contains(key)) keys.append(key);
+#endif
 
         // Compute shouldDisplay for every item per offset BEFORE sort, using
         // the same rules the render loop will use. Sort keys then read from
@@ -132,7 +138,12 @@ void UI_Constructor::displayBandActivity() {
         QMap<int, ActivityDetail> lastVisible;
         for (int key : keys) {
             bool isOffsetSelected = (key == selectedOffset);
-            QList<ActivityDetail> items = m_bandActivity[key];
+            // value(), not []: a JTTY-only key must not create an empty
+            // JS8 bucket.
+            QList<ActivityDetail> items = m_bandActivity.value(key);
+#ifdef JS8_ENABLE_JTTY
+            items.append(m_jttyActivity.value(key));
+#endif
 
             // [bandcall] Attribute every frame in bucket order: a frame
             // with a "CALL: " prefix belongs to that call; a
@@ -149,6 +160,15 @@ void UI_Constructor::displayBandActivity() {
                     QString const c = frameFromCall(it.text, it.bits);
                     if (!c.isEmpty())
                         lastCall = c;
+                    // [JTTY] a JTTY message is never attributed to a JS8
+                    // station seen nearby: only to the call the operator
+                    // picked for that offset, else it stays UNKNOWN.
+#ifdef JS8_ENABLE_JTTY
+                    if (it.submode == Varicode::JS8CallJTTY) {
+                        attrib.append(m_jttyRowCall.value(it.offset));
+                        continue;
+                    }
+#endif
                     attrib.append(
                         lastCall.isEmpty()
                             ? mostLikelyCallAtOffset(it.offset, it.submode)
@@ -415,8 +435,11 @@ void UI_Constructor::displayBandActivity() {
             snrItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             ui->tableWidgetRXAll->setItem(row, BASnr, snrItem);
 
+            // [JTTY] a JTTY row shows the whole word, not an initial
             auto name = JS8::Submode::name(submode);
-            auto displayChar = (submode == Varicode::JS8CallFT2)
+            auto displayChar = (submode == Varicode::JS8CallJTTY)
+                ? QStringLiteral("JTTY")
+                : (submode == Varicode::JS8CallFT2)
                 ? QString::fromUtf8("\u26A1")
                 : name.left(1).replace("H", "N");
             auto submodeItem = new QTableWidgetItem(displayChar);
@@ -566,16 +589,21 @@ void UI_Constructor::displayBandActivity() {
                 // merge-on-nearby logic in processDecodeEvent already
                 // separates classes across adjacent offsets; this closes
                 // the gap for exact-offset collisions.
-                QList<ActivityDetail> filteredStandard, filteredSubspace;
+                // [JTTY] a third class, so a JTTY message never merges into
+                // a JS8 row at the same offset.
+                QList<ActivityDetail> filteredStandard, filteredSubspace,
+                    filteredJtty;
                 for (auto const & item : filtered[offset]) {
-                    if (item.submode == Varicode::JS8CallFT2)
+                    if (item.submode == Varicode::JS8CallJTTY)
+                        filteredJtty.append(item);
+                    else if (item.submode == Varicode::JS8CallFT2)
                         filteredSubspace.append(item);
                     else
                         filteredStandard.append(item);
                 }
 
                 for (QList<ActivityDetail> const * itemsPtr :
-                     {&filteredStandard, &filteredSubspace}) {
+                     {&filteredStandard, &filteredSubspace, &filteredJtty}) {
                 QList<ActivityDetail> const & items = *itemsPtr;
                 if (items.length() > 0) {
                     QDateTime timestamp;

@@ -203,7 +203,23 @@ const QRegularExpression message_alphabet{"[^\\x00-\\x1F]*"};
 
 // Magic numbers for file validation
 constexpr quint32 qrg_magic{0xadbccbdb};
+// [JTTY] 104 = the file may carry Modes::JTTY, which a 103 reader would
+// index past its name table; a file without a JTTY entry is still
+// written as 103 so older builds keep reading it.
+#ifdef JS8_ENABLE_JTTY
+constexpr quint32 qrg_version{104}; // M.mm
+constexpr quint32 qrg_version_no_jtty{103};
+quint32 qrg_version_for(FrequencyList_v3::FrequencyItems const &items) {
+    for (auto const &it : items)
+        if (it.mode_ == Modes::JTTY) return qrg_version;
+    return qrg_version_no_jtty;
+}
+#else
 constexpr quint32 qrg_version{103}; // M.mm
+quint32 qrg_version_for(FrequencyList_v3::FrequencyItems const &) {
+    return qrg_version;
+}
+#endif
 
 // Bump this versioned key every time we need to "reset" our working
 // frequencies...
@@ -215,6 +231,10 @@ const char *const v2FrequenciesSettingsKey =
 
 // [TODO #237] per-entry auto-route group, keyed by frequency Hz text
 const char *const autoRouteGroupsSettingsKey = "AutoRouteGroups";
+// [JTTY] frequencies whose mode is JTTY, keyed by frequency in Hz as
+// text, beside the list -- the item stream is frozen (see #237), so the
+// list itself carries them as ALL, which older builds treat as JS8.
+const char *const jttyFrequenciesSettingsKey = "SsJttyFrequencies";
 }// namespace
 
 //
@@ -2440,9 +2460,18 @@ void Configuration::impl::read_settings() {
             // FrequencyList.cpp). Key = frequency in Hz as text.
             auto const groups =
                 settings_->value(autoRouteGroupsSettingsKey).toMap();
-            for (auto &it : items)
+#ifdef JS8_ENABLE_JTTY
+            auto const jtty =
+                settings_->value(jttyFrequenciesSettingsKey).toMap();
+#endif
+            for (auto &it : items) {
                 it.group_ = groups.value(QString::number(it.frequency_))
                                 .toString();
+#ifdef JS8_ENABLE_JTTY
+                if (jtty.value(QString::number(it.frequency_)).toBool())
+                    it.mode_ = Modes::JTTY; // [JTTY] side map, see save
+#endif
+            }
             frequencies_.frequency_list(std::move(items));
         } else {
             frequencies_.reset_to_defaults();
@@ -2762,8 +2791,25 @@ void Configuration::impl::write_settings() {
     settings_->setValue("MessageSubdivisions", message_subdivisions_);
     settings_->setValue("TxQSYAllowed", tx_qsy_allowed_);
     settings_->setValue("Macros", macros_.stringList());
+#ifdef JS8_ENABLE_JTTY
+    {
+        // [JTTY] The item stream is frozen: a JTTY entry is written as
+        // ALL (older builds: JS8) and remembered in the side map.
+        auto items = frequencies_.frequency_list();
+        QVariantMap jtty;
+        for (auto &it : items)
+            if (it.mode_ == Modes::JTTY) {
+                jtty.insert(QString::number(it.frequency_), true);
+                it.mode_ = Modes::ALL;
+            }
+        settings_->setValue(versionedFrequenciesSettingsKey,
+                            QVariant::fromValue(items));
+        settings_->setValue(jttyFrequenciesSettingsKey, jtty);
+    }
+#else
     settings_->setValue(versionedFrequenciesSettingsKey,
                         QVariant::fromValue(frequencies_.frequency_list()));
+#endif
     {
         // [TODO #237] group per entry, beside the list (see load)
         QVariantMap groups;
@@ -4210,12 +4256,12 @@ void Configuration::impl::save_frequencies() {
             selection_model->select(selection_model->selection(),
                                     QItemSelectionModel::SelectCurrent |
                                         QItemSelectionModel::Rows);
-            ods << qrg_magic << qrg_version
-                << next_frequencies_.frequency_list(
-                       selection_model->selectedRows());
+            auto const items = next_frequencies_.frequency_list(
+                selection_model->selectedRows());
+            ods << qrg_magic << qrg_version_for(items) << items;
         } else {
-            ods << qrg_magic << qrg_version
-                << next_frequencies_.frequency_list();
+            auto const &items = next_frequencies_.frequency_list();
+            ods << qrg_magic << qrg_version_for(items) << items;
         }
     }
 }

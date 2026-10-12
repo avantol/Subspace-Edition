@@ -32,7 +32,12 @@ class Varicode {
         JS8CallTurbo = 2,
         JS8CallSlow = 4,
         JS8CallUltra = 8,
-        JS8CallFT2 = 16
+        JS8CallFT2 = 16,
+        // [JTTY] WSJT-X 3.2's keyboard mode as a transmit mode
+        // (ENABLE_JTTY builds only; the value exists everywhere so
+        // settings and the API have one meaning for it). Never written
+        // into SsSubMode: an older build would throw on it.
+        JS8CallJTTY = 32
     };
 
     // frame type transmitted via itype and decoded by the ft8 decoded

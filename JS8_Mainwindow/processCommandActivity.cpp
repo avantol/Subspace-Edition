@@ -61,6 +61,15 @@ void UI_Constructor::processCommandActivity() {
     while (!m_rxCommandQueue.isEmpty()) {
         auto d = m_rxCommandQueue.dequeue();
 
+#ifdef JS8_ENABLE_JTTY
+        // [JTTY] A command that arrived as JTTY text. No ARQ transport
+        // exists on JTTY, so every ARQ path below stands aside:
+        // chunked-DATA detection, ACK/NACK, the QUERY ARQ? reply.
+        bool const jttyOrigin = (d.submode == Varicode::JS8CallJTTY);
+#else
+        bool const jttyOrigin = false;
+#endif
+
         auto selectedCallsign = callsignSelected();
         bool isAllCall = isAllCallIncluded(d.to);
         // @APRSIS is bridging traffic, not user-addressed. Don't
@@ -668,7 +677,7 @@ void UI_Constructor::processCommandActivity() {
                        << "submode=" << d.submode << "textLen=" << text.length()
                        << "text=" << text;
         }
-        if (toMe && m_chunkedArq) {
+        if (toMe && m_chunkedArq && !jttyOrigin) {
             ChunkedArq::ParsedChunk parsed;
             if (ChunkedArq::parseChunkedData(text, parsed)) {
                 // [BUILD 331-arqRxClean] REMOVED auto-enable-on-RX
@@ -758,7 +767,7 @@ void UI_Constructor::processCommandActivity() {
         // EXTRA payload) still flow through the existing handler
         // below; ARQ ACK/NACK carry a non-empty EXTRA with the chunk
         // ID and we route those to the manager for sender FSM update.
-        if (m_chunkedArq && !d.extra.isEmpty()) {
+        if (m_chunkedArq && !d.extra.isEmpty() && !jttyOrigin) {
             bool extraOk = false;
             int const seq = d.extra.toInt(&extraOk);
             if (extraOk) {
@@ -2112,6 +2121,11 @@ void UI_Constructor::processCommandActivity() {
             // forms get the response. Standard menu still sends
             // "QUERY ARQ?" so the existing flow is unchanged.
             else if (cmd == "ARQ?" || cmd == "ARQ") {
+                if (jttyOrigin) {
+                    qWarning() << "[JTTY] QUERY ARQ? from" << d.from
+                               << "not answered: no ARQ transport on JTTY";
+                    continue;
+                }
                 int level = ChunkedArq::ARQ_PROTOCOL_LEVEL;
 #ifdef JS8_ENABLE_FT2
                 // [ssdetect arqcap 2026-09-08] With Subspace RX
@@ -2518,6 +2532,30 @@ void UI_Constructor::processCommandActivity() {
             continue;
         }
 
+#ifdef JS8_ENABLE_JTTY
+        // [JTTY] A query that arrived as JTTY is answered as JTTY -- the
+        // sender's-speed rule -- through the ARQ reply's own stash and
+        // deferred restore (TODO #73 machinery in stopTx). setSubmode
+        // refuses during an active TX; then the reply is dropped, not
+        // sent in a mode the station cannot hear.
+        if (jttyOrigin && m_nSubMode != Varicode::JS8CallJTTY) {
+            bool stashedHere = false;
+            if (m_arqPreSwitchSubmode == -1) {
+                m_arqPreSwitchSubmode = m_nSubMode;
+                stashedHere = true;
+            }
+            setSubmode(Varicode::JS8CallJTTY);
+            if (m_nSubMode != Varicode::JS8CallJTTY) {
+                if (stashedHere) m_arqPreSwitchSubmode = -1;
+                qWarning() << "[JTTY] reply dropped: switch to JTTY refused"
+                              " (TX busy):" << reply;
+                continue;
+            }
+            qWarning() << "[JTTY] caller-speed reply: switched to JTTY for"
+                       << d.from << "restore pending to"
+                       << m_arqPreSwitchSubmode;
+        }
+#endif
         if (m_config.autoreply_confirmation()) {
             confirmThenEnqueueMessage(90, priority, reply, freq, callback,
                                       /*autoReply=*/true);

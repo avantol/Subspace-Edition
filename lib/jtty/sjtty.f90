@@ -1,0 +1,264 @@
+program sjtty
+
+  ! Simulate received data for JTTY, a mode operationally similar to RTTY
+  ! but providing much better performance and reliability.
+
+  ! Messages are source-encoded into 34-bit blocks. A 12-bit CRC is
+  ! added to create a 46 bit payload, which is then FEC-encoded using
+  ! a tail-biting rate-1/2 convolutional code (K=10) to create 92-bit
+  ! (46-symbol) codewords.
+
+  ! Modulation is 4FSK at 12000/NSPS = 31.25 baud. Each transmitted frame
+  ! consists of 13 sync symbols followed by 46 codeword symbols.
+
+  use wavhdr
+  use jtty_mod                      ! This module provides NSPS
+  use jtty_fec
+
+  parameter (MAX_TONES=59*16)       !Max number of channel symbols
+  character*12 arg                  !Command line argument
+  character*2 arg4                  !The 4th command-line argument
+  character*80 umsg                 !User-formatted message
+  character(len=80) :: profile_option
+  integer :: exchange_profile,arg_offset
+  integer :: ihr,imin,isec,ihhmmss     !For clock-like (not raw sequential) output filenames
+  character*40 fname                !Output file name
+  character*34 c32(16)
+  complex, allocatable :: cwave(:)  !Complex generated waveform (12000 Hz)
+  complex, allocatable :: c0(:)     !With propagation degradation
+  complex, allocatable :: c(:)      !With propagation degradation
+  real, allocatable :: wave(:)      !Real generated waveform (12000 Hz)
+  type(hdr) h                       !Header for .wav file
+  integer itone(MAX_TONES)          !Array of tone frequencies for this message
+  integer*2, allocatable :: iwave(:) !Data written to the *.wav file
+  integer payload(PAYLOAD_BITS)
+  integer tone_symbols(TOTAL_K)
+  logical itu_model                 !True if fdop, delay are from an ITU model
+
+  nargs=iargc()
+  exchange_profile=JTTY_EXCHANGE_UNKNOWN
+  arg_offset=0
+  if(nargs.gt.0) then
+     call getarg(1,profile_option)
+     if(index(profile_option,'--exchange-profile=').eq.1) then
+        select case(trim(profile_option(20:)))
+        case('unknown'); exchange_profile=JTTY_EXCHANGE_UNKNOWN
+        case('field-day'); exchange_profile=JTTY_EXCHANGE_FIELD_DAY
+        case('rtty-roundup'); exchange_profile=JTTY_EXCHANGE_RTTY
+        case default
+           print*,'Invalid exchange profile: use unknown, field-day, or rtty-roundup'
+           stop 1
+        end select
+        arg_offset=1
+        nargs=nargs-1
+     endif
+  endif
+  if(nargs.eq.1) then
+    call getarg(1+arg_offset,umsg)
+    call pack_jtty(umsg,c32,nframes,exchange_profile)
+    if(nframes.lt.0) then
+       print*,'Message exceeds JTTY encoding limits after exchange normalization'
+       stop 1
+    endif
+    call unpack_jtty(c32,nframes,umsg)
+    do while (index(umsg,'~') .ne. 0) 
+      i1=index(umsg,'~')
+      umsg(i1:i1)=' '
+    enddo
+    write(*,'(a,a)') "Message after pack/unpack : ",trim(umsg)
+    nsps=384
+    if(nframes.eq.1) then
+       write(*,'(i4,a,f5.2,a)') nframes," frame, Transmission length ", &
+          59*nframes*nsps/12000.0," seconds"
+    else
+       write(*,'(i4,a,f5.2,a)') nframes," frames, Transmission length ", &
+          59*nframes*nsps/12000.0," seconds"
+    endif
+    go to 999
+  else if(nargs.ne.8) then
+     print*,'Usage:     sjtty       message'
+     print*,'Example:   sjtty    "CQ DX KA1ABC"' 
+     print*,'or'
+     print*,'Usage:     sjtty       message     f0   DT fdop del nsps  nfiles SNR'
+     print*,'Example:   sjtty    "CQ K1ABC CQ" 1500 0.0  0.5  1   384    10   -10'
+     print*,'Optional first argument: --exchange-profile=unknown|field-day|rtty-roundup'
+     print*,'ITU propagation models: set fdop to AW LQ LM LD MQ MM MD HQ HM HD'
+     print*,'nsps: 240, 320, 384, or 480'
+     go to 999
+  endif
+
+  call getarg(1+arg_offset,umsg)          !User message
+  call getarg(2+arg_offset,arg)
+  read(arg,*) f0                         !Frequency of lowest tone
+  call getarg(3+arg_offset,arg)
+  read(arg,*) xdt                        !Time offset (positive only)
+  call getarg(4+arg_offset,arg)
+  itu_model=.true.
+  arg4=arg(1:2)
+  if(arg(1:2).eq.'LQ') then              !ITU params for Low Latitude Quiet
+     fspread=0.5
+     delay=0.5
+  else if(arg(1:2).eq.'LM') then         !Low Latitude Moderate
+     fspread=1.5
+     delay=2.0
+  else if(arg(1:2).eq.'LD') then         !Low Latitude Disturbed
+     fspread=10.0
+     delay=6.0
+  else if(arg(1:2).eq.'MQ') then         !Mid Latitude ... etc.
+     fspread=0.1
+     delay=0.5
+  else if(arg(1:2).eq.'MM') then
+     fspread=0.5
+     delay=1.0
+  else if(arg(1:2).eq.'MD') then
+     fspread=1.0
+     delay=2.0
+  else if(arg(1:2).eq.'HQ') then
+     fspread=0.5
+     delay=1.0
+  else if(arg(1:2).eq.'HM') then
+     fspread=10.0
+     delay=3.0
+  else if(arg(1:2).eq.'HD') then
+     fspread=30.0
+     delay=7.0
+  else if(arg(1:2).eq.'AW') then
+     fspread=0.0
+     delay=0.0
+  else
+     itu_model=.false.
+     read(arg,*) fspread                 !Watterson frequency spread (Hz)
+     call getarg(5+arg_offset,arg)
+     read(arg,*) delay                   !Watterson delay (ms)
+  endif
+  call getarg(6+arg_offset,arg)
+  read(arg,*) nsps                     !Number of files
+  if(nsps.ne.240 .and. nsps.ne.320 .and. nsps.ne.384 .and. nsps.ne.480) then
+     print*,'nsps: 240, 320, 384, or 480'
+     stop
+  endif
+  call getarg(7+arg_offset,arg)
+  read(arg,*) nfiles                     !Number of files
+  call getarg(8+arg_offset,arg)
+  read(arg,*) snrdb                      !SNR in 2500 Hz bandwidth
+
+  fsample=12000.0
+  dt=1.0/fsample
+  twopi=8.0*atan(1.0)
+  bandwidth_ratio=2500.0/(fsample/2.0)
+  sig=sqrt(2*bandwidth_ratio) * 10.0**(0.05*snrdb)
+  if(snrdb.gt.90.0) sig=1.0
+
+  bt=2.0                           !Default bt=2 (smaller ==> more smoothing)
+  baud=fsample/nsps                !Symbol rate
+  bw=4.0*baud                      !Signal bandwidth
+  hmod=1.0                         !Modulation index
+
+  call pack_jtty(umsg,c32,nframes,exchange_profile)
+  if(nframes.lt.0) then
+     print*,'Message exceeds JTTY encoding limits after exchange normalization'
+     stop 1
+  endif
+  nsym=0
+  do i=1,nframes
+    read(c32(i),'(34i1)') payload
+    call tbcc_encode(payload,tone_symbols,JTTY_TBCC_PROFILE_1167_1545_80F)
+    ib=(i-1)*59+1   ! 59 tones per frame
+    itone(ib:ib+12)=is13
+    itone(ib+13:ib+58)=tone_symbols
+    nsym=nsym+59
+  enddo
+
+  txt=nsym*nsps*dt                            !Transmission length (s)
+  numsg=len(trim(umsg))
+  write(*,1012) trim(umsg)
+1012 format('User message:  ',a)
+  write(*,1013) nsps,txt,nsym,itone(1:nsym)
+1013 format('nsps:',i5,' samples/symbol  ','Transmission length:',f5.1, &
+     ' s,',i5,' channel symbols:'/  &
+          (30i2))
+
+  nwave=nsps*nsym                  !Length of i*2 data written to *.wav file
+  npts=2**(int(log(float(nwave)+xdt/dt)/log(2.0) + 0.9999))  !Round up to integer power of 2
+  iz=nint(xdt/dt) + nwave + nsps*59              !Add one frame of noise at end
+  nbuf=max(nwave,npts,iz)
+
+  allocate(cwave(0:nwave-1))
+  allocate(c0(0:nbuf-1))
+  allocate(c(0:nbuf-1))
+  allocate(wave(1:nbuf))
+  allocate(iwave(1:nbuf))
+
+  icmplx=1
+  call gen_jttywave(itone,nsym,nsps,bt,fsample,f0,cwave,wave,icmplx,nwave)
+
+
+  write(*,1000) f0,xdt,txt,snrdb,bw
+1000 format('f0:',f7.1,'   DT:',f6.2,'   TxT:',f6.1,'   SNR:',f6.1,'  BW:',f6.1)
+  cps=baud/7.0
+  cps_effective=numsg/txt
+  write(*,1001) cps,cps_effective
+1001 format('Raw character rate:',f5.1,' c/s   Effective character rate:',f5.1,' c/s')
+  write(*,1002) fspread,delay
+1002 format('Fspread:',f5.1,' Hz   Delay:',f5.1,' ms')
+  if(itu_model) write(*,1003) arg4
+1003 format('ITU propagation model: ',a2)
+  write(*,*)  
+
+!  call sgran()
+
+  do ifile=1,nfiles
+     c0=0.
+     c0(0:nwave-1)=cwave(0:nwave-1)
+     c0=cshift(c0,-nint(xdt/dt))
+     if(fspread.ne.0.0 .or. delay.ne.0.0) then
+        ! Apply channel propagation
+        call watterson(c0,npts,nwave,fsample,delay,fspread)
+     endif
+     c=0.
+     c=sig*c0      !Scale to specified SNR
+     wave=0.
+     wave=imag(c)    !Signal with SNR and prop degradation
+
+     if(snrdb.lt.90) then
+        do i=1,iz                    !Add gaussian noise for specified SNR
+           xnoise=gran()
+           wave(i)=wave(i) + xnoise
+        enddo
+     endif
+
+     gain=100.0
+     if(snrdb.lt.90.0) then
+       wave(1:iz)=gain*wave(1:iz)
+     else
+       datpk=maxval(abs(wave(1:iz)))
+       fac=32766.9/datpk
+       wave(1:iz)=fac*wave(1:iz)
+     endif
+
+     iwave(1:iz)=nint(wave(1:iz))
+!     call jtty_spec(iwave,iz)
+     h=default_header(12000,iz)
+     ! Format the file counter as elapsed HHMMSS, not a raw sequential integer, so WSJT-X's disk-playback time label parses it (file 60 -> "_000100", not the invalid "_000060").
+     ihr=mod(ifile/3600,24)
+     imin=mod(ifile,3600)/60
+     isec=mod(ifile,60)
+     ihhmmss=10000*ihr + 100*imin + isec
+     write(fname,1102) ihhmmss
+1102 format('000000_',i6.6,'.wav')
+     open(10,file=fname,status='replace',access='stream')
+     write(10) h,iwave(1:iz)                !Save to *.wav file
+     close(10)
+     write(*,1110) ifile,xdt,f0,snrdb,fname
+1110 format(i4,f7.2,f8.2,f7.1,2x,a17)
+  enddo
+
+999 if (allocated(cwave)) deallocate(cwave)
+    if (allocated(c0)) deallocate(c0)
+    if (allocated(c)) deallocate(c)
+    if (allocated(wave)) deallocate(wave)
+    if (allocated(iwave)) deallocate(iwave)
+
+end program sjtty
+
+!include 'jtty_spec.f90'

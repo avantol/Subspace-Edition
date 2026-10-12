@@ -937,6 +937,10 @@ if(type == "STATION.SET_SPOT") {
                 ui->actionModeJS8Turbo->setChecked(true);
             else if (speed == Varicode::JS8CallSlow)
                 ui->actionModeJS8Slow->setChecked(true);
+#ifdef JS8_ENABLE_JTTY
+            else if (speed == Varicode::JS8CallJTTY)
+                ui->actionModeJTTY->setChecked(true);
+#endif
             else if (speed == Varicode::JS8CallUltra
                   || speed == Varicode::JS8CallFT2) {
                 ui->actionModeFT2->setChecked(true);

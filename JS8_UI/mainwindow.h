@@ -42,6 +42,11 @@
 #include "JS8_Mode/Decoder.h"
 #include "JS8_Mode/Detector.h"
 #include "JS8_Mode/JS8.h"
+#ifdef JS8_ENABLE_JTTY
+#include "JS8_Mode/jtty_receiver.h"
+#include "JS8_Mode/jtty_modem.h"
+#include "JS8_Mode/jtty_source.h"
+#endif
 #include "JS8_Mode/JS8Submode.h"
 #include "JS8_Mode/Modulator.h"
 #include "JS8_Network/NetworkAccessManager.h"
@@ -423,6 +428,31 @@ class UI_Constructor : public QMainWindow {
     QPair<QString, int> popMessageFrame();
     void tryNotify(const QString &key, int submode = -1);
     void processDecodeEvent(JS8::Event::Variant const &);
+#ifdef JS8_ENABLE_JTTY
+    void jttyTryDecode();
+    void jttyDecodeDone();
+    void processJttyUpdate(JTTY::MessageUpdate const &update, std::int64_t dial);
+    void writeJttyTxt(QStringView line);
+    // The JTTY transmit queue for an outgoing text: one entry per JTTY
+    // message (up to 80 characters, 1-16 frames, one waveform, one PTT
+    // cycle), split at word boundaries; the JS8 directed prefix
+    // "MYCALL: SELECTED " when a callsign is selected.
+    QList<QPair<QString, int>> buildJttyFrames(QString const &text);
+    // A complete JTTY message in the JS8 directed form ("K9AVT: WM8Q
+    // SNR?") becomes a CommandDetail on m_rxCommandQueue, exactly as a
+    // decoded JS8 directed frame does; processCommandActivity answers.
+    void queueJttyCommand(QString const &text, int snr, int offset,
+                          std::int64_t dial, QDateTime const &now);
+    // [operator 2026-10-12] On a JTTY frequency the Reply/SNR/Info/
+    // Status buttons APPEND their payload (space-separated) when the
+    // box already starts with "<CALL> DE <MYCALL>", else REPLACE the
+    // box with the bare payload (the operator may skip the address).
+    // Returns false off a JTTY frequency so the JS8 path runs.
+    bool jttyPlaceMacro(QString const &payload);
+    // Newest JTTY row naming the call (JTTY stations are not in the
+    // call list until step 3). True and *snr when found.
+    bool jttySnrFor(QString const &call, int *snr) const;
+#endif
 
     void updateCQButtonDisplay();
     void updateHBButtonDisplay();
@@ -594,6 +624,7 @@ class UI_Constructor : public QMainWindow {
     void on_actionModeJS8Slow_triggered();
     void on_actionModeJS8Ultra_triggered();
     void on_actionModeFT2_triggered();
+    void on_actionModeJTTY_triggered();
     void on_actionModeSubspaceDecode_toggled(bool checked); // [ssdetect]
     void on_actionHeartbeatAcknowledgements_toggled(bool checked);
     void on_actionModeMultiDecoder_toggled(bool checked);
@@ -832,6 +863,25 @@ class UI_Constructor : public QMainWindow {
     QByteArray wisdomFileName() const;
 
     void writeAllTxt(QStringView message);
+    // The transmit-log line for the frame keying up now: ALL.TXT, or
+    // JTTY.TXT when a JTTY message owns the cycle (ALL.TXT is never
+    // touched by JTTY).
+    void logTransmitEntry();
+    // [JTTY] The operating dial is a frequency the operator listed as
+    // JTTY: the one authority for "we are a JTTY station here" (JTTY
+    // forced, other speeds disabled, no HB, no auto-replies). False in a
+    // build without JTTY.
+    bool onJttyFrequency() const;
+    // [JTTY] True when this TX cycle plays a pre-generated waveform --
+    // a Subspace frame or a JTTY message: un-slotted key-up, stop on
+    // waveform end, duration-scaled safety cap, text kept for re-send.
+    bool waveformTx() const {
+        return m_nSubMode == Varicode::JS8CallFT2
+#ifdef JS8_ENABLE_JTTY
+               || m_nSubMode == Varicode::JS8CallJTTY
+#endif
+            ;
+    }
     void writeMsgTxt(QStringView message, int snr, int offset);
 
     void currentTextChanged();
@@ -2003,6 +2053,42 @@ class UI_Constructor : public QMainWindow {
 
 #ifdef JS8_ENABLE_FT2
     // L2 async decode infrastructure
+#ifdef JS8_ENABLE_JTTY
+    // [JTTY] Experimental bridge receiver (ENABLE_JTTY). Runs off the
+    // same L2 ring as the Subspace async decoder, on its own worker, and
+    // delivers through processJttyUpdate -- never as a Decoded event,
+    // because a JTTY message is not a submode and must never reach the
+    // speed table, the dedup rings or ARQ. A band-activity row tags it
+    // with a NEGATIVE submode, which no speed consumer accepts.
+    std::unique_ptr<JTTY::Receiver> m_jttyReceiver;
+    QTimer m_jttyTimer;                           // one tick per quarter frame
+    QFutureWatcher<void> m_jttyWatcher;
+    bool m_jttyDecoding = false;
+    bool m_jttySessionOpen = false;
+    std::int64_t m_jttySession = 0;               // touched only while not decoding, or by the worker
+    QDate m_lastJttyTxtHeaderDate;
+    // [JTTY] received JTTY messages by offset. Kept OUT of m_bandActivity:
+    // that map's readers (idle activity, message buffers, dedup, the API)
+    // all assume JS8 rows, and a JTTY message is not a submode. Only
+    // displayBandActivity merges this map in, at render time.
+    BandActivity m_jttyActivity;
+    // Per-entry cache of the JTTY rows, the counterpart of
+    // m_bandActivityBandCache (cacheActivity / restoreActivity).
+    QMap<QString, BandActivity> m_jttyActivityBandCache;
+    // [operator 2026-10-12] The callsign a JTTY row (by offset) was
+    // assigned by the operator's pick; the renderer attributes the row
+    // to it. Cached per entry like the rows.
+    QMap<int, QString> m_jttyRowCall;
+    QMap<QString, QMap<int, QString>> m_jttyRowCallBandCache;
+    // Callsign-shaped words of a JTTY row, those after "DE" first: one
+    // is returned directly, several are offered in a popup at the
+    // cursor; empty when none or the popup was dismissed.
+    QString pickJttyCallsign(QString const &rowText);
+    // [JTTY] The speed the operator had before a JTTY frequency forced
+    // JTTY; -1 = not forced. Restored by the entry transition that
+    // leaves the frequency; persisted in place of JTTY while forced.
+    int m_jttyFreqPrevSubmode = -1;
+#endif
     QTimer m_l2DecodeTimer;                     // fires every 750ms
     QFutureWatcher<void> m_l2DecodeWatcher;     // monitors async decode
     std::int16_t m_l2RingBuf[FT2_L2_RINGSIZE] = {};  // 7.5s ring buffer (90000 samples, 2 periods)

@@ -2334,6 +2334,7 @@ background-color: #22ff22;
     <addaction name="actionModeJS8Fast"/>
     <addaction name="actionModeJS8Turbo"/>
     <addaction name="actionModeFT2"/>
+    <addaction name="actionModeJTTY"/>
     <addaction name="separator"/>
     <addaction name="actionModeMultiDecoder"/>
     <addaction name="actionModeSubspaceDecode"/>
@@ -2670,6 +2671,17 @@ background-color: #22ff22;
    </property>
    <property name="text">
     <string>JS8 (&amp;Subspace, 3.75 sec, 150 Hz, ~64 WPM)</string>
+   </property>
+  </action>
+  <action name="actionModeJTTY">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>&amp;JTTY (WSJT-X keyboard mode, 1.9 sec/frame, 125 Hz, experimental)</string>
+   </property>
+   <property name="toolTip">
+    <string>Transmit as JTTY, the keyboard mode shipped by the WSJT-X project: legible text only, up to 80 characters per message, un-slotted. Decoding JTTY is separate: Settings, Reporting, Decode JTTY.</string>
    </property>
   </action>
   <action name="actionModeSubspaceDecode">

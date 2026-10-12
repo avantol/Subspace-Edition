@@ -273,6 +273,10 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
             .arg(call)
             .trimmed());
     alertAction->setDisabled(isAllCall);
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-12] no relay on JTTY "for now"
+    if (m_nSubMode == Varicode::JS8CallJTTY) alertAction->setVisible(false);
+#endif
     connect(alertAction, &QAction::triggered, this, [this]() {
         QString selectedCall = callsignSelected();
         if (selectedCall.isEmpty()) {

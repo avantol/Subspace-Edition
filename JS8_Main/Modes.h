@@ -38,6 +38,11 @@ class Modes final : public QAbstractListModel {
     enum Mode {
         ALL, // matches with all modes
         JS8,
+        // [JTTY] A frequency where we behave as a JTTY station (WSJT-X
+        // convention, JTTY transmit mode forced). Never written into the
+        // frozen frequency-item stream: saved as ALL plus a side map, see
+        // Configuration.cpp. ALL behaves as JS8.
+        JTTY,
         MODES_END_SENTINAL_AND_COUNT // this must be last
     };
     Q_ENUM(Mode)
@@ -50,9 +55,12 @@ class Modes final : public QAbstractListModel {
 
     // Implement the QAbstractListModel interface
     int rowCount(QModelIndex const &parent = QModelIndex{}) const override {
-        return parent.isValid()
-                   ? 0
-                   : MODES_END_SENTINAL_AND_COUNT; // Number of modes in Mode
+        if (parent.isValid()) return 0;
+#ifdef JS8_ENABLE_JTTY
+        return MODES_END_SENTINAL_AND_COUNT; // Number of modes in Mode
+#else
+        return MODES_END_SENTINAL_AND_COUNT - 1; // JTTY (last) not offered
+#endif
                                                    // enumeration class
     }
     QVariant data(QModelIndex const &,

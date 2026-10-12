@@ -3,6 +3,7 @@
 
 #include "JS8_Audio/AudioDevice.h"
 
+#include <QDebug>
 #include <QPointer>
 #include <QVector>
 #include <atomic>
@@ -149,6 +150,20 @@ class Modulator final : public AudioDevice {
     // after the bolt reverts to normal FT2 modulation. Caller must
     // ensure Modulator is Idle when calling (no mid-stream swap).
     void setFullFrameBoltWaveform(QVector<float> waveform) {
+        // [JTTY 499.5] Enforced here, not trusted to the caller: the
+        // tone-generation block in prepareSending runs TWICE per key-up
+        // (auto_tx_mode's direct call, then guiUpdate's, before m_iptt0
+        // catches up), so a second staging arrives ~70 ms after the
+        // first. If start() has already consumed the first, m_ft2Wave
+        // points INTO m_boltWaveform and replacing it frees the buffer
+        // the audio thread is reading. Before start() the replacement
+        // is harmless (same content), so only a playing state refuses.
+        State const s = m_state.load();
+        if (s != State::Idle && s != State::KeepAlive) {
+            qWarning() << "[FT2-TX] staging refused: waveform already"
+                          " playing (" << waveform.size() << "samples)";
+            return;
+        }
         m_boltWaveform = std::move(waveform);
         m_useFullFrameBolt.store(!m_boltWaveform.isEmpty());
     }

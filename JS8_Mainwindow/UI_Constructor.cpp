@@ -1271,6 +1271,15 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // Timer is watchdog only (2s), kicks off decode if nothing is running.
     connect(&m_l2DecodeWatcher, &QFutureWatcher<void>::finished,
             this, &UI_Constructor::l2DecodeDone);
+#ifdef JS8_ENABLE_JTTY
+    // [JTTY] experimental bridge receiver: one tick per quarter frame
+    // (472 ms at nsps 384); the setting is read at every tick, so turning
+    // it off ends the session and turning it on starts a new one.
+    connect(&m_jttyWatcher, &QFutureWatcher<void>::finished,
+            this, &UI_Constructor::jttyDecodeDone);
+    connect(&m_jttyTimer, &QTimer::timeout, this, &UI_Constructor::jttyTryDecode);
+    m_jttyTimer.start(500);
+#endif
     connect(&m_l2DecodeTimer, &QTimer::timeout, this, [this]() {
         // [TODO #113/#120 2026-07-24 l2watch] This timer was called a
         // watchdog but only re-invoked the SAME gated function, so a
@@ -1377,6 +1386,11 @@ UI_Constructor::UI_Constructor(QString const &program_info,
 #ifdef JS8_ENABLE_FT2
     ui->actionModeFT2->setActionGroup(modeActionGroup);
 #endif
+#ifdef JS8_ENABLE_JTTY
+    ui->actionModeJTTY->setActionGroup(modeActionGroup);
+#else
+    ui->actionModeJTTY->setVisible(false);
+#endif
 
     ui->modeButton->installEventFilter(new EventFilter::MouseButtonPress(
         [this](QMouseEvent *event) {
@@ -1441,7 +1455,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
 
     ui->textEditRX->viewport()->installEventFilter(
         new EventFilter::MouseButtonDblClick(
-            [this](QMouseEvent *) {
+            [this](QMouseEvent *event) {
                 // Double-click in conversation history: parse callsign for reply
                 auto cursor = ui->textEditRX->textCursor();
                 auto block = cursor.block();
@@ -1511,6 +1525,33 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     }
                 }
 
+#ifdef JS8_ENABLE_JTTY
+                // [JTTY, operator 2026-10-12] A JTTY line names its
+                // sender only when the station used our form ("WM8Q:
+                // K9AVT ..."), which the scan above already honours.
+                // Only when that found NOTHING: the word under the
+                // double-click, as WSJT-X selects any word. Same
+                // callsign authority; the word is widened over '/' so
+                // K9CYT/8 and WM8Q/P stay whole.
+                if (callsign.isEmpty() &&
+                    lineText.trimmed().startsWith(QStringLiteral("J "))) {
+                    auto const wc = ui->textEditRX->cursorForPosition(event->pos());
+                    int const pos = wc.positionInBlock();
+                    auto const isCallChar = [](QChar c) {
+                        return c.isLetterOrNumber() || c == QLatin1Char('/');
+                    };
+                    int a = pos, b = pos;
+                    while (a > 0 && isCallChar(lineText[a - 1])) --a;
+                    while (b < lineText.length() && isCallChar(lineText[b])) ++b;
+                    QString const word = lineText.mid(a, b - a).trimmed();
+                    if (word.length() >= 3 && word.length() <= 15 &&
+                        Varicode::isValidCallsign(word, nullptr)) {
+                        callsign = word;
+                        qWarning() << "[UI] dblclick center: JTTY word under"
+                                      " cursor selected:" << word;
+                    }
+                }
+#endif
                 qWarning() << "[UI] dblclick center: lineText=" << lineText.left(60)
                            << "callsign=" << callsign
                            << "searchFrom=" << searchFrom
@@ -1772,6 +1813,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         int selectedOffset = offsetItem->data(Qt::UserRole).toInt();
 
         m_bandActivity.remove(selectedOffset);
+#ifdef JS8_ENABLE_JTTY
+        m_jttyActivity.remove(selectedOffset);
+#endif
         displayActivity(true);
     });
 

@@ -390,6 +390,29 @@ if(ENABLE_FT2)
 endif()
 
 #------------------------------------------------------------------------------#
+# JTTY (WSJT-X 3.2 keyboard mode) — C++ port of lib/jtty, experimental.
+# OFF by default: no sources, no definitions, no change to the build.
+# The Fortran reference stays under lib/jtty, never compiled.
+#------------------------------------------------------------------------------#
+
+option(ENABLE_JTTY "Enable JTTY receive/transmit support (C++ port, experimental)" OFF)
+
+if(ENABLE_JTTY AND NOT ENABLE_FT2)
+  message(FATAL_ERROR "ENABLE_JTTY requires ENABLE_FT2: the JTTY receiver reads the Subspace L2 audio ring")
+endif()
+
+if(ENABLE_JTTY)
+  target_sources(${TARGET} PRIVATE
+    JS8_Mode/jtty_modem.cpp
+    JS8_Mode/jtty_receiver.cpp
+    JS8_Mode/jtty_source.cpp
+    JS8_Mode/jtty_tbcc.cpp
+  )
+  target_compile_definitions(${TARGET} PRIVATE JS8_ENABLE_JTTY=1)
+  message(STATUS "JTTY support enabled (C++ port, experimental)")
+endif()
+
+#------------------------------------------------------------------------------#
 # Resources for country data and eclipse dates, used by the log book and the
 # PSK reporter, respectively.
 #------------------------------------------------------------------------------#

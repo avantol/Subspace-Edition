@@ -58,7 +58,14 @@ void Modulator::start(double const frequency, int const submode,
     m_warmChannel = channel;
     m_audioFrequency = frequency;
 #ifdef JS8_ENABLE_FT2
-    if (submode == 16 /* Varicode::JS8CallFT2 */ && !m_tuning) {
+    // [JTTY] A staged full-frame waveform (setFullFrameBoltWaveform)
+    // plays in waveform mode whatever speed is selected: a JTTY
+    // message keys up with Normal selected. The override block below
+    // then points m_ft2Wave at it exactly as for the bolt.
+    bool const stagedWaveform =
+        m_useFullFrameBolt.load() && !m_boltWaveform.isEmpty();
+    if ((submode == 16 /* Varicode::JS8CallFT2 */ || stagedWaveform) &&
+        !m_tuning) {
         m_ft2Mode = true;
         m_ft2Wave = ft2_txwave;
         m_ft2WaveLen = ft2_txwave_len;
@@ -75,6 +82,20 @@ void Modulator::start(double const frequency, int const submode,
 #endif
     m_isym0 = std::numeric_limits<unsigned>::max();
     m_amp = std::numeric_limits<qint16>::max();
+#ifdef JS8_ENABLE_JTTY
+    // [JTTY] Backstop: a JTTY cycle with nothing staged must never fall
+    // into the JS8 tone branch (stale itone[] at JTTY symbol timing).
+    // Play silence and report the waveform done at once.
+    if (submode == 32 /* Varicode::JS8CallJTTY */ && !m_tuning &&
+        !(m_ft2Mode && m_ft2Wave && m_ft2WaveLen > 0)) {
+        qWarning() << "[JTTY-TX] Modulator::start: no waveform staged;"
+                      " transmitting silence, cycle ends immediately";
+        m_ft2Mode = true;
+        m_ft2Wave = nullptr;
+        m_ft2WaveLen = 0;
+        m_amp = 0.0;
+    }
+#endif
     m_audioFrequency0 = 0.0;
     m_phi = 0.0;
     m_silentFrames = 0;

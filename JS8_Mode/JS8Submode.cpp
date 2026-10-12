@@ -161,6 +161,25 @@ constexpr Data Subspace = {"SUBSPACE",
                            4};  // 4-GFSK (4 tones, not JS8's 8)
 #endif
 
+#ifdef JS8_ENABLE_JTTY
+// [JTTY] Transmit-mode row. Un-slotted like Subspace: one frame is 59
+// symbols of 384 samples at 12 kHz = 1.888 s; the period is that frame
+// time, so the slot arithmetic that still runs (guiUpdate, ALL.TXT time
+// rounding, dupe aging) has a true number. Costas and the thresholds are
+// never consulted for JTTY audio -- its receiver is JTTY::Receiver, fed
+// from the Subspace ring -- but rxThreshold (32 Hz) is what the
+// band-activity attribution reads. 4 tones * 31.25 Hz = 125 Hz.
+constexpr Data Jtty = {"JTTY",
+                       384,
+                       0,
+                       1888,
+                       Costas::Type::MODIFIED,
+                       -20,
+                       32,
+                       59,
+                       4};
+#endif
+
 // Given a submode, return data for it, or, if we don't have any idea
 // what the caller is talking about, throw.
 //
@@ -189,6 +208,10 @@ constexpr Data const &data(int const submode) {
 #ifdef JS8_ENABLE_FT2
     case Varicode::JS8CallFT2:
         return Subspace;
+#endif
+#ifdef JS8_ENABLE_JTTY
+    case Varicode::JS8CallJTTY:
+        return Jtty;
 #endif
     default: {
         throw error{QObject::tr("Invalid JS8 submode %1").arg(submode)};
@@ -255,6 +278,7 @@ QString name(int const submode) { return QObject::tr(data(submode).name()); }
 QString indicator(int const submode) {
     switch (submode) {
     case Varicode::JS8CallFT2:    return QString::fromUtf8("\xe2\x9a\xa1");
+    case Varicode::JS8CallJTTY:   return QStringLiteral("J");
     case Varicode::JS8CallNormal: return QStringLiteral("N");
     case Varicode::JS8CallFast:   return QStringLiteral("F");
     case Varicode::JS8CallTurbo:  return QStringLiteral("T");
