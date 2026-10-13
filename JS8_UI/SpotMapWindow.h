@@ -314,11 +314,17 @@ class SpotMapWindow final : public QWidget {
                           QString const &source = QString{},
                           qint64 hearerRfHz = 0,
                           qint64 edgeHz = 0,
-                          QString const &edgeSource = QString{});
+                          QString const &edgeSource = QString{},
+                          QString const &mode = QStringLiteral("JS8"));
 
   public slots:
     void setBand(QString const &band);
     void setStation(QString const &callsign, QString const &grid);
+    // [JTTY, operator 2026-10-12] The mode context the map draws:
+    // "JTTY" in JTTY mode, "JS8" otherwise (a JS8+JTTY frequency is
+    // JS8 until a JTTY station is selected). Pushed by the main
+    // window's one mode machine.
+    void setModeContext(QString const &mode);
     // [BUILD 340] Dial frequency (Hz) — lets hover show each spot's
     // AUDIO offset (spot RF f − dial) and gates double-click QSY.
     void setDialFrequency(qint64 hz);
@@ -512,6 +518,7 @@ class SpotMapWindow final : public QWidget {
   private:
 
     QString m_currentBand;
+    QString m_modeContext = QStringLiteral("JS8"); // [JTTY] see setModeContext
     QString m_myCall;
     QString m_myGrid;
     QString m_stateText;
@@ -704,6 +711,14 @@ class SpotMapWindow final : public QWidget {
         // stations passed there (field 2026-09-21: 61 lines with the
         // PSKR toggle off, 38 with it on, all 7.115 lines).
         qint64 hz = 0;
+        // [JTTY, operator 2026-10-12] The MODE the observation was
+        // made in ("JS8" | "JTTY"), from the PSK Reporter topic level
+        // for a spot; on-air reports are JS8 until JTTY stations enter
+        // the call list. The paint draws the edges of the current
+        // mode context only (m_modeContext); routing and hearing views
+        // are JS8-only, since a JTTY station is never a relay. Latest
+        // report wins, like every other field.
+        QString mode = QStringLiteral("JS8");
     };
     struct HearingEntry {
         QDateTime lastSeen;   // presence freshness (HBs, any frame)

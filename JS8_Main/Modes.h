@@ -43,6 +43,12 @@ class Modes final : public QAbstractListModel {
         // frozen frequency-item stream: saved as ALL plus a side map, see
         // Configuration.cpp. ALL behaves as JS8.
         JTTY,
+        // [JTTY, operator 2026-10-12] A frequency where BOTH modes are
+        // the operator's choice from the Mode menu (WSJT-X 3.3 lists
+        // 7.078, the JS8 40 m frequency, as a JTTY dial). A JS8 or ALL
+        // entry forces JS8 mode, a JTTY entry forces JTTY mode. Saved
+        // as JS8 plus a side map, see Configuration.cpp.
+        JS8_JTTY,
         MODES_END_SENTINAL_AND_COUNT // this must be last
     };
     Q_ENUM(Mode)
@@ -59,7 +65,7 @@ class Modes final : public QAbstractListModel {
 #ifdef JS8_ENABLE_JTTY
         return MODES_END_SENTINAL_AND_COUNT; // Number of modes in Mode
 #else
-        return MODES_END_SENTINAL_AND_COUNT - 1; // JTTY (last) not offered
+        return MODES_END_SENTINAL_AND_COUNT - 2; // JTTY kinds (last two) not offered
 #endif
                                                    // enumeration class
     }

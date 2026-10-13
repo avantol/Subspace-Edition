@@ -70,6 +70,14 @@ class Receiver {
 
     bool running() const;
 
+    // Deviation from the reference, off by default (the gate test runs the
+    // reference's layout): the reference searches channel 0 = f0 +- ftol
+    // with the loose gate plus TWO fixed wide channels (1350 and 1650 Hz,
+    // +-150) with the strict gate. With wide coverage on, the wide
+    // channels instead tile nfa..nfb in 300 Hz windows -- the same strict
+    // gate everywhere the reference searches wide, no blind spots.
+    void setWideCoverage(bool on);
+
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

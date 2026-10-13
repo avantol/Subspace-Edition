@@ -275,6 +275,8 @@ struct Receiver::Impl {
     int nfa = 0, nfb = 0;
     float f0 = 0.0f, ftol = 0.0f, smin = 0.0f;
     int ichan = 0, ipass = 0, ja = 0, jb = 0;
+    bool coverBand = false; // setWideCoverage: tile nfa..nfb instead of 1350/1650
+    int nchan = 2;          // wide channels in play this call
     bool usable = false;
     float fc = 0.0f, fwid = 0.0f;
     int nfz = 0, ntz = 0, nc = 2, nc0 = 2, ncand = 0, nstepSearch = 0;
@@ -502,6 +504,13 @@ struct Receiver::Impl {
         if (ichan == 0) {
             fc = f0;
             fwid = ftol;
+        } else if (coverBand) {
+            // Wide coverage: 300 Hz windows tiling nfa..nfb, the last one
+            // pulled back to end at nfb (overlap rather than a gap).
+            fwid = 150.0f;
+            fc = static_cast<float>(nfa) + 150.0f + 300.0f * static_cast<float>(ichan - 1);
+            if (fc + fwid > static_cast<float>(nfb))
+                fc = std::max(static_cast<float>(nfa) + fwid, static_cast<float>(nfb) - fwid);
         } else {
             fc = 1350.0f;
             if (ichan == 2) fc = 1650.0f;
@@ -968,7 +977,7 @@ struct Receiver::Impl {
         nfz = static_cast<int>(std::lround(10.0f / df2));              // 14
         ntz = static_cast<int>(std::lround(0.016f * 6000.0f / 12.0f)); // 8
 
-        const int nchan = 2;
+        nchan = coverBand ? std::max(1, (nfb - nfa + 299) / 300) : 2;
         firstSyncBin = nh2 - 2;
         lastSyncBin = 3;
         for (ichan = 0; ichan <= nchan; ++ichan) {
@@ -1040,6 +1049,8 @@ std::int64_t Receiver::nextRequiredSample() const {
     const std::int64_t step = static_cast<std::int64_t>(59 * s.nsps / 4);
     return std::max(s.firstSearch, s.nextSearch - static_cast<std::int64_t>(MAX_RETRO_STEPS) * step);
 }
+
+void Receiver::setWideCoverage(bool on) { impl_->coverBand = on; }
 
 int Receiver::process(const std::int16_t *pcm, int count, std::int64_t firstSample, std::int64_t stopSample,
                       int maxSteps, int nfa, int nfb, float f0, float ftol) {

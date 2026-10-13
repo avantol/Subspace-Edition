@@ -713,6 +713,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     {
         if (ui->menuWindow) {
             auto *act = new QAction(tr("Show Station Monitor"), this);
+            m_stationMonitorAction = act; // [JTTY] disabled in JTTY mode
             connect(act, &QAction::triggered, this, [this]() {
                 bool ok = false;
                 QString const call =
@@ -815,7 +816,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                         it != m_callActivity.constEnd()) {
                         offset = it->offset;
                     }
-                    if (offset > 1000) {
+                    if (qsyOffsetAllowed(offset)) {
                         changeFreq(offset);
                         statusBar()->showMessage(
                             tr("Copied %1 to outgoing message — QSY %2 Hz")
@@ -1279,6 +1280,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             this, &UI_Constructor::jttyDecodeDone);
     connect(&m_jttyTimer, &QTimer::timeout, this, &UI_Constructor::jttyTryDecode);
     m_jttyTimer.start(500);
+    // Deferred callsign pick on a multi-call JTTY band-activity row
+    // (single/double-click disambiguation, see applyJttyPick).
+    m_jttyPickTimer.setSingleShot(true);
+    connect(&m_jttyPickTimer, &QTimer::timeout, this, [this]() {
+        int const offset = m_jttyPickOffset;
+        m_jttyPickOffset = -1;
+        if (offset >= 0) applyJttyPick(offset);
+    });
 #endif
     connect(&m_l2DecodeTimer, &QTimer::timeout, this, [this]() {
         // [TODO #113/#120 2026-07-24 l2watch] This timer was called a
@@ -1387,8 +1396,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     ui->actionModeFT2->setActionGroup(modeActionGroup);
 #endif
 #ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-12] Two JTTY items in the one exclusive group:
+    // "JS8 (JTTY ...)" = the JTTY SPEED under JS8 mode; "JTTY ..." =
+    // JTTY MODE (conventions, JTTY speed). The checked item IS the
+    // operator's choice -- see jttyMode() and setSubmode().
+    ui->actionModeJS8JTTY->setActionGroup(modeActionGroup);
     ui->actionModeJTTY->setActionGroup(modeActionGroup);
 #else
+    ui->actionModeJS8JTTY->setVisible(false);
     ui->actionModeJTTY->setVisible(false);
 #endif
 
@@ -1595,7 +1610,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                     int targetFreq = -1;
                     if (m_callActivity.contains(callsign))
                         targetFreq = m_callActivity[callsign].offset;
-                    if (targetFreq <= 1000) {
+                    if (!qsyOffsetAllowed(targetFreq)) {
                         int parenOpen = lineText.lastIndexOf('(');
                         int parenClose = lineText.lastIndexOf(')');
                         if (parenOpen >= 0 && parenClose > parenOpen)
@@ -1603,7 +1618,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                                       parenClose - parenOpen - 1)
                                              .toInt();
                     }
-                    if (targetFreq > 1000) {
+                    if (qsyOffsetAllowed(targetFreq)) {
                         setFreqOffsetForRestore(targetFreq, false);
                         // Highlight the band-activity row matching the
                         // LIVE tuned offset, not the line's frozen offset.
@@ -1770,7 +1785,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                                    m_lastTxMessage);
                 if (!to.isEmpty() &&
                     to.compare(m_config.my_callsign().trimmed(),
-                               Qt::CaseInsensitive) != 0) {
+                               Qt::CaseInsensitive) != 0 &&
+                    !jttyMode()) { // [JTTY] no monitors in JTTY mode
                     menu->addSeparator();
                     connect(
                         menu->addAction(
@@ -1919,7 +1935,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 if (mcall.isEmpty())
                     mcall = selectedCall;
                 if (!mcall.isEmpty() &&
-                    !mcall.startsWith(QLatin1Char('@'))) {
+                    !mcall.startsWith(QLatin1Char('@')) &&
+                    !jttyMode()) { // [JTTY] no monitor / reach in JTTY mode
                     auto *monAction = menu->addAction(
                         tr("Open station monitor for %1").arg(mcall));
                     connect(monAction, &QAction::triggered, this,
@@ -2041,15 +2058,36 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                   ui->tableWidgetCalls);
     connect(addStation, &QAction::triggered, this, [this]() {
         bool ok = false;
+        // [JTTY step 3, operator 2026-10-12] no groups in JTTY mode
+        bool const jtty = jttyMode();
         QString callsign =
-            QInputDialog::getText(this, tr("Add New Station or Group"),
-                                  tr("Station or Group Callsign:"),
+            QInputDialog::getText(this,
+                                  jtty ? tr("Add New Station")
+                                       : tr("Add New Station or Group"),
+                                  jtty ? tr("Station Callsign:")
+                                       : tr("Station or Group Callsign:"),
                                   QLineEdit::Normal, "", &ok)
                 .toUpper()
                 .trimmed();
         if (!ok || callsign.trimmed().isEmpty()) {
             return;
         }
+#ifdef JS8_ENABLE_JTTY
+        if (jtty) {
+            if (callsign.startsWith(QLatin1Char('@')) ||
+                !Varicode::isValidCallsign(callsign, nullptr)) {
+                JS8MessageBox::critical_message(
+                    this, QString("%1 is not a valid callsign").arg(callsign));
+                return;
+            }
+            // the JTTY list, not the JS8 one
+            jttyNoteStation(callsign, QString(), freq(), -99,
+                            static_cast<std::int64_t>(operatingDial()),
+                            /*addressedToMe=*/false, -99, /*label=*/false);
+            displayCallActivity();
+            return;
+        }
+#endif
 
         // if we're adding allcall, turn off allcall avoidance
         if (callsign == "@ALLCALL") {
@@ -2092,6 +2130,13 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         } else if (m_callActivity.contains(selectedCall)) {
             m_callActivity.remove(selectedCall);
         }
+#ifdef JS8_ENABLE_JTTY
+        // [JTTY step 3] the JTTY list has its own rows
+        if (jttyMode() && m_jttyCallActivity.contains(selectedCall)) {
+            m_jttyCallActivity.remove(selectedCall);
+            ++m_callActivityVersion;
+        }
+#endif
 
         displayActivity(true);
     });
@@ -2230,7 +2275,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 if (mcall.isEmpty())
                     mcall = selectedCall;
                 if (!mcall.isEmpty() &&
-                    !mcall.startsWith(QLatin1Char('@'))) {
+                    !mcall.startsWith(QLatin1Char('@')) &&
+                    !jttyMode()) { // [JTTY] no monitor / reach in JTTY mode
                     auto *monAction = menu->addAction(
                         tr("Open station monitor for %1").arg(mcall));
                     connect(monAction, &QAction::triggered, this,
@@ -2264,7 +2310,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             }
 
             if (!missingCallsign && !isAllCall) {
-                int selectedOffset = m_callActivity[selectedCall].offset;
+                // [JTTY step 3] the list shown decides the row's facts
+                int selectedOffset = shownCallActivity().value(selectedCall).offset;
                 if (selectedOffset != -1) {
                     auto qsyAction = menu->addAction(
                         QString("Jump to %1Hz").arg(selectedOffset));
@@ -2284,23 +2331,28 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                 });
                     }
 
-                    int submode = m_callActivity[selectedCall].submode;
-                    auto speed = JS8::Submode::name(submode);
-                    if (submode != m_nSubMode) {
-                        auto qrqAction =
-                            menu->addAction(QString("Jump to %1%2 speed")
-                                                .arg(speed.left(1))
-                                                .arg(speed.mid(1).toLower()));
-                        connect(qrqAction, &QAction::triggered, this,
-                                [this, submode]() { setSubmode(submode); });
-                    }
+                    // [JTTY step 3, operator 2026-10-12] no speed or
+                    // time-drift jumps in JTTY mode: every row is JTTY
+                    // and its drift is always zero
+                    if (!jttyMode()) {
+                        int submode = m_callActivity[selectedCall].submode;
+                        auto speed = JS8::Submode::name(submode);
+                        if (submode != m_nSubMode) {
+                            auto qrqAction =
+                                menu->addAction(QString("Jump to %1%2 speed")
+                                                    .arg(speed.left(1))
+                                                    .arg(speed.mid(1).toLower()));
+                            connect(qrqAction, &QAction::triggered, this,
+                                    [this, submode]() { setSubmode(submode); });
+                        }
 
-                    int tdrift =
-                        -int(m_callActivity[selectedCall].tdrift * 1000);
-                    auto qtrAction = menu->addAction(
-                        QString("Jump to %1 ms time drift").arg(tdrift));
-                    connect(qtrAction, &QAction::triggered, this,
-                            [this, tdrift]() { setDrift(tdrift); });
+                        int tdrift =
+                            -int(m_callActivity[selectedCall].tdrift * 1000);
+                        auto qtrAction = menu->addAction(
+                            QString("Jump to %1 ms time drift").arg(tdrift));
+                        connect(qtrAction, &QAction::triggered, this,
+                                [this, tdrift]() { setDrift(tdrift); });
+                    }
 
                     menu->addSeparator();
                 }
@@ -2309,27 +2361,33 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             menu->addAction(logAction);
             logAction->setDisabled(missingCallsign || isAllCall);
 
-            menu->addAction(historyAction);
-            historyAction->setDisabled(missingCallsign || isAllCall ||
-                                       !hasMessageHistory(selectedCall));
+            // [JTTY step 3, operator 2026-10-12] inbox, store, Directed
+            // to... and Relay via... are JS8 machinery: not in JTTY mode
+            if (!jttyMode()) {
+                menu->addAction(historyAction);
+                historyAction->setDisabled(missingCallsign || isAllCall ||
+                                           !hasMessageHistory(selectedCall));
 
-            menu->addAction(localMessageAction);
-            localMessageAction->setDisabled(missingCallsign || isAllCall);
+                menu->addAction(localMessageAction);
+                localMessageAction->setDisabled(missingCallsign || isAllCall);
+            }
 
             menu->addSeparator();
 
             auto savedMenu = menu->addMenu("Saved Messages...");
             buildSavedMessagesMenu(savedMenu);
 
-            auto directedMenu =
-                menu->addMenu(QString("Directed to %1...").arg(selectedCall));
-            directedMenu->setDisabled(missingCallsign);
-            buildQueryMenu(directedMenu, selectedCall);
+            if (!jttyMode()) {
+                auto directedMenu =
+                    menu->addMenu(QString("Directed to %1...").arg(selectedCall));
+                directedMenu->setDisabled(missingCallsign);
+                buildQueryMenu(directedMenu, selectedCall);
 
-            auto relayAction = buildRelayAction(selectedCall);
-            relayAction->setText(QString("Relay via %1...").arg(selectedCall));
-            relayAction->setDisabled(missingCallsign || isAllCall);
-            menu->addActions({relayAction});
+                auto relayAction = buildRelayAction(selectedCall);
+                relayAction->setText(QString("Relay via %1...").arg(selectedCall));
+                relayAction->setDisabled(missingCallsign || isAllCall);
+                menu->addActions({relayAction});
+            }
 
             auto deselect =
                 menu->addAction(QString("Deselect %1").arg(selectedCall));
@@ -2342,6 +2400,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
 
             menu->addSeparator();
 
+            // [JTTY step 3, operator 2026-10-12] no groups in JTTY mode
+            addStation->setText(jttyMode() ? QStringLiteral("Add New Station...")
+                                           : QStringLiteral("Add New Station or Group..."));
             menu->addAction(addStation);
             removeStation->setDisabled(missingCallsign);
             removeStation->setText(selectedCall.startsWith("@")
@@ -2466,6 +2527,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                         [this, submode = mw.submode]() {
                             setSubmode(submode);
                         });
+#ifdef JS8_ENABLE_JTTY
+            // [operator 2026-10-12] "J" = the JTTY SPEED (JS8 mode);
+            // setSubmode picks the speed item unless JTTY mode holds.
+            connect(ui->modeBtnJTTY, &QPushButton::clicked, this,
+                    [this]() { setSubmode(Varicode::JS8CallJTTY); });
+#else
+            ui->modeBtnJTTY->setVisible(false);
+#endif
 
             // [#148] Live width distribution: recompute on every bar
             // resize (buttons expand AS the window widens) and once
@@ -2610,6 +2679,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             ui->modeBtnTurbo->setChecked(m_nSubMode == Varicode::JS8CallTurbo);
             ui->modeBtnSlow->setChecked(m_nSubMode == Varicode::JS8CallSlow);
             ui->modeBtnFT2->setChecked(m_nSubMode == Varicode::JS8CallFT2);
+#ifdef JS8_ENABLE_JTTY
+            ui->modeBtnJTTY->setChecked(m_nSubMode == Varicode::JS8CallJTTY);
+#endif
         }
     }
 

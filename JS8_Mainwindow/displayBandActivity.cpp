@@ -161,11 +161,17 @@ void UI_Constructor::displayBandActivity() {
                     if (!c.isEmpty())
                         lastCall = c;
                     // [JTTY] a JTTY message is never attributed to a JS8
-                    // station seen nearby: only to the call the operator
-                    // picked for that offset, else it stays UNKNOWN.
+                    // station seen nearby. [operator 2026-10-13] PER
+                    // MESSAGE: the line's own parsed sender first (CQ
+                    // FROM, TO FROM, FROM:, DE FROM, second call), the
+                    // operator's pick for the offset as the fallback,
+                    // else UNKNOWN. In callsign mode a different obvious
+                    // sender at one offset starts its own row (2076 Hz:
+                    // K9AVT's lines sat unknown until picked, then split).
 #ifdef JS8_ENABLE_JTTY
                     if (it.submode == Varicode::JS8CallJTTY) {
-                        attrib.append(m_jttyRowCall.value(it.offset));
+                        QString const s = jttyLineSender(it.text);
+                        attrib.append(s.isEmpty() ? m_jttyRowCall.value(it.offset) : s);
                         continue;
                     }
 #endif
@@ -435,11 +441,17 @@ void UI_Constructor::displayBandActivity() {
             snrItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             ui->tableWidgetRXAll->setItem(row, BASnr, snrItem);
 
-            // [JTTY] a JTTY row shows the whole word, not an initial
+            // [JTTY, operator 2026-10-12] a JTTY row shows the whole
+            // word in JTTY mode; in JS8 mode JTTY is a speed like any
+            // other and gets its initial, "J".
             auto name = JS8::Submode::name(submode);
-            auto displayChar = (submode == Varicode::JS8CallJTTY)
-                ? QStringLiteral("JTTY")
-                : (submode == Varicode::JS8CallFT2)
+            auto displayChar =
+#ifdef JS8_ENABLE_JTTY
+                (submode == Varicode::JS8CallJTTY)
+                ? (jttyMode() ? QStringLiteral("JTTY") : QStringLiteral("J"))
+                :
+#endif
+                (submode == Varicode::JS8CallFT2)
                 ? QString::fromUtf8("\u26A1")
                 : name.left(1).replace("H", "N");
             auto submodeItem = new QTableWidgetItem(displayChar);

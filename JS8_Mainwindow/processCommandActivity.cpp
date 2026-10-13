@@ -2532,30 +2532,11 @@ void UI_Constructor::processCommandActivity() {
             continue;
         }
 
-#ifdef JS8_ENABLE_JTTY
-        // [JTTY] A query that arrived as JTTY is answered as JTTY -- the
-        // sender's-speed rule -- through the ARQ reply's own stash and
-        // deferred restore (TODO #73 machinery in stopTx). setSubmode
-        // refuses during an active TX; then the reply is dropped, not
-        // sent in a mode the station cannot hear.
-        if (jttyOrigin && m_nSubMode != Varicode::JS8CallJTTY) {
-            bool stashedHere = false;
-            if (m_arqPreSwitchSubmode == -1) {
-                m_arqPreSwitchSubmode = m_nSubMode;
-                stashedHere = true;
-            }
-            setSubmode(Varicode::JS8CallJTTY);
-            if (m_nSubMode != Varicode::JS8CallJTTY) {
-                if (stashedHere) m_arqPreSwitchSubmode = -1;
-                qWarning() << "[JTTY] reply dropped: switch to JTTY refused"
-                              " (TX busy):" << reply;
-                continue;
-            }
-            qWarning() << "[JTTY] caller-speed reply: switched to JTTY for"
-                       << d.from << "restore pending to"
-                       << m_arqPreSwitchSubmode;
-        }
-#endif
+        // [operator 2026-10-12] A command that arrived as JTTY is answered
+        // at the SELECTED speed, like every other auto-reply. The dev-499
+        // switch-to-JTTY that stood here was removed: a JS8 command in
+        // JTTY always comes from a Subspace station, and the program has
+        // no caller-speed rule for ordinary replies at any other speed.
         if (m_config.autoreply_confirmation()) {
             confirmThenEnqueueMessage(90, priority, reply, freq, callback,
                                       /*autoReply=*/true);

@@ -19,6 +19,7 @@ char const *const mode_names[] = {
     "All",
     "JS8",
     "JTTY",
+    "JS8+JTTY",
 };
 std::size_t constexpr mode_names_size =
     sizeof(mode_names) / sizeof(mode_names[0]);

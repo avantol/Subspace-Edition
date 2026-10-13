@@ -58,8 +58,15 @@ int main(int argc, char **argv) {
         return 2;
     }
     // Defaults are upstream rjtty's search limits (nfa=200, nfb=2800).
+    // Optional: f0 ftol (channel 0 centre and half-width; default = the
+    // whole span as one loose channel, the application's pre-499.28
+    // driver) and cover (1 = tile the span with strict 300 Hz channels
+    // instead of the reference's fixed 1350/1650 pair).
     int const nfa = argc > 2 ? std::atoi(argv[2]) : 200;
     int const nfb = argc > 3 ? std::atoi(argv[3]) : 2800;
+    float const f0Arg = argc > 4 ? static_cast<float>(std::atof(argv[4])) : -1.0f;
+    float const ftolArg = argc > 5 ? static_cast<float>(std::atof(argv[5])) : -1.0f;
+    bool const cover = argc > 6 && std::atoi(argv[6]) != 0;
 
     std::ifstream in(argv[1], std::ios::binary | std::ios::ate);
     if (!in) {
@@ -89,12 +96,14 @@ int main(int argc, char **argv) {
                 static_cast<long long>(clipped));
     std::printf("search %d..%d Hz\n", nfa, nfb);
 
-    float const f0 = 0.5f * static_cast<float>(nfa + nfb);
-    float const ftol = 0.5f * static_cast<float>(nfb - nfa);
+    float const f0 = f0Arg > 0.0f ? f0Arg : 0.5f * static_cast<float>(nfa + nfb);
+    float const ftol = ftolArg > 0.0f ? ftolArg : 0.5f * static_cast<float>(nfb - nfa);
+    std::printf("channel 0: %.0f +- %.0f Hz, wide coverage %s\n", f0, ftol, cover ? "on" : "off (1350/1650)");
     std::int64_t const RING = 90000;
     std::int64_t const STEP = 6000;
 
     JTTY::Receiver rx;
+    rx.setWideCoverage(cover);
     std::int64_t session = 1;
     if (!rx.begin(session, 0, 0, 384)) {
         std::fprintf(stderr, "begin refused\n");

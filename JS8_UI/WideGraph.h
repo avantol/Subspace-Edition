@@ -42,6 +42,10 @@ class WideGraph : public QWidget {
     int filterMaximum() const;
     bool filterEnabled() const;
     int freq() const;
+    // [JTTY, operator 2026-10-12] F Tol lives on the Control tab, a
+    // main-screen control, not a per-profile setting. 50 (WSJT-X's
+    // default) in a build without JTTY, where the control is hidden.
+    int jttyFtol() const;
     bool isAutoSyncEnabled() const;
     int nStartFreq() const;
     bool shouldDisplayDecodeAttempts() const;
@@ -72,6 +76,7 @@ class WideGraph : public QWidget {
     void setFreq(int);
     void setPeriod(int);
     void setSubMode(int);
+    void setJttyMode(bool); // [JTTY] band bar follows the mode
 
   signals:
     void changeFreq(int);
@@ -149,6 +154,7 @@ class WideGraph : public QWidget {
     int m_autoSyncDecodesLeft = 0;
     bool m_paused = false;
     bool m_filterEnabled = false;
+    bool m_jttyMode = false; // [JTTY] gates the label menu's monitor item
     bool m_autoSyncConnected = false;
 
     QSettings *m_settings;

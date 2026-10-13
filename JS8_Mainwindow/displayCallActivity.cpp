@@ -59,30 +59,35 @@ void UI_Constructor::displayCallActivity() {
             m_config.miles() ? "mi" : "km");
 
         bool showIconColumn = false;
-        createGroupCallsignTableRows(
-            ui->tableWidgetCalls, selectedCall,
-            showIconColumn); // isAllCallIncluded(selectedCall)); // ||
+        // [JTTY step 3, operator 2026-10-12] In JTTY mode the list is
+        // the JTTY stations' own (shownCallActivity) and shows no
+        // group rows.
+        if (!jttyMode())
+            createGroupCallsignTableRows(
+                ui->tableWidgetCalls, selectedCall,
+                showIconColumn); // isAllCallIncluded(selectedCall)); // ||
         // isGroupCallIncluded(selectedCall));
+        auto const &activity = shownCallActivity();
 
         // Build the table
 
         auto const sort = getSortByReverse("callActivity", "callsign");
-        auto keys = m_callActivity.keys();
+        auto keys = activity.keys();
 
-        auto const compareOffset = [this](QString const &lhsKey,
+        auto const compareOffset = [this, &activity](QString const &lhsKey,
                                           QString const &rhsKey) {
-            return m_callActivity[lhsKey].offset <
-                   m_callActivity[rhsKey].offset;
+            return activity[lhsKey].offset <
+                   activity[rhsKey].offset;
         };
 
         auto const compareAzimuth =
-            [this, reverse = sort.reverse, my_grid = m_config.my_grid()](
+            [this, &activity, reverse = sort.reverse, my_grid = m_config.my_grid()](
                 QString const &lhsKey, QString const &rhsKey) {
                 auto const lhs =
-                    Geodesic::vector(my_grid, m_callActivity[lhsKey].grid)
+                    Geodesic::vector(my_grid, activity[lhsKey].grid)
                         .azimuth();
                 auto const rhs =
-                    Geodesic::vector(my_grid, m_callActivity[rhsKey].grid)
+                    Geodesic::vector(my_grid, activity[rhsKey].grid)
                         .azimuth();
 
                 // We always want invalid azimuths to be at the end of the list,
@@ -100,13 +105,13 @@ void UI_Constructor::displayCallActivity() {
             };
 
         auto const compareDistance =
-            [this, reverse = sort.reverse, my_grid = m_config.my_grid()](
+            [this, &activity, reverse = sort.reverse, my_grid = m_config.my_grid()](
                 QString const &lhsKey, QString const &rhsKey) {
                 auto const lhs =
-                    Geodesic::vector(my_grid, m_callActivity[lhsKey].grid)
+                    Geodesic::vector(my_grid, activity[lhsKey].grid)
                         .distance();
                 auto const rhs =
-                    Geodesic::vector(my_grid, m_callActivity[rhsKey].grid)
+                    Geodesic::vector(my_grid, activity[rhsKey].grid)
                         .distance();
 
                 // We always want invalid distances to be at the end of the
@@ -123,23 +128,23 @@ void UI_Constructor::displayCallActivity() {
                     return lhs < rhs;
             };
 
-        auto const compareTimestamp = [this](QString const &lhsKey,
+        auto const compareTimestamp = [this, &activity](QString const &lhsKey,
                                              QString const &rhsKey) {
-            return m_callActivity[lhsKey].utcTimestamp <
-                   m_callActivity[rhsKey].utcTimestamp;
+            return activity[lhsKey].utcTimestamp <
+                   activity[rhsKey].utcTimestamp;
         };
 
-        auto const compareAckTimestamp = [this](QString const &lhsKey,
+        auto const compareAckTimestamp = [this, &activity](QString const &lhsKey,
                                                 QString const &rhsKey) {
-            return m_callActivity[rhsKey].ackTimestamp <
-                   m_callActivity[lhsKey].ackTimestamp;
+            return activity[rhsKey].ackTimestamp <
+                   activity[lhsKey].ackTimestamp;
         };
 
         auto const compareSNR =
-            [this, reverse = sort.reverse](QString const &lhsKey,
-                                           QString const &rhsKey) {
-                auto lhs = m_callActivity[lhsKey].snr;
-                auto rhs = m_callActivity[rhsKey].snr;
+            [this, &activity, reverse = sort.reverse](QString const &lhsKey,
+                                                      QString const &rhsKey) {
+                auto lhs = activity[lhsKey].snr;
+                auto rhs = activity[rhsKey].snr;
 
                 // We always want insane SNR values to be at the end of the
                 // list, and the list is going to be reversed if reverse is set,
@@ -158,10 +163,10 @@ void UI_Constructor::displayCallActivity() {
                 return lhs < rhs;
             };
 
-        auto const compareSubmode = [this](QString const &lhsKey,
+        auto const compareSubmode = [this, &activity](QString const &lhsKey,
                                            QString const &rhsKey) {
-            auto lhs = m_callActivity[lhsKey].submode;
-            auto rhs = m_callActivity[rhsKey].submode;
+            auto lhs = activity[lhsKey].submode;
+            auto rhs = activity[rhsKey].submode;
 
             // Slow mode isn't at the start of the enumeration; it's in the
             // middle of it. All the other modes are in the expected order.
@@ -204,7 +209,7 @@ void UI_Constructor::displayCallActivity() {
 
         // pin messages to the top
         std::stable_sort(keys.begin(), keys.end(),
-                         [this](QString const &lhsKey, QString const &rhsKey) {
+                         [this, &activity](QString const &lhsKey, QString const &rhsKey) {
                              auto const lhs = (int)!(
                                  m_rxInboxCountCache.value(lhsKey, 0) > 0);
                              auto const rhs = (int)!(
@@ -219,7 +224,7 @@ void UI_Constructor::displayCallActivity() {
                 continue;
             }
 
-            CallDetail d = m_callActivity[call];
+            CallDetail d = activity[call];
             if (d.call.trimmed().isEmpty()) {
                 continue;
             }
@@ -382,7 +387,7 @@ void UI_Constructor::displayCallActivity() {
                         azimuthItem->setToolTip(azimuth.compass().toString());
 
                     // update the call activity cache with the loaded grid
-                    if (m_callActivity.contains(d.call)) {
+                    if (!jttyMode() && m_callActivity.contains(d.call)) {
                         m_callActivity[call].grid = logDetailGrid.trimmed();
                     }
                 }
@@ -502,7 +507,7 @@ void UI_Constructor::displayCallActivity() {
         ui->tableWidgetCalls->setColumnHidden(1,
                                               !showColumn("call", "callsign"));
         ui->tableWidgetCalls->setColumnHidden(
-            2, !showColumn("call", "tdrift"));
+            2, !showColumn("call", "tdrift") || jttyMode()); // [JTTY] no drift
         ui->tableWidgetCalls->setColumnHidden(3,
                                               !showColumn("call", "timestamp"));
         ui->tableWidgetCalls->setColumnHidden(4, !showColumn("call", "snr"));
@@ -571,8 +576,9 @@ void UI_Constructor::refreshCallActivityAgeOnly() {
         QString const call = callCell->data(Qt::UserRole).toString();
         if (call.isEmpty()) continue;
 
-        auto it = m_callActivity.constFind(call);
-        if (it == m_callActivity.constEnd()) continue;
+        auto const &activity = shownCallActivity(); // [JTTY] the list shown
+        auto it = activity.constFind(call);
+        if (it == activity.constEnd()) continue;
 
         ageCell->setText(since(it->utcTimestamp));
     }

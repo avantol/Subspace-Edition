@@ -186,6 +186,9 @@ class CPlotter final : public QWidget {
     // replot() or by a same-call label upgrade.
     void clearWaterfall();
     void setSubMode(int);
+    // [JTTY] the green band bar follows JTTY MODE (1200-1800 Hz), not
+    // the speed; pushed by the main window's mode indicators.
+    void setJttyMode(bool);
     void setWaterfallAvg(int);
 
   signals:
@@ -234,6 +237,7 @@ class CPlotter final : public QWidget {
 
     float m_dialFreq = 0.0f;
     int m_nSubMode = 0;
+    bool m_jttyMode = false;
     int m_filterCenter = 0;
     int m_filterWidth = 0;
     int m_filterOpacity = 127;

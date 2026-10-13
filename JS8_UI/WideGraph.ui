@@ -341,6 +341,28 @@
                 </widget>
                </item>
                <item>
+                <widget class="QSpinBox" name="jttyFtolSpinBox">
+                 <property name="toolTip">
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;JTTY frequency tolerance, as in WSJT-X: the JTTY receiver listens with full sensitivity within this many Hz of your offset, and with WSJT-X's stricter wide-channel test over the rest of the decode range. Default 50.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                 </property>
+                 <property name="prefix">
+                  <string>JTTY F Tol: </string>
+                 </property>
+                 <property name="suffix">
+                  <string> Hz</string>
+                 </property>
+                 <property name="minimum">
+                  <number>10</number>
+                 </property>
+                 <property name="maximum">
+                  <number>500</number>
+                 </property>
+                 <property name="value">
+                  <number>50</number>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <spacer name="verticalSpacer_3">
                  <property name="orientation">
                   <enum>Qt::Orientation::Vertical</enum>

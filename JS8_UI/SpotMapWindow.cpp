@@ -597,7 +597,15 @@ void SpotMapWindow::rebuildTopics() {
     // honest about how much history can possibly be on screen.
     m_accumStart = DriftingDateTime::currentDateTimeUtc();
     m_mqtt->setClientIdPrefix(QStringLiteral("JS8Call_%1").arg(topicCall));
-    m_mqtt->setTopics({topic});
+    QStringList topics{topic};
+#ifdef JS8_ENABLE_JTTY
+    // [JTTY, operator 2026-10-12] The JTTY-mode spots too, tagged by
+    // the topic's mode level; the paint draws the current mode
+    // context only (setModeContext). Not with a debug override.
+    if (qEnvironmentVariable("JS8_SPOTMAP_TOPIC_OVERRIDE").isEmpty())
+        topics << QStringLiteral("pskr/filter/v2/+/JTTY/#");
+#endif
+    m_mqtt->setTopics(topics);
     m_pskrArrivals.clear(); // [pskrbusy] new band = new count
     m_debugDumpsLeft = 20;
     m_mqtt->start();
@@ -782,6 +790,22 @@ SpotMapWindow::linePassband(qint64 const hz) const {
                : Passband::Out;
 }
 
+void SpotMapWindow::setModeContext(QString const &mode) {
+    if (mode == m_modeContext)
+        return;
+    qCWarning(mqttclient_js8) << "[SPOTMAP] mode context" << m_modeContext
+                              << "->" << mode;
+    m_modeContext = mode;
+    // [JTTY, operator 2026-10-12] Auto-route, Options, Select relay(s),
+    // Done and Undo are JS8 relay machinery: HIDDEN in JTTY mode
+    // (hidden, not disabled, so their own enable logic is untouched).
+    bool const jtty = (mode == QStringLiteral("JTTY"));
+    for (QToolButton *b : {m_autoRouteBtn, m_optionsBtn, m_relaySelBtn,
+                           m_relayDoneBtn, m_relayUndoBtn})
+        if (b) b->setVisible(!jtty);
+    requestReplot();
+}
+
 void SpotMapWindow::setBand(QString const &band) {
     if (band == m_currentBand)
         return;
@@ -835,7 +859,8 @@ void SpotMapWindow::addHearingReport(QString const &band,
                                      QString const &source,
                                      qint64 const hearerRfHz,
                                      qint64 const edgeHz,
-                                     QString const &edgeSource) {
+                                     QString const &edgeSource,
+                                     QString const &mode) {
     if (band.isEmpty() || hearer.isEmpty())
         return;
     auto const now = DriftingDateTime::currentDateTimeUtc();
@@ -932,6 +957,7 @@ void SpotMapWindow::addHearingReport(QString const &band,
         if (call.isEmpty() || call == hearer.toUpper())
             continue;
         HeardEdge &edge = e.heard[call];
+        edge.mode = mode;   // [JTTY] latest report wins
         // [meshprobe 2026-08-22] What actually happens to an edge that
         // names US: does it move forward, or is it refused?
         if (!m_myCall.isEmpty() &&
@@ -1020,7 +1046,11 @@ void SpotMapWindow::addHearingReport(QString const &band,
                        : now.toSecsSinceEpoch();
         row.source = edge.source;
         row.hz = edge.hz;                               // [linehz]
-        m_gridDb.queueEdge(row);
+        // [JTTY] The journal has no mode column and a restored edge is
+        // JS8; a JTTY edge is internet evidence the feed refills, so
+        // it is not journaled rather than restored under the wrong mode.
+        if (edge.mode == QStringLiteral("JS8"))
+            m_gridDb.queueEdge(row);
     }
     // [#168 part 1] Presence, on every sighting (throttled inside).
     // [audit] -99, not reportedToMeSnr: that value is THEIR copy of
@@ -1261,6 +1291,8 @@ SpotMapWindow::hearersOf(QString const &band, QString const &heard) const {
         auto const he = it.value().heard.constFind(H);
         if (he == it.value().heard.constEnd())
             continue;
+        if (he.value().mode != QStringLiteral("JS8"))
+            continue;   // [JTTY] hearing views are JS8-only
         HearerView v;
         v.hearer = it.key();
         v.grid = he.value().grid.isEmpty()
@@ -1286,7 +1318,8 @@ SpotMapWindow::activeStations(QString const &band) const {
     for (auto h0 = hb.constBegin(); h0 != hb.constEnd(); ++h0)
         for (auto e0 = h0.value().heard.constBegin();
              e0 != h0.value().heard.constEnd(); ++e0)
-            heardSet.insert(e0.key());
+            if (e0.value().mode == QStringLiteral("JS8")) // [JTTY] routing is JS8-only
+                heardSet.insert(e0.key());
     for (auto it = hb.constBegin(); it != hb.constEnd(); ++it) {
         StationView v;
         v.call = it.key();
@@ -1311,6 +1344,8 @@ SpotMapWindow::allEdges(QString const &band) const {
     for (auto it = hb.constBegin(); it != hb.constEnd(); ++it) {
         for (auto he = it.value().heard.constBegin();
              he != it.value().heard.constEnd(); ++he) {
+            if (he.value().mode != QStringLiteral("JS8"))
+                continue;   // [JTTY] routing is JS8-only
             EdgeView v;
             v.hearer = it.key();
             v.heard = he.key();
@@ -1723,6 +1758,11 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
         ++m_skippedSpots;
         return;
     }
+    // [JTTY] Mode from the topic level (pskr/filter/v2/{band}/{mode}/...).
+    QString mode = QStringLiteral("JS8");
+    if (QStringList const levels = topic.split(QLatin1Char('/'));
+        levels.size() > 4 && !levels.at(4).isEmpty())
+        mode = levels.at(4).toUpper();
 
     // [viewall] Which station gets PLOTTED depends on the dataset:
     // my-view plots the spotter (who hears me); the All view plots
@@ -1890,7 +1930,8 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
                                  when, /*heardSnr=*/snr,
                                  QStringLiteral("mqtt"),
                                  /*hearerRfHz=*/0,
-                                 /*edgeHz=*/spotFreqHz);   // [linehz]
+                                 /*edgeHz=*/spotFreqHz,    // [linehz]
+                                 /*edgeSource=*/QString{}, mode);
         } else {
             QString const sndr = sender.toUpper();
             QString const sGrid = o.value(QStringLiteral("sl")).toString();
@@ -1910,7 +1951,8 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
                                  /*reportedToMeSnr=*/-99, when,
                                  /*heardSnr=*/snr, evid,
                                  /*hearerRfHz=*/0,
-                                 /*edgeHz=*/spotFreqHz);   // [linehz]
+                                 /*edgeHz=*/spotFreqHz,    // [linehz]
+                                 /*edgeSource=*/QString{}, mode);
         }
     }
     journalStation(band, plottedCall);   // [maptruth #11] AFTER
@@ -2524,6 +2566,9 @@ void SpotMapWindow::redraw() {
             bool meEdgePskr = true;
             for (auto ed = h.value().heard.constBegin();
                  ed != h.value().heard.constEnd(); ++ed) {
+                // [JTTY] An edge of another mode is not on this map.
+                if (ed.value().mode != m_modeContext)
+                    continue;
                 bool const edgePskr =
                     ed.value().source == QStringLiteral("mqtt");
                 // [renderset] AGE A STATION BY THE EVIDENCE THIS VIEW
@@ -2663,6 +2708,8 @@ void SpotMapWindow::redraw() {
                      ed != h.value().heard.constEnd(); ++ed) {
                     if (ed.value().when < cutoff)
                         continue;                    // outside window
+                    if (ed.value().mode != m_modeContext)
+                        continue;                    // [JTTY] other mode
                     if (!m_showPskr &&
                         ed.value().source == QStringLiteral("mqtt"))
                         continue;                    // toggle hides it
@@ -3127,7 +3174,8 @@ void SpotMapWindow::redraw() {
         int seenPskr = 0, seenRadio = 0, oldEdge = 0, noEnd = 0,
             hidPskr = 0, drewPskr = 0, drewRadio = 0,
             outOfBandEdge = 0,   // [passband #218] an endpoint dropped
-            lineOut = 0;         // [linehz] the line's OWN frequency Out
+            lineOut = 0,         // [linehz] the line's OWN frequency Out
+            offMode = 0;         // [JTTY] observed in the other mode
         QPen const penRadio{QColor(90, 160, 255, 210), 1};   // on-air
         auto const &hearers = m_hearingByBand.value(m_currentBand);
         QString const myUp = m_myCall.toUpper();
@@ -3154,6 +3202,10 @@ void SpotMapWindow::redraw() {
                 (isPskr ? seenPskr : seenRadio)++;   // [linelog]
                 if (ed.value().when < cutoffH) {
                     ++oldEdge;                       // [linelog]
+                    continue;
+                }
+                if (ed.value().mode != m_modeContext) {
+                    ++offMode;                       // [linelog] [JTTY]
                     continue;
                 }
                 // [pskrtoggle] Internet lines are exactly what the
@@ -3227,6 +3279,7 @@ void SpotMapWindow::redraw() {
             << " endpointMissing=" << noEnd
             << " outOfBand=" << outOfBandEdge     // [passband #218]
             << " lineOut=" << lineOut             // [linehz]
+            << " offMode=" << offMode             // [JTTY]
             << " | collected pskr=" << drewPskr << " radio="
             << drewRadio
             << " | window=" << m_viewWindowSecs << "s showPskr="

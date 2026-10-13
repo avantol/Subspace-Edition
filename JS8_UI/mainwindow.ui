@@ -1802,11 +1802,22 @@ QTextEdit[transmitting=&quot;true&quot;] {
          </spacer>
 </item>
 <item>
+ <widget class="QPushButton" name="modeBtnJTTY">
+  <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+  <property name="minimumSize"><size><width>22</width><height>30</height></size></property>
+  <property name="maximumSize"><size><width>22</width><height>30</height></size></property>
+  <property name="toolTip"><string>JTTY speed (not JTTY mode), experimental</string></property>
+  <property name="styleSheet"><string notr="true">QPushButton:checked { background-color: #6699ff; font-weight: bold; }</string></property>
+  <property name="text"><string>J</string></property>
+  <property name="checkable"><bool>true</bool></property>
+ </widget>
+</item>
+<item>
  <widget class="QPushButton" name="modeBtnSlow">
   <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
   <property name="minimumSize"><size><width>22</width><height>30</height></size></property>
   <property name="maximumSize"><size><width>22</width><height>30</height></size></property>
-  <property name="toolTip"><string>Slow mode</string></property>
+  <property name="toolTip"><string>Slow speed</string></property>
   <property name="styleSheet"><string notr="true">QPushButton:checked { background-color: #6699ff; font-weight: bold; }</string></property>
   <property name="text"><string>S</string></property>
   <property name="checkable"><bool>true</bool></property>
@@ -1817,7 +1828,7 @@ QTextEdit[transmitting=&quot;true&quot;] {
   <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
   <property name="minimumSize"><size><width>22</width><height>30</height></size></property>
   <property name="maximumSize"><size><width>22</width><height>30</height></size></property>
-  <property name="toolTip"><string>Normal mode</string></property>
+  <property name="toolTip"><string>Normal speed</string></property>
   <property name="styleSheet"><string notr="true">QPushButton:checked { background-color: #6699ff; font-weight: bold; }</string></property>
   <property name="text"><string>N</string></property>
   <property name="checkable"><bool>true</bool></property>
@@ -1828,7 +1839,7 @@ QTextEdit[transmitting=&quot;true&quot;] {
   <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
   <property name="minimumSize"><size><width>22</width><height>30</height></size></property>
   <property name="maximumSize"><size><width>22</width><height>30</height></size></property>
-  <property name="toolTip"><string>Fast mode</string></property>
+  <property name="toolTip"><string>Fast speed</string></property>
   <property name="styleSheet"><string notr="true">QPushButton:checked { background-color: #6699ff; font-weight: bold; }</string></property>
   <property name="text"><string>F</string></property>
   <property name="checkable"><bool>true</bool></property>
@@ -1839,7 +1850,7 @@ QTextEdit[transmitting=&quot;true&quot;] {
   <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
   <property name="minimumSize"><size><width>22</width><height>30</height></size></property>
   <property name="maximumSize"><size><width>22</width><height>30</height></size></property>
-  <property name="toolTip"><string>Turbo mode</string></property>
+  <property name="toolTip"><string>Turbo speed</string></property>
   <property name="styleSheet"><string notr="true">QPushButton:checked { background-color: #6699ff; font-weight: bold; }</string></property>
   <property name="text"><string>T</string></property>
   <property name="checkable"><bool>true</bool></property>
@@ -1850,7 +1861,7 @@ QTextEdit[transmitting=&quot;true&quot;] {
   <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
   <property name="minimumSize"><size><width>27</width><height>30</height></size></property>
   <property name="maximumSize"><size><width>27</width><height>30</height></size></property>
-  <property name="toolTip"><string>Subspace mode</string></property>
+  <property name="toolTip"><string>Subspace speed</string></property>
   <property name="styleSheet"><string notr="true">QPushButton { font-size: 16px; font-weight: bold; } QPushButton:checked { background-color: #6699ff; font-size: 16px; font-weight: bold; }</string></property>
   <property name="text"><string>⚡</string></property>
   <property name="checkable"><bool>true</bool></property>
@@ -2334,6 +2345,8 @@ background-color: #22ff22;
     <addaction name="actionModeJS8Fast"/>
     <addaction name="actionModeJS8Turbo"/>
     <addaction name="actionModeFT2"/>
+    <addaction name="actionModeJS8JTTY"/>
+    <addaction name="separator"/>
     <addaction name="actionModeJTTY"/>
     <addaction name="separator"/>
     <addaction name="actionModeMultiDecoder"/>
@@ -2670,7 +2683,18 @@ background-color: #22ff22;
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>JS8 (&amp;Subspace, 3.75 sec, 150 Hz, ~64 WPM)</string>
+    <string>JS8 (&amp;Subspace, 1.9 sec, 166 Hz, ~64 WPM)</string>
+   </property>
+  </action>
+  <action name="actionModeJS8JTTY">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>JS8 (JTT&amp;Y, 1.88 sec, 125 Hz, ~32 WPM, experimental)</string>
+   </property>
+   <property name="toolTip">
+    <string>JS8 conventions over the JTTY transport (5 characters per 1.88 s frame): directed messages, groups and the basic commands, readable by WSJT-X stations.</string>
    </property>
   </action>
   <action name="actionModeJTTY">
@@ -2678,10 +2702,10 @@ background-color: #22ff22;
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>&amp;JTTY (WSJT-X keyboard mode, 1.9 sec/frame, 125 Hz, experimental)</string>
+    <string>&amp;JTTY (WSJT-X keyboard mode, 1.9 sec, 125 Hz, 32-60 WPM)</string>
    </property>
    <property name="toolTip">
-    <string>Transmit as JTTY, the keyboard mode shipped by the WSJT-X project: legible text only, up to 80 characters per message, un-slotted. Decoding JTTY is separate: Settings, Reporting, Decode JTTY.</string>
+    <string>JTTY mode: behave as a WSJT-X JTTY station (template CQ, "CALL MYCALL" address, TU 73), on the JTTY transport. A JTTY frequency selects this by itself.</string>
    </property>
   </action>
   <action name="actionModeSubspaceDecode">

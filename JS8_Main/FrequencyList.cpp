@@ -248,6 +248,11 @@ bool FrequencyList_v3::filterAcceptsRow(
     }
     if (result && m_->mode_filter_ != Modes::ALL) {
         result = Modes::ALL == item.mode_ || m_->mode_filter_ == item.mode_;
+#ifdef JS8_ENABLE_JTTY
+        // [JTTY] a JS8+JTTY frequency IS a JS8 frequency.
+        if (m_->mode_filter_ == Modes::JS8 && item.mode_ == Modes::JS8_JTTY)
+            result = true;
+#endif
     }
     return result;
 }

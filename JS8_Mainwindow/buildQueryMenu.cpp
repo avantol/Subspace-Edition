@@ -51,7 +51,8 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
     // the directed-message entry. STATION ONLY -- a group is not a
     // reach target, and `call` is blanked just below for display, so
     // the name is captured now.
-    if (!isAllCall && !isGroupCall && !target.isEmpty()) {
+    if (!isAllCall && !isGroupCall && !target.isEmpty() && !jttyMode()) {
+        // [JTTY] not in JTTY mode: reach is JS8 machinery
         auto *reachAction =
             menu->addAction(QString("Can I reach %1 now?").arg(target));
         connect(reachAction, &QAction::triggered, this, [this, target]() {

@@ -211,7 +211,8 @@ constexpr quint32 qrg_version{104}; // M.mm
 constexpr quint32 qrg_version_no_jtty{103};
 quint32 qrg_version_for(FrequencyList_v3::FrequencyItems const &items) {
     for (auto const &it : items)
-        if (it.mode_ == Modes::JTTY) return qrg_version;
+        if (it.mode_ == Modes::JTTY || it.mode_ == Modes::JS8_JTTY)
+            return qrg_version;
     return qrg_version_no_jtty;
 }
 #else
@@ -235,6 +236,10 @@ const char *const autoRouteGroupsSettingsKey = "AutoRouteGroups";
 // text, beside the list -- the item stream is frozen (see #237), so the
 // list itself carries them as ALL, which older builds treat as JS8.
 const char *const jttyFrequenciesSettingsKey = "SsJttyFrequencies";
+// [JTTY] frequencies where both modes are the operator's choice
+// (Modes::JS8_JTTY), same shape as the map above, beside the list which
+// carries them as JS8.
+const char *const jttySharedFrequenciesSettingsKey = "SsJttySharedFrequencies";
 }// namespace
 
 //
@@ -2463,6 +2468,8 @@ void Configuration::impl::read_settings() {
 #ifdef JS8_ENABLE_JTTY
             auto const jtty =
                 settings_->value(jttyFrequenciesSettingsKey).toMap();
+            auto const jttyShared =
+                settings_->value(jttySharedFrequenciesSettingsKey).toMap();
 #endif
             for (auto &it : items) {
                 it.group_ = groups.value(QString::number(it.frequency_))
@@ -2470,6 +2477,8 @@ void Configuration::impl::read_settings() {
 #ifdef JS8_ENABLE_JTTY
                 if (jtty.value(QString::number(it.frequency_)).toBool())
                     it.mode_ = Modes::JTTY; // [JTTY] side map, see save
+                else if (jttyShared.value(QString::number(it.frequency_)).toBool())
+                    it.mode_ = Modes::JS8_JTTY;
 #endif
             }
             frequencies_.frequency_list(std::move(items));
@@ -2796,15 +2805,20 @@ void Configuration::impl::write_settings() {
         // [JTTY] The item stream is frozen: a JTTY entry is written as
         // ALL (older builds: JS8) and remembered in the side map.
         auto items = frequencies_.frequency_list();
-        QVariantMap jtty;
+        QVariantMap jtty, jttyShared;
         for (auto &it : items)
             if (it.mode_ == Modes::JTTY) {
                 jtty.insert(QString::number(it.frequency_), true);
                 it.mode_ = Modes::ALL;
+            } else if (it.mode_ == Modes::JS8_JTTY) {
+                // a JS8 entry to every other build
+                jttyShared.insert(QString::number(it.frequency_), true);
+                it.mode_ = Modes::JS8;
             }
         settings_->setValue(versionedFrequenciesSettingsKey,
                             QVariant::fromValue(items));
         settings_->setValue(jttyFrequenciesSettingsKey, jtty);
+        settings_->setValue(jttySharedFrequenciesSettingsKey, jttyShared);
     }
 #else
     settings_->setValue(versionedFrequenciesSettingsKey,

@@ -147,7 +147,7 @@ WideGraph::WideGraph(QSettings *settings, QWidget *parent)
                         << (call.isEmpty()
                                 ? QStringLiteral("none")
                                 : call);
-                    if (!call.isEmpty()) {
+                    if (!call.isEmpty() && !m_jttyMode) { // [JTTY] none in JTTY mode
                         auto monAction = menu->addAction(
                             tr("Open station monitor for %1")
                                 .arg(call));
@@ -265,6 +265,12 @@ WideGraph::WideGraph(QSettings *settings, QWidget *parent)
             ui->splitter->restoreState(splitState);
         }
 
+#ifdef JS8_ENABLE_JTTY
+        ui->jttyFtolSpinBox->setValue(
+            m_settings->value("SsJttyFtol", 50).toInt());
+#else
+        ui->jttyFtolSpinBox->setVisible(false);
+#endif
         setFilterCenter(m_settings->value("FilterCenter", 1500).toInt());
         setFilterWidth(m_settings->value("FilterWidth", 2000).toInt());
         setFilterOpacityPercent(
@@ -368,6 +374,9 @@ void WideGraph::saveSettings() // saveSettings
     m_settings->setValue("Flatten", ui->widePlot->flatten());
     m_settings->setValue("HideControls", ui->controls_widget->isHidden());
     m_settings->setValue("CenterOffset", ui->centerSpinBox->value());
+#ifdef JS8_ENABLE_JTTY
+    m_settings->setValue("SsJttyFtol", ui->jttyFtolSpinBox->value());
+#endif
     m_settings->setValue("FilterCenter", m_filterCenter);
     m_settings->setValue("FilterWidth", m_filterWidth);
     m_settings->setValue("FilterEnabled", m_filterEnabled);
@@ -613,6 +622,14 @@ void WideGraph::keyPressEvent(QKeyEvent *event) {
 
 int WideGraph::freq() const { return ui->widePlot->freq(); }
 
+int WideGraph::jttyFtol() const {
+#ifdef JS8_ENABLE_JTTY
+    return ui->jttyFtolSpinBox->value();
+#else
+    return 50;
+#endif
+}
+
 int WideGraph::centerFreq() const { return ui->centerSpinBox->value(); }
 
 int WideGraph::nStartFreq() const { return ui->widePlot->startFreq(); }
@@ -681,6 +698,11 @@ void WideGraph::setFreq(int const audio_qrg) {
 }
 
 void WideGraph::setSubMode(int const n) { ui->widePlot->setSubMode(n); }
+
+void WideGraph::setJttyMode(bool const on) {
+    m_jttyMode = on;
+    ui->widePlot->setJttyMode(on);
+}
 
 void WideGraph::on_spec2dComboBox_currentIndexChanged(int const index) {
     ui->smoSpinBox->setEnabled(false);

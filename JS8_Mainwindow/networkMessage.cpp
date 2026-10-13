@@ -663,6 +663,19 @@ if(type == "STATION.SET_SPOT") {
                                  QStringLiteral("auto_route_active")}});
             return;
         }
+        // [JTTY, operator 2026-10-12] In JTTY mode a send would leave as
+        // JTTY text with no "FROM:" -- not the JS8 directed message the
+        // requester (SpotterX, MAGforms) intended. Logged and dropped,
+        // with the same REFUSED reply shape as the auto-route lock.
+        if (jttyMode()) {
+            qWarning() << "[API] TX.SEND_MESSAGE refused: JTTY mode";
+            sendNetworkMessage("TX.SEND_MESSAGE", "",
+                               {{"_ID", message.params().value(
+                                            "_ID", QVariant(-1))},
+                                {"REFUSED", true},
+                                {"REASON", QStringLiteral("jtty_mode")}});
+            return;
+        }
         auto text = message.value();
 #ifdef JS8_ENABLE_FT2
         // [ss701] Same second signature as TX.SET_TEXT above -- the
@@ -939,7 +952,7 @@ if(type == "STATION.SET_SPOT") {
                 ui->actionModeJS8Slow->setChecked(true);
 #ifdef JS8_ENABLE_JTTY
             else if (speed == Varicode::JS8CallJTTY)
-                ui->actionModeJTTY->setChecked(true);
+                ui->actionModeJS8JTTY->setChecked(true); // the SPEED, JS8 mode
 #endif
             else if (speed == Varicode::JS8CallUltra
                   || speed == Varicode::JS8CallFT2) {

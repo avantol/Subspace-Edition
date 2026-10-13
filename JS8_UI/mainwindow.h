@@ -441,7 +441,9 @@ class UI_Constructor : public QMainWindow {
     // A complete JTTY message in the JS8 directed form ("K9AVT: WM8Q
     // SNR?") becomes a CommandDetail on m_rxCommandQueue, exactly as a
     // decoded JS8 directed frame does; processCommandActivity answers.
-    void queueJttyCommand(QString const &text, int snr, int offset,
+    // Returns true when a command was queued: the command path then owns
+    // the "directed" notification for that line.
+    bool queueJttyCommand(QString const &text, int snr, int offset,
                           std::int64_t dial, QDateTime const &now);
     // [operator 2026-10-12] On a JTTY frequency the Reply/SNR/Info/
     // Status buttons APPEND their payload (space-separated) when the
@@ -625,6 +627,7 @@ class UI_Constructor : public QMainWindow {
     void on_actionModeJS8Ultra_triggered();
     void on_actionModeFT2_triggered();
     void on_actionModeJTTY_triggered();
+    void on_actionModeJS8JTTY_triggered();
     void on_actionModeSubspaceDecode_toggled(bool checked); // [ssdetect]
     void on_actionHeartbeatAcknowledgements_toggled(bool checked);
     void on_actionModeMultiDecoder_toggled(bool checked);
@@ -867,11 +870,36 @@ class UI_Constructor : public QMainWindow {
     // JTTY.TXT when a JTTY message owns the cycle (ALL.TXT is never
     // touched by JTTY).
     void logTransmitEntry();
+    // The band-activity double-click action proper; the slot wraps it
+    // so the JTTY callsign pick can run AFTER it (single/double-click
+    // disambiguation: the pick menu is modal).
+    void bandActivityDoubleClick(int row, int col);
     // [JTTY] The operating dial is a frequency the operator listed as
-    // JTTY: the one authority for "we are a JTTY station here" (JTTY
-    // forced, other speeds disabled, no HB, no auto-replies). False in a
-    // build without JTTY.
+    // JTTY (only): the one authority for the GUEST rule (JTTY forced,
+    // other speeds disabled, no HB, JS8 commands not answered). The
+    // conventions read jttyMode() instead. False in a build without
+    // JTTY.
     bool onJttyFrequency() const;
+    // [JTTY, operator 2026-10-12] JTTY MODE = we behave as a JTTY
+    // station (template CQ, "CALL MYCALL " address, no "FROM:", the
+    // append rule, no Send chevron, "TU 73", speed buttons off). ONE
+    // authority: a JTTY frequency, or the Mode menu's "JTTY" item
+    // checked. False in a build without JTTY.
+    bool jttyMode() const;
+    // The callsign list the right pane shows: the JTTY stations' list
+    // in JTTY mode, the JS8 list otherwise. Read-only; writers name
+    // their map.
+    QMap<QString, CallDetail> const &shownCallActivity() const;
+    // [JTTY] Window menu "Show Station Monitor": disabled in JTTY mode
+    // (monitors are JS8 machinery), with the context-menu entries.
+    // Unconditional, like jttyMode(): the menu exists in every build.
+    QAction *m_stationMonitorAction = nullptr;
+    // [JTTY, operator 2026-10-12] The ">1000 Hz" rule that keeps JS8
+    // QSYs out of the noise band does not apply in JTTY mode, where any
+    // offset is a valid place to meet a station.
+    bool qsyOffsetAllowed(int offset) const {
+        return offset > (m_nSubMode == Varicode::JS8CallJTTY ? 0 : 1000);
+    }
     // [JTTY] True when this TX cycle plays a pre-generated waveform --
     // a Subspace frame or a JTTY message: un-slotted key-up, stop on
     // waveform end, duration-scaled safety cap, text kept for re-send.
@@ -2079,14 +2107,81 @@ class UI_Constructor : public QMainWindow {
     // assigned by the operator's pick; the renderer attributes the row
     // to it. Cached per entry like the rows.
     QMap<int, QString> m_jttyRowCall;
+    // [JTTY step 3, operator 2026-10-12] JTTY stations' own callsign
+    // list: filled where the waterfall is labelled (jttyNoteStation),
+    // cached per entry and persisted in its own group, rendered in
+    // place of the JS8 list while in JTTY mode. NEVER merged into
+    // m_callActivity, so auto-route, relay, HEARING, HB acks and the
+    // API call activity reply never see a JTTY station.
+    QMap<QString, CallDetail> m_jttyCallActivity;
+    QMap<QString, QMap<QString, CallDetail>> m_jttyCallActivityBandCache;
     QMap<QString, QMap<int, QString>> m_jttyRowCallBandCache;
-    // Callsign-shaped words of a JTTY row, those after "DE" first: one
-    // is returned directly, several are offered in a popup at the
-    // cursor; empty when none or the popup was dismissed.
+    // WSJT-X's spot rule: the sender of a JTTY message is its SECOND word
+    // when the first is CQ, DE or a standard callsign and the second is a
+    // standard callsign; empty otherwise or when it is ourselves.
+    QString jttySpotSender(QString const &text) const;
+    // The sender of a JTTY line for OUR purposes (waterfall label, map,
+    // pick): the WSJT-X sender rule above, else the JS8 directed form
+    // "FROM: ..." (first word a callsign ending in ':'); empty when
+    // neither, or when it is ourselves. PSKReporter keeps the upstream
+    // rule alone.
+    // *fromForm: the sender came from a FORM (CQ FROM, TO FROM, FROM:,
+    // DE FROM), not from the bare "second callsign" rule -- the pick
+    // offers a menu for the latter (operator 2026-10-13).
+    QString jttyLineSender(QString const &text, bool *fromForm = nullptr) const;
+    // My station as any word of the line: notification + convo window.
+    bool jttyLineNamesMe(QString const &text) const;
+    // [operator 2026-10-12] The characters the send path will PREPEND to
+    // the outgoing box at JTTY speed ("MYCALL: " plus the selected call
+    // and a space in JS8 mode; nothing in JTTY mode or when the box
+    // already starts with "MYCALL:"), so the 80-character limit can be
+    // enforced in the box itself, address included.
+    int jttyAddressLength(QString const &boxText);
+    // Waterfall label + Spots Map on-air records for a JTTY station we
+    // heard (parsed sender, or the operator's pick). Grid may be empty.
+    // addressedToMe: the line named my station ("WM8Q N4NM EM64",
+    // "N4NM: WM8Q ..."), so the reverse fact "call heard ME" is
+    // recorded too -- what the map's My view draws from, as a JS8 frame
+    // addressed to us does; theirSnrOfMe is their report when the line
+    // carries one, else -99.
+    // label: paint the waterfall label too -- only for a RECEIVED line;
+    // the operator's pick and "Add New Station" place no label
+    // (operator 2026-10-13).
+    void jttyNoteStation(QString const &call, QString const &grid, int offset,
+                         int snr, std::int64_t dial, bool addressedToMe = false,
+                         int theirSnrOfMe = -99, bool label = true);
+    // Callsign-shaped words of a JTTY row (grids excluded): the spot-rule
+    // sender first, then those after "DE", then the rest. *obvious is
+    // set when exactly one call came from those two forms.
+    QStringList jttyCallsOnLine(QString const &rowText,
+                                bool *obvious = nullptr) const;
+    // One call is returned directly, several are offered in a popup at
+    // the cursor; empty when none or the popup was dismissed.
     QString pickJttyCallsign(QString const &rowText);
-    // [JTTY] The speed the operator had before a JTTY frequency forced
-    // JTTY; -1 = not forced. Restored by the entry transition that
-    // leaves the frequency; persisted in place of JTTY while forced.
+    // Pick for the row at an offset (menu if several), assign the offset
+    // to the pick, select it. A single click defers this by the
+    // double-click interval; a double-click cancels the timer, runs its
+    // own action, then calls it. Keyed by OFFSET, not row: the table is
+    // rebuilt every second in JTTY speed (#298) and a row index does
+    // not survive that.
+    void applyJttyPick(int offset);
+    QTimer m_jttyPickTimer;
+    int m_jttyPickOffset = -1;
+    // The "JS8 (JTTY ...)" menu item is the JTTY SPEED under JS8
+    // conventions; jttyMode() (declared above, unconditionally) is the
+    // mode. The guest rule (speed lock, no HB, JS8 commands not
+    // answered) stays with onJttyFrequency() alone.
+    // The operating dial is listed as JS8+JTTY: the only kind of entry
+    // where the Mode menu's JTTY item is enabled.
+    bool onSharedJttyFrequency() const;
+    // The frequency half of the mode: a JTTY entry stashes the speed
+    // and forces JTTY mode (restored on leaving); any other entry but
+    // JS8+JTTY forces JS8 mode.
+    void applyJttyModeTransition();
+    // Map context, offset label and status button follow the mode.
+    void refreshJttyModeIndicators();
+    // [JTTY] The speed the operator had before JTTY mode forced JTTY;
+    // -1 = not forced. Persisted in place of JTTY while forced.
     int m_jttyFreqPrevSubmode = -1;
 #endif
     QTimer m_l2DecodeTimer;                     // fires every 750ms

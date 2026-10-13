@@ -452,11 +452,27 @@ void CPlotter::annotateCall(QString const &call,
     // — bare textWidth would let neighbors abut at the padded edges.
     // (The upgrade target — if any — was erased above and won't
     // appear here.)
+    bool erased = false;
     for (auto it = m_recentLabels.begin();
          it != m_recentLabels.end(); ++it) {
         if (std::abs(it->x - x) >= columnWidth) continue;
         qint64 const oldTopY = currentRow - it->row;
         if (oldTopY >= paddedLenPx) continue;  // already scrolled past
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-12] A JTTY label is PER MESSAGE: a newer
+        // sender at an offset erases the label standing there instead
+        // of being suppressed by it (two sides of a QSO need not share
+        // an offset, but when they do, the newest sender shows).
+        if (submode == Varicode::JS8CallJTTY && it->call != call) {
+            qWarning() << "[LABEL] REPLACED" << it->call << "by" << call
+                       << "x=" << x << "oldTopY=" << oldTopY;
+            it = m_recentLabels.erase(it);
+            erased = true;
+            if (it == m_recentLabels.end()) break;
+            --it;   // the loop's ++it lands on the element after the erased one
+            continue;
+        }
+#endif
         // [BUILD 356 labelprobe] Field: zero marker labels on one
         // machine with the toggle ON and decodes confirmed — say WHY
         // a label dies. If oldTopY is small at every suppression
@@ -467,6 +483,15 @@ void CPlotter::annotateCall(QString const &call,
                    << "paddedLenPx=" << paddedLenPx
                    << "row=" << currentRow;
         return;  // would overlap → suppress
+    }
+    if (erased) {
+        // The erased label's pixels are still on the pixmap: rebuild it
+        // from the replot buffer (which repaints the surviving labels),
+        // then paint the new one on top.
+        p.end();
+        replot();
+        p.begin(&m_WaterfallPixmap);
+        p.setFont(f);
     }
 
     qint64 const yOffset = currentRow - paintRow;
@@ -661,6 +686,17 @@ void CPlotter::drawMetrics() {
     p.setPen(QPen(BAND_WARN, 3));
     drawBand(bandX(500.0f, 2500));
     p.setPen(QPen(BAND_GOOD, 3));
+#ifdef JS8_ENABLE_JTTY
+    // [JTTY, operator 2026-10-12] In JTTY MODE the green bar marks the
+    // 1200-1800 Hz window WSJT-X always searches (its two fixed
+    // channels, 1350 and 1650 +-150): a station there is heard by
+    // every WSJT-X JTTY operator whatever their Rx marker says. The
+    // mode, not the speed: JTTY speed under JS8 conventions keeps the
+    // JS8 bar (field 2026-10-12: the bar waited for a speed change).
+    if (m_jttyMode)
+        drawBand(bandX(1200.0f, 600));
+    else
+#endif
     drawBand(bandX(1000.0f, 1500));
 
     // If we're in the 30 meter band, we'd rather that the WSPR sub-band not
@@ -1184,6 +1220,17 @@ void CPlotter::setSubMode(int const nSubMode) {
     if (m_nSubMode != nSubMode) {
         m_nSubMode = nSubMode;
         drawDials();
+        update();
+    }
+}
+
+void CPlotter::setJttyMode(bool const on) {
+    if (m_jttyMode != on) {
+        m_jttyMode = on;
+        // The band bar lives in the scale pixmap (drawMetrics), which a
+        // plain dial redraw does not repaint -- field 2026-10-12: the bar
+        // waited for the next scale rebuild.
+        drawMetrics();
         update();
     }
 }
