@@ -1935,14 +1935,33 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 if (mcall.isEmpty())
                     mcall = selectedCall;
                 if (!mcall.isEmpty() &&
-                    !mcall.startsWith(QLatin1Char('@')) &&
-                    !jttyMode()) { // [JTTY] no monitor / reach in JTTY mode
+                    !mcall.startsWith(QLatin1Char('@'))) {
+                    // [operator 2026-10-13] monitors are back in JTTY mode
                     auto *monAction = menu->addAction(
                         tr("Open station monitor for %1").arg(mcall));
                     connect(monAction, &QAction::triggered, this,
                             [this, mcall]() {
                                 openStationMonitor(mcall);
                             });
+                    // [TODO #293, operator 2026-10-10] The reach question
+                    // at the TOP level of the band activity menu, keyed
+                    // to the CLICKED ROW's station exactly as the monitor
+                    // entry is -- the sibling of #269's call-list entry.
+                    // Until now it lived only inside "Directed to X...",
+                    // greyed whole when nothing was selected. The '@'
+                    // guard above is the group/ALLCALL exclusion. Reach
+                    // is JS8 machinery: not in JTTY mode.
+                    if (!jttyMode()) {
+                        auto *reachAction = menu->addAction(
+                            tr("Can I reach %1 now?").arg(mcall));
+                        connect(reachAction, &QAction::triggered, this,
+                                [this, mcall]() {
+                                    if (!isMessageQueuedForTransmit())
+                                        ui->extFreeTextMsgEdit->clear();
+                                    if (m_spotMapWindow)
+                                        m_spotMapWindow->autoRouteFor(mcall);
+                                });
+                    }
                     menu->addSeparator();
                 }
             }
@@ -2275,14 +2294,20 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 if (mcall.isEmpty())
                     mcall = selectedCall;
                 if (!mcall.isEmpty() &&
-                    !mcall.startsWith(QLatin1Char('@')) &&
-                    !jttyMode()) { // [JTTY] no monitor / reach in JTTY mode
+                    !mcall.startsWith(QLatin1Char('@'))) {
+                    // [operator 2026-10-13] monitors are back in JTTY
+                    // mode ("we're identifying call signs well enough
+                    // now"); reach stays JS8 machinery
                     auto *monAction = menu->addAction(
                         tr("Open station monitor for %1").arg(mcall));
                     connect(monAction, &QAction::triggered, this,
                             [this, mcall]() {
                                 openStationMonitor(mcall);
                             });
+                }
+                if (!mcall.isEmpty() &&
+                    !mcall.startsWith(QLatin1Char('@')) &&
+                    !jttyMode()) { // [JTTY] no reach in JTTY mode
                     // [#269 2026-09-21, operator] The reach question
                     // in the operator's own words, from the list they
                     // already use: opens the Spots Map with auto-route
@@ -2803,6 +2828,30 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                        [chain]() { (*chain)(); });
                 });
             };
+
+#ifdef JS8_ENABLE_JTTY
+            // Priority -1: [operator 2026-10-14, "make that last
+            // balloon the highest priority"] JTTY mode -- Mode menu,
+            // ABOVE the MAGNET seed and every other hint.
+            if (!self->m_settings->value("HintJttyModeShown", false)
+                     .toBool()) {
+                auto *bar = self->menuBar();
+                auto *balloon = new SpeechBalloon(
+                    tr("JTTY conversational mode is now available "
+                       "(also JTTY speed in JS8), select at the Mode "
+                       "menu.\n"
+                       "Click to dismiss."),
+                    bar);
+                balloon->setTargetRectOverride(bar->actionGeometry(
+                    self->ui->menuModeJS8->menuAction()));
+                balloon->setTailSide(SpeechBalloon::TailSide::Top);
+                balloon->setAutoDismissMs(45000);
+                armWithdraw(balloon, QStringLiteral("HintJttyModeShown"));
+                balloon->showAtTarget();
+                self->m_settings->setValue("HintJttyModeShown", true);
+                return; // one balloon per startup
+            }
+#endif
 
             // Priority 0: [#254 magfreq 2026-09-18, operator ruling]
             // MAGNET frequency seeding -- ABOVE every other hint. Four

@@ -8,6 +8,8 @@
 #include <QRegularExpression>
 #include <QToolTip>
 
+#include <algorithm>
+
 namespace {
 // The candidate shape: 3-15 of [A-Z0-9/] with a digit, then ": ".
 // A PRE-FILTER only -- acceptance is isSenderPrefix(), the one
@@ -36,9 +38,23 @@ bool BandActivityMessageDelegate::isSenderPrefix(const QString &captured,
 
 namespace {
 // One group's text as HTML: the sender prefix(es) bold, body plain.
+// The sender as a bare word: a JTTY message carries no "CALL: " prefix
+// ("WM8Q K9AVT ...", "K6KH W5NM 73 TU"); its attributed sender is bold
+// at its first whole-word occurrence. Case-insensitive, '/' allowed.
+QRegularExpressionMatch bareSenderMatch(const QString &text,
+                                        const QString &senderCall) {
+    if (senderCall.isEmpty()) return QRegularExpressionMatch();
+    QRegularExpression const re(
+        QStringLiteral("(?<![A-Z0-9/])%1(?![A-Z0-9/])")
+            .arg(QRegularExpression::escape(senderCall)),
+        QRegularExpression::CaseInsensitiveOption);
+    return re.match(text);
+}
+
 QString boldSenderBody(const QString &text, const QString &senderCall) {
     QString html;
     int lastEnd = 0;
+    bool prefixed = false;
     auto it = callPrefixRe().globalMatch(text);
     while (it.hasNext()) {
         auto const match = it.next();
@@ -50,6 +66,15 @@ QString boldSenderBody(const QString &text, const QString &senderCall) {
         QString const prefix = match.captured(0).trimmed();
         html += QStringLiteral("<b>%1</b> ").arg(prefix.toHtmlEscaped());
         lastEnd = match.capturedEnd();
+        prefixed = true;
+    }
+    // [operator 2026-10-13] no prefix form: the bare sender, bold
+    if (!prefixed) {
+        auto const m = bareSenderMatch(text, senderCall);
+        if (m.hasMatch())
+            return text.left(m.capturedStart()).toHtmlEscaped() +
+                   QStringLiteral("<b>%1</b>").arg(m.captured(0).toHtmlEscaped()) +
+                   text.mid(m.capturedEnd()).toHtmlEscaped();
     }
     html += text.mid(lastEnd).toHtmlEscaped();
     return html;
@@ -165,21 +190,59 @@ void BandActivityMessageDelegate::paint(QPainter *painter,
             groups.isEmpty()
                 ? QString()
                 : groups[0].toMap()[QStringLiteral("call")].toString();
+        // Bold spans, found in the FULL text: accepted "CALL: "
+        // prefixes, and [operator 2026-10-13] for a line of JTTY
+        // messages (the per-message list in UserRole + 1) each
+        // message's sender at its first bare occurrence inside that
+        // message -- "like JS8 mode", where the sender is bold.
+        QList<QPair<int, int>> spans;
+        {
+            auto it = callPrefixRe().globalMatch(text);
+            while (it.hasNext()) {
+                auto match = it.next();
+                if (!isSenderPrefix(match.captured(0), senderCall,
+                                    match.capturedStart() == 0))
+                    continue;   // body text (#240 layer 1b)
+                spans.append({match.capturedStart(), match.capturedEnd()});
+            }
+            int cursor = 0;
+            for (auto const &g : index.data(Qt::UserRole + 1).toList()) {
+                auto const map = g.toMap();
+                QString const mText =
+                    stripLineBreaks(map[QStringLiteral("text")].toString());
+                int const at = mText.isEmpty() ? -1 : text.indexOf(mText, cursor);
+                if (at < 0) continue;
+                auto const m = bareSenderMatch(
+                    mText, map[QStringLiteral("call")].toString());
+                if (m.hasMatch())
+                    spans.append({at + m.capturedStart(), at + m.capturedEnd()});
+                cursor = at + mText.length();
+            }
+            // earliest first; of two at one start, the longer (the
+            // "K9AVT: " prefix over the bare "K9AVT" inside it)
+            std::sort(spans.begin(), spans.end(),
+                      [](QPair<int, int> const &a, QPair<int, int> const &b) {
+                          return a.first != b.first ? a.first < b.first
+                                                    : a.second > b.second;
+                      });
+        }
+        // ElideLeft keeps a SUFFIX of the text behind one ellipsis
+        // character, so a kept span shifts by the length difference
+        // and a span in the dropped head is skipped.
+        int const shift = elided.length() - text.length();
+        int const firstKept = (shift == 0) ? 0 : 1;
         QFont boldFont = opt.font;
         boldFont.setBold(true);
         int xPos = textRect.x();
         int remaining = textRect.width();
-        auto it = callPrefixRe().globalMatch(elided);
         int lastEnd = 0;
-        while (it.hasNext() && remaining > 0) {
-            auto match = it.next();
-            if (!isSenderPrefix(match.captured(0), senderCall,
-                                match.capturedStart() == 0 &&
-                                    elided.size() == text.size()))
-                continue;   // body text; drawn plain with the next segment
+        for (auto const &s : spans) {
+            int const start = s.first + shift, end = s.second + shift;
+            if (start < firstKept || start < lastEnd || remaining <= 0)
+                continue;
             // Draw text before the callsign (normal)
-            if (match.capturedStart() > lastEnd) {
-                QString before = elided.mid(lastEnd, match.capturedStart() - lastEnd);
+            if (start > lastEnd) {
+                QString before = elided.mid(lastEnd, start - lastEnd);
                 painter->setFont(opt.font);
                 painter->drawText(QRect(xPos, textRect.y(), remaining, textRect.height()),
                                   Qt::AlignLeft | Qt::AlignVCenter, before);
@@ -188,14 +251,14 @@ void BandActivityMessageDelegate::paint(QPainter *painter,
                 remaining -= w;
             }
             // Draw callsign in bold
-            QString call = match.captured(0);
+            QString call = elided.mid(start, end - start);
             painter->setFont(boldFont);
             painter->drawText(QRect(xPos, textRect.y(), remaining, textRect.height()),
                               Qt::AlignLeft | Qt::AlignVCenter, call);
             int w = QFontMetrics(boldFont).horizontalAdvance(call);
             xPos += w;
             remaining -= w;
-            lastEnd = match.capturedEnd();
+            lastEnd = end;
         }
         // Draw remaining text (normal)
         if (lastEnd < elided.length() && remaining > 0) {
@@ -303,6 +366,20 @@ bool BandActivityMessageDelegate::helpEvent(QHelpEvent *event,
         return QStyledItemDelegate::helpEvent(event, view, option, index);
 
     auto groups = getGroups(index);
+
+    // [operator 2026-10-13] A line holding JTTY messages carries a
+    // per-message list (UserRole + 1): one tooltip line per complete
+    // message, its sender bold, in both listing modes. The paint
+    // regions (UserRole) are untouched -- a line of fifty messages
+    // must not become fifty regions.
+    auto const perMessage = index.data(Qt::UserRole + 1).toList();
+    if (!perMessage.isEmpty()) {
+        QToolTip::showText(
+            event->globalPos(),
+            rowTooltipHtml(perMessage, index.data(Qt::DisplayRole).toString()),
+            view);
+        return true;
+    }
 
     // Single group or no groups: show full text as tooltip if elided
     if (groups.size() <= 1) {

@@ -71,6 +71,18 @@ class StationMonitorWindow final : public QWidget {
     // Called by the owner AFTER the probes are installed (backfill
     // must see the HB filter).
     void runBackfill();
+    // [JTTY, operator 2026-10-13] Historical lines supplied by the
+    // caller (JTTY.TXT in JTTY mode), parties already resolved; fed as
+    // backfill in time order, then scrolled to the end.
+    struct Historic {
+        QDateTime utc;
+        QString from;
+        QString to;
+        QString text;
+        int offset;
+        int submode;
+    };
+    void runBackfill(QList<Historic> const &lines);
 
   protected:
     void resizeEvent(class QResizeEvent *event) override;

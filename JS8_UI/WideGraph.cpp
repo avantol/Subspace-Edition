@@ -147,7 +147,7 @@ WideGraph::WideGraph(QSettings *settings, QWidget *parent)
                         << (call.isEmpty()
                                 ? QStringLiteral("none")
                                 : call);
-                    if (!call.isEmpty() && !m_jttyMode) { // [JTTY] none in JTTY mode
+                    if (!call.isEmpty()) { // [operator 2026-10-13] JTTY mode too
                         auto monAction = menu->addAction(
                             tr("Open station monitor for %1")
                                 .arg(call));

@@ -1150,6 +1150,11 @@ void UI_Constructor::on_actionUser_Guide_triggered() {
 void UI_Constructor::on_actionSubspace_Guide_triggered() {
     struct Entry { char const *desc; char const *url; };
     static constexpr Entry kEntries[] = {
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-14] at the top of the list
+        {"How to use the JTTY conversational mode",
+         "https://groups.io/g/Subspace/message/378"},
+#endif
         {"How to show one call sign per line in Band Activity",
          "https://groups.io/g/Subspace/message/352"},
         {"How to use Station Monitors",
@@ -3419,6 +3424,13 @@ void UI_Constructor::openStationMonitor(QString const &call) {
             });
     w->setAttribute(Qt::WA_DeleteOnClose);
     m_stationMonitors.insert(call, w);
+    // [operator 2026-10-13, ruling] JTTY mode backfills from JTTY.TXT
+    // ONLY; JS8 mode from DIRECTED.TXT + ALL.TXT as before.
+#ifdef JS8_ENABLE_JTTY
+    if (jttyMode())
+        jttyBackfillMonitor(w);
+    else
+#endif
     w->runBackfill(); // after the probes: backfill obeys HB filter
     w->show();
 }
@@ -4604,7 +4616,11 @@ void UI_Constructor::guiUpdate() {
             processTxQueue();
 
             // once processed, lets update the display...
-            displayActivity(forceDirty);
+            // [#298] no longer FORCED on the period boundary: the band
+            // activity rebuilds when its content changed (measured in
+            // displayActivity); the per-second age pass below keeps
+            // the Age cells moving without a rebuild.
+            displayActivity(false);
             updateButtonDisplay();
             updateTextDisplay();
         }
@@ -4634,6 +4650,11 @@ void UI_Constructor::guiUpdate() {
         } else {
             refreshCallActivityAgeOnly();
         }
+        // [#298] the band activity's own age-only tick: rewrites the
+        // Age cells of the rows that exist, and asks displayActivity
+        // for a rebuild only when a row aged out or a directed tint
+        // expired. Rows keep their identity under a double-click.
+        refreshBandActivityAgeOnly();
     } // end of stuff we do once per second.
 
     displayTransmit();
@@ -5758,7 +5779,8 @@ void UI_Constructor::refreshJttyModeIndicators() {
     if (m_wideGraph)
         m_wideGraph->setJttyMode(jtty); // the green band bar
     if (m_stationMonitorAction)
-        m_stationMonitorAction->setEnabled(!jtty);
+        // [operator 2026-10-13] monitors are back in JTTY mode
+        m_stationMonitorAction->setEnabled(true);
     displayDialFrequency();
     updateModeButtonText();
 }
@@ -7148,27 +7170,9 @@ QPair<QString, int> UI_Constructor::popMessageFrame() {
 }
 
 void UI_Constructor::currentTextChanged() {
-#ifdef JS8_ENABLE_JTTY
-    // [operator 2026-10-12] At JTTY speed the box itself holds the
-    // 80-character limit, address included: typing stops at the limit
-    // and a paste is cut to it (no ARQ, plain text, one message).
-    if (m_nSubMode == Varicode::JS8CallJTTY) {
-        QString const raw = ui->extFreeTextMsgEdit->toPlainText();
-        int const limit = JTTY::MESSAGE_CHARS - jttyAddressLength(raw);
-        if (raw.simplified().length() > limit) {
-            QString cut = raw;
-            while (cut.simplified().length() > limit && !cut.isEmpty())
-                cut.chop(cut.length() - std::max(0, limit) > 0
-                             ? cut.simplified().length() - limit : 1);
-            ui->extFreeTextMsgEdit->blockSignals(true);
-            ui->extFreeTextMsgEdit->setPlainText(cut);
-            ui->extFreeTextMsgEdit->moveCursor(QTextCursor::End);
-            ui->extFreeTextMsgEdit->blockSignals(false);
-            showStatusMessage(tr("JTTY: %1 characters is the limit, address included.")
-                                  .arg(JTTY::MESSAGE_CHARS));
-        }
-    }
-#endif
+    // [operator 2026-10-13] The 80-character box limit at JTTY speed
+    // (dev 499.55/56) is DROPPED for testing: long text is cut into
+    // successive JTTY messages again in buildJttyFrames.
     auto const text = ui->extFreeTextMsgEdit->toPlainText();
 
     // keep track of dirty flags
@@ -7394,8 +7398,16 @@ bool UI_Constructor::prepareNextMessageFrame() {
             // [#259 2026-09-20] stamped with the FIRST frame's time: the
             // pane and every received monitor line use the first frame,
             // so a 4-frame message read 56 s later here than there.
+            // [operator 2026-10-13] A JTTY transmission addresses by
+            // the JTTY forms ("K9AVT DE WM8Q ..."), never "FROM: TO":
+            // the addressee rule names the party the monitor admits by.
+            QString txTo;
+#ifdef JS8_ENABLE_JTTY
+            if (m_nSubMode == Varicode::JS8CallJTTY)
+                txTo = jttyLineAddressee(monText);
+#endif
             feedStationMonitors(
-                m_config.my_callsign(), QString(), QString(), monText,
+                m_config.my_callsign(), txTo, QString(), monText,
                 freq(),
                 m_txFirstFrameUtc.isValid()
                     ? m_txFirstFrameUtc
@@ -10505,19 +10517,30 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
     // picks one from the callsigns on the line ("DE xxxx" first), and
     // the line is assigned to that call.
     if (rowSubmode == Varicode::JS8CallJTTY) {
+        // [operator 2026-10-13, NP2GG/KZ9V] In callsign mode a STATION
+        // row is the station: its call is selected, no pick, no menu.
+        // Several station rows share one offset there, and the pick
+        // keyed by offset alone took the first row at it (WA4CQG for a
+        // click on NP2GG's row, log 21:58). The pick remains for an
+        // unknown row (blank call) and for offset mode.
+        QString rowCall;
+        if (bandListByCall())
+            if (auto *ci = ui->tableWidgetRXAll->item(row, BACallsign))
+                rowCall = ci->data(Qt::UserRole).toString();
         QString rowText;
         if (auto *mi = ui->tableWidgetRXAll->item(row, BAMessage))
             rowText = mi->text();
         QStringList const calls = jttyCallsOnLine(rowText);
-        if (!calls.isEmpty()) {
+        if (!calls.isEmpty() || !rowCall.isEmpty()) {
             // [#298 2026-10-12] In JTTY speed the table is rebuilt every
             // second, and a rebuild between the two presses makes Qt
             // deliver a double-click as two single clicks (NA5M
             // 17:57:51.941/52.115, every miss in the log straddled a
             // tick). So the double-click is recognised HERE: a second
-            // click on the same offset while the first click's deferred
-            // pick is still armed is the double-click, whatever Qt saw.
-            if (m_jttyPickTimer.isActive() && m_jttyPickOffset == offset) {
+            // click on the same row while the first click's deferred
+            // action is still armed is the double-click, whatever Qt saw.
+            if (m_jttyPickTimer.isActive() && m_jttyPickOffset == offset &&
+                m_jttyPickCall == rowCall) {
                 on_tableWidgetRXAll_cellDoubleClicked(row, BAMessage);
                 return;
             }
@@ -10526,6 +10549,7 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
             // table. A double-click cancels the timer, runs its own
             // action, then picks.
             m_jttyPickOffset = offset;
+            m_jttyPickCall = rowCall;
             m_jttyPickTimer.start(QApplication::doubleClickInterval());
             return;
         }
@@ -10708,6 +10732,21 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
                     mine.append(d);
             }
         }
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-13] ...and the station's JTTY messages,
+        // which live in their own map, attributed by the same rule the
+        // renderer uses (an unknown row: the sender-less messages of
+        // its own line).
+        for (auto it = m_jttyActivity.constBegin();
+             it != m_jttyActivity.constEnd(); ++it) {
+            if (unknownRow && it.key() != offset)
+                continue;
+            QStringList const senders = jttyLineSenders(it.value());
+            for (int i = 0; i < it.value().size(); ++i)
+                if (senders.at(i) == rowCall)
+                    mine.append(it.value().at(i));
+        }
+#endif
         std::stable_sort(mine.begin(), mine.end(),
                          [](ActivityDetail const &a,
                             ActivityDetail const &b) {
@@ -10751,9 +10790,25 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
         return;
     }
 
+    // [operator 2026-10-13] A JTTY row's history is its own line in
+    // the JTTY map, every message of it; the JS8 map has nothing at
+    // that key. Same accumulation below: each JTTY message carries
+    // Last, so the line prints as "msg1 EOT msg2 EOT ...".
+    bool const rowIsJtty =
+#ifdef JS8_ENABLE_JTTY
+        (rowSubmode == Varicode::JS8CallJTTY);
+#else
+        false;
+#endif
+    QList<ActivityDetail> const source =
+#ifdef JS8_ENABLE_JTTY
+        rowIsJtty ? m_jttyActivity.value(offset) :
+#endif
+                    m_bandActivity.value(offset);
+
     qWarning() << "[UI] dblclick band activity: offset=" << offset
                << "rowSubmode=" << rowSubmode << "rowIsFT2=" << rowIsFT2
-               << "entries=" << m_bandActivity[offset].size();
+               << "jtty=" << rowIsJtty << "entries=" << source.size();
 
     int activityAging = m_config.activity_aging();
     QDateTime now = DriftingDateTime::currentDateTimeUtc();
@@ -10762,9 +10817,9 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
     bool isLast = false;
     int activitySubmode = rowSubmode;
     int included = 0, excluded = 0;
-    foreach (auto d, m_bandActivity[offset]) {
+    foreach (auto d, source) {
         // Only include entries matching the clicked row's mode
-        if ((d.submode == Varicode::JS8CallFT2) != rowIsFT2) {
+        if (!rowIsJtty && (d.submode == Varicode::JS8CallFT2) != rowIsFT2) {
             excluded++;
             continue;
         }
@@ -12209,10 +12264,11 @@ void UI_Constructor::updateTextStatsDisplay(QString text, int count) {
         auto cpm = QString::number(text.length() / (count / fpm), 'f', 1);
         QString stats = QString("%1wpm / %2cpm").arg(wpm).arg(cpm);
 #ifdef JS8_ENABLE_JTTY
-        // [operator 2026-10-12] at JTTY speed the 80-character budget,
-        // address included, beside the rate
+        // [operator 2026-10-12] at JTTY speed the character count,
+        // address included, beside the rate. [2026-10-13] The limit is
+        // dropped for testing: 80 is now the size of ONE message.
         if (m_nSubMode == Varicode::JS8CallJTTY)
-            stats += QString(" / %1/%2 chars")
+            stats += QString(" / %1 chars (%2 per msg)")
                          .arg(text.simplified().length() + jttyAddressLength(text))
                          .arg(JTTY::MESSAGE_CHARS);
 #endif
@@ -13427,7 +13483,14 @@ void UI_Constructor::processTxQueue() {
 }
 
 void UI_Constructor::displayActivity(bool force) {
-    if (!m_rxDisplayDirty && !force) {
+    // [#298, 2026-10-14] A rebuild when the band activity's CONTENT
+    // changed (the signature moved since displayBandActivity last
+    // stored it), when the age pass asked for one, or when a caller
+    // forces it. The GUI tick no longer forces: at a 2 s period
+    // (Subspace, JTTY) that force was true every second and the table
+    // was rebuilt under every double-click.
+    bool const changed = bandActivitySignature() != m_bandActivitySignature;
+    if (!m_rxDisplayDirty && !changed && !force) {
         return;
     }
 
@@ -13438,6 +13501,59 @@ void UI_Constructor::displayActivity(bool force) {
     displayCallActivity();
 
     m_rxDisplayDirty = false;
+}
+
+quint64 UI_Constructor::bandActivitySignature() const {
+    quint64 sig = 1469598103934665603ULL; // FNV-1a, folded per field
+    auto const mix = [&sig](quint64 v) {
+        sig ^= v;
+        sig *= 1099511628211ULL;
+    };
+    auto const fold = [&](BandActivity const &map) {
+        for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
+            mix(static_cast<quint64>(it.key()));
+            mix(static_cast<quint64>(it.value().size()));
+            for (auto const &d : it.value()) {
+                mix(static_cast<quint64>(d.utcTimestamp.toMSecsSinceEpoch()));
+                mix(static_cast<quint64>(d.text.size()));
+                mix(static_cast<quint64>(d.bits));
+            }
+        }
+    };
+    fold(m_bandActivity);
+#ifdef JS8_ENABLE_JTTY
+    fold(m_jttyActivity);
+#endif
+    return sig;
+}
+
+// [#298] The once-per-second pass over the EXISTING rows: rewrite the
+// Age cells in place (the call list's Build 121 treatment), and ask
+// for a rebuild only when a row crossed the aging limit since it was
+// built, or when its directed tint no longer matches the marker.
+void UI_Constructor::refreshBandActivityAgeOnly() {
+    auto *table = ui->tableWidgetRXAll;
+    QDateTime const now = DriftingDateTime::currentDateTimeUtc();
+    int const aging = m_config.activity_aging();
+    for (int r = 0; r < table->rowCount(); ++r) {
+        auto *ageItem = table->item(r, BAAge);
+        if (!ageItem) continue;
+        QDateTime const ts = ageItem->data(Qt::UserRole).toDateTime();
+        if (ts.isValid()) {
+            ageItem->setText(since(ts));
+            bool const agedNow = aging && ts.secsTo(now) / 60 >= aging;
+            if (agedNow && !ageItem->data(Qt::UserRole + 2).toBool())
+                m_rxDisplayDirty = true;
+        }
+        if (auto *offsetItem = table->item(r, BAOffset)) {
+            bool allCall = false;
+            bool const tintNow =
+                isDirectedOffset(offsetItem->data(Qt::UserRole).toInt(), &allCall) &&
+                !allCall;
+            if (tintNow != ageItem->data(Qt::UserRole + 1).toBool())
+                m_rxDisplayDirty = true;
+        }
+    }
 }
 
 // updateBandActivity
@@ -13925,7 +14041,11 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     d.bits = Varicode::JS8CallFirst | Varicode::JS8CallLast;
     d.dial = static_cast<int>(dial);
     d.offset = offset;
-    d.text = text;
+    // [operator 2026-10-13] The stored piece carries its own separator,
+    // as a JS8 frame does: the band-activity row joins a line's items
+    // with nothing between, and two JTTY messages met as "PQRSTUVWXY".
+    // The row's rstrip drops the last one. Parsers split on whitespace.
+    d.text = text + QLatin1Char(' ');
     d.utcTimestamp = now;
     d.snr = u.snr;
     d.snrSuspect = false;
@@ -13941,23 +14061,40 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // tolerance between frames, and the spread measured in #297. The
     // bucket's callsign assignment and an armed pick move with it.
     static constexpr int kJttyLineMergeHz = 10;
-    if (!m_jttyActivity.contains(offset)) {
-        int prev = -1, bestDist = kJttyLineMergeHz + 1;
+    // [operator 2026-10-13, log 17:24-17:56] EVERY line within the
+    // tolerance joins, not only the nearest: two lines born 16 Hz apart
+    // (1519, 1503) each followed its newest message and ended 3 Hz
+    // apart (1512, 1509), still two lines, because a message joined a
+    // line but a line never joined a line. Nearest first, so its
+    // callsign assignment and armed pick are the ones that survive.
+    {
+        QList<int> near;
         for (auto it = m_jttyActivity.constBegin();
              it != m_jttyActivity.constEnd(); ++it) {
-            int const dist = qAbs(it.key() - offset);
-            if (dist <= kJttyLineMergeHz && dist < bestDist) {
-                bestDist = dist;
-                prev = it.key();
-            }
+            if (it.key() != offset && qAbs(it.key() - offset) <= kJttyLineMergeHz)
+                near.append(it.key());
         }
-        if (prev >= 0) {
+        std::sort(near.begin(), near.end(), [offset](int a, int b) {
+            return qAbs(a - offset) < qAbs(b - offset);
+        });
+        for (int const prev : near) {
             qCWarning(mainwindow_js8) << "[JTTY] line" << prev << "->" << offset
-                                      << "items=" << m_jttyActivity[prev].size();
-            m_jttyActivity[offset] = m_jttyActivity.take(prev);
-            if (m_jttyRowCall.contains(prev))
-                m_jttyRowCall[offset] = m_jttyRowCall.take(prev);
+                                      << "items=" << m_jttyActivity[prev].size()
+                                      << "joined=" << near.size();
+            m_jttyActivity[offset].append(m_jttyActivity.take(prev));
+            if (m_jttyRowCall.contains(prev)) {
+                if (!m_jttyRowCall.contains(offset))
+                    m_jttyRowCall[offset] = m_jttyRowCall.value(prev);
+                m_jttyRowCall.remove(prev);
+            }
             if (m_jttyPickOffset == prev) m_jttyPickOffset = offset;
+        }
+        if (!near.isEmpty()) {
+            auto &items = m_jttyActivity[offset];
+            std::stable_sort(items.begin(), items.end(),
+                             [](ActivityDetail const &a, ActivityDetail const &b) {
+                                 return a.utcTimestamp < b.utcTimestamp;
+                             });
         }
     }
     m_jttyActivity[offset].append(d);
@@ -13998,8 +14135,16 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         // assigned its offset by the pick: that assignment is the
         // operator's own attribution, and it carries to the line's
         // later messages (KM9R's free text on 14.090 never named him).
-        if (sender.isEmpty() && m_jttyRowCall.contains(offset))
-            sender = m_jttyRowCall.value(offset);
+        // [operator 2026-10-13] ...and before that, the last parsed
+        // sender earlier on this line: the JS8 continuation rule, the
+        // SAME order displayBandActivity attributes a sender-less piece
+        // (own sender, last parsed sender on the line, the pick). The
+        // piece itself is already the bucket's last item; scan the ones
+        // before it, newest first.
+        if (sender.isEmpty()) {
+            auto const &line = m_jttyActivity.value(offset);
+            if (!line.isEmpty()) sender = jttyLineSenders(line).last();
+        }
         if (!sender.isEmpty()) {
             QStringList const fields = text.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
             static QRegularExpression const gridRe(QStringLiteral("^[A-R]{2}[0-9]{2}([A-X]{2})?$"));
@@ -14053,20 +14198,40 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     if (!queued && namesMe) {
         qCWarning(mainwindow_js8) << "[JTTY] line names my station:" << text;
         tryNotify(QStringLiteral("directed"), Varicode::JS8CallJTTY);
+        // [operator 2026-10-13] ...and the band-activity line is
+        // highlighted in the "my call" colour like a JS8 directed
+        // message: the SAME marker and the same timeout (two minutes,
+        // isDirectedOffset) -- the line's key is this offset after the
+        // join above.
+        markOffsetDirected(offset, /*isAllCall=*/false);
+    }
+
+    // [operator 2026-10-13] The station monitors, back in JTTY mode:
+    // every line reaches them with its PARTIES -- the attributed sender
+    // (own, inherited on the line, or the pick) and the addressee by
+    // the sender rule's counterpart. A line queued as a JS8 command is
+    // fed by the command path, so it is not fed twice. Monitors admit
+    // by parties, so an offset drifting with the 10 Hz join is harmless.
+    if (!queued && !m_stationMonitors.isEmpty()) {
+        auto const &line = m_jttyActivity.value(offset);
+        QString const from = line.isEmpty() ? QString() : jttyLineSenders(line).last();
+        QString const to = line.isEmpty() ? QString() : jttyLineAddressees(line).last();
+        qCWarning(mainwindow_js8) << "[JTTY] parties from=" << from
+                                  << "to=" << to << "text=" << text;
+        feedStationMonitors(from, to, QString(), text, offset, now,
+                            Varicode::JS8CallJTTY);
     }
 }
 
 // My station as any WORD of the line (base-call compare, trailing
 // punctuation stripped): the notification filter and the conversation
 // window's "addressed to me" test, one authority.
+static QString jttyBareWord(QString w); // defined with the sender rules
 bool UI_Constructor::jttyLineNamesMe(QString const &text) const {
     static QRegularExpression const ws(QStringLiteral("\\s+"));
     QString const mycall = m_config.my_callsign().trimmed();
-    for (QString w : text.split(ws, Qt::SkipEmptyParts)) {
-        while (!w.isEmpty() &&
-               !(w.back().isLetterOrNumber() || w.back() == QLatin1Char('/')))
-            w.chop(1);
-        if (Radio::same_station(w, mycall)) return true;
+    for (QString const &w : text.split(ws, Qt::SkipEmptyParts)) {
+        if (Radio::same_station(jttyBareWord(w), mycall)) return true;
     }
     return false;
 }
@@ -14188,28 +14353,36 @@ QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text) 
             body = mycall + QStringLiteral(": ") + selected + QLatin1Char(' ') + body;
     }
 
-    // [operator 2026-10-12] ONE message of at most JTTY::MESSAGE_CHARS
-    // (80), never split: a continuation piece left the air with no
-    // sender in it and every receiver showed two unrelated messages.
-    // JTTY is plain text, no ARQ; an over-long message is REFUSED with
-    // the text left in the box for the operator to shorten. The limit
-    // applies to what goes on the air: address included, spaces
-    // collapsed.
-    QString const onAir = body.toUpper().simplified();
-    if (onAir.length() > JTTY::MESSAGE_CHARS) {
-        qCWarning(mainwindow_js8) << "[JTTY-TX] refused:" << onAir.length()
-                                  << "characters, limit" << JTTY::MESSAGE_CHARS
-                                  << ":" << onAir;
-        showStatusMessage(tr("JTTY: message is %1 characters, the limit is %2 "
-                             "(address included). Shorten it.")
-                              .arg(onAir.length()).arg(JTTY::MESSAGE_CHARS));
-        return out;
+    // [operator 2026-10-13] The one-message 80-character limit of dev
+    // 499.55/56 is DROPPED for testing. Text over JTTY::MESSAGE_CHARS is
+    // cut at word boundaries into successive messages, as before 499.55
+    // (known: a continuation piece carries no sender, so a receiver
+    // shows it as a separate message). normalizeJttyMessage truncates
+    // at 80, so it runs per piece.
+    QString remaining = body.toUpper().simplified();
+    while (!remaining.isEmpty()) {
+        QString piece = remaining;
+        if (piece.length() > JTTY::MESSAGE_CHARS) {
+            int cut = piece.lastIndexOf(QLatin1Char(' '), JTTY::MESSAGE_CHARS);
+            if (cut <= 0) cut = JTTY::MESSAGE_CHARS;
+            piece = remaining.left(cut);
+        }
+        remaining = remaining.mid(piece.length()).trimmed();
+        QString const folded = QString::fromStdString(
+            JTTY::normalizeJttyMessage(piece.toStdString())).trimmed();
+        if (folded.isEmpty()) continue;
+        int const bits = (out.isEmpty() ? Varicode::JS8CallFirst : 0) |
+                         (remaining.isEmpty() ? Varicode::JS8CallLast : 0);
+        // [operator 2026-10-13, sender's window "PQRSTUVWXY"] A piece
+        // carries its own separator, as a JS8 frame does: the cut at a
+        // word boundary dropped the space, and every text consumer
+        // joins pieces with nothing between (conversation window,
+        // m_totalTxMessage, band-activity row). The air is unaffected:
+        // the TX path trims before packing.
+        out.append({remaining.isEmpty() ? folded : folded + QLatin1Char(' '), bits});
     }
-    QString const folded = QString::fromStdString(
-        JTTY::normalizeJttyMessage(onAir.toStdString())).trimmed();
-    if (folded.isEmpty()) return out;
-    out.append({folded, Varicode::JS8CallFirst | Varicode::JS8CallLast});
-    qCWarning(mainwindow_js8) << "[JTTY-TX] queued 1 message for:" << body;
+    qCWarning(mainwindow_js8) << "[JTTY-TX] queued" << out.size()
+                              << "message(s) for:" << body;
     return out;
 }
 bool UI_Constructor::jttyPlaceMacro(QString const &payload) {
@@ -14238,10 +14411,40 @@ bool UI_Constructor::jttyPlaceMacro(QString const &payload) {
     return true;
 }
 
+// [operator 2026-10-13, "KI7URZ N7GCR: K9AVT ABCDE"] A JTTY operator
+// types punctuation after a callsign because the keyboard lets them;
+// every callsign-shape test reads the word with its trailing
+// punctuation removed ('/' is part of a call). The ONE exception is a
+// colon on the FIRST word: that is the JS8 "FROM:" form, which a
+// directed JS8 message always starts with, and jttySpotSender leaves
+// it to the colon rule.
+static QString jttyBareWord(QString w) {
+    while (!w.isEmpty() &&
+           !(w.back().isLetterOrNumber() || w.back() == QLatin1Char('/')))
+        w.chop(1);
+    return w;
+}
+
+// [operator 2026-10-13, "15W is not a call sign" at 1883] A plain word
+// is a callsign for the JTTY rules only by WSJT-X's own standard-call
+// test (a letter in the prefix, a digit, a letter suffix), which the
+// loose JS8 shape test does not require. A compound call ('/') keeps
+// the JS8 test, since the standard test refuses every slash. The JS8
+// "FROM:" form is not routed here: that sender was validated by a
+// JS8Call program.
+static bool jttyCallShaped(QString const &w) {
+    if (w.length() < 3 || w.length() > 15) return false;
+    if (w.contains(QLatin1Char('/')))
+        return Varicode::isValidCallsign(w, nullptr);
+    return JTTY::standardCall(w.toStdString());
+}
+
 QString UI_Constructor::jttySpotSender(QString const &text) const {
     QStringList const fields = text.simplified().toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     if (fields.size() < 2) return QString();
-    QString const first = fields.at(0), sender = fields.at(1);
+    if (fields.at(0).endsWith(QLatin1Char(':'))) return QString(); // JS8 form
+    QString const first = jttyBareWord(fields.at(0)),
+                  sender = jttyBareWord(fields.at(1));
     bool const structured =
         (first == QStringLiteral("CQ") || first == QStringLiteral("DE") ||
          JTTY::standardCall(first.toStdString())) &&
@@ -14271,11 +14474,9 @@ QString UI_Constructor::jttyLineSender(QString const &text, bool *fromForm) cons
     // 599 001", "W5NM DM62" -- names its ADDRESSEE first by the WSJT-X
     // convention, so it yields nothing here.
     for (int i = 1; i < words.size(); ++i) {
-        if (words.at(i - 1) != QStringLiteral("DE")) continue;
-        QString w = words.at(i);
-        while (!w.isEmpty() && !(w.back().isLetterOrNumber() || w.back() == QLatin1Char('/')))
-            w.chop(1);
-        if (w.length() >= 3 && Varicode::isValidCallsign(w, nullptr) &&
+        if (jttyBareWord(words.at(i - 1)) != QStringLiteral("DE")) continue;
+        QString const w = jttyBareWord(words.at(i));
+        if (jttyCallShaped(w) &&
             w.compare(m_config.my_callsign(), Qt::CaseInsensitive) != 0)
             return w;
     }
@@ -14285,11 +14486,9 @@ QString UI_Constructor::jttyLineSender(QString const &text, bool *fromForm) cons
     // Me as the second call is my own address form -- no sender.
     static QRegularExpression const gridRe(QStringLiteral("^[A-R]{2}[0-9]{2}([A-X]{2})?$"));
     QStringList calls;
-    for (QString w : words) {
-        while (!w.isEmpty() && !(w.back().isLetterOrNumber() || w.back() == QLatin1Char('/')))
-            w.chop(1);
-        if (w.length() < 3 || gridRe.match(w).hasMatch() ||
-            !Varicode::isValidCallsign(w, nullptr))
+    for (QString const &raw : words) {
+        QString const w = jttyBareWord(raw);
+        if (gridRe.match(w).hasMatch() || !jttyCallShaped(w))
             continue;
         calls.append(w);
         if (calls.size() == 2) break;
@@ -14299,6 +14498,150 @@ QString UI_Constructor::jttyLineSender(QString const &text, bool *fromForm) cons
         calls.at(1).compare(m_config.my_callsign(), Qt::CaseInsensitive) != 0)
         return calls.at(1);
     return QString();
+}
+
+QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line) const {
+    QStringList out;
+    QString last;
+    for (auto const &it : line) {
+        QString const s = jttyLineSender(it.text);
+        if (!s.isEmpty()) last = s;
+        out.append(!s.isEmpty() ? s
+                   : !last.isEmpty() ? last
+                   : m_jttyRowCall.value(it.offset));
+    }
+    // [operator 2026-10-14, 1385 Hz "WM8Q 599 013" then "DE K4JAT K"]
+    // A sender-less piece BEFORE any sender on its line sat on the
+    // unknown row while the rest of the line went to K4JAT. JS8 gives
+    // such a frame to the station nearest its offset; the JTTY
+    // counterpart is the line itself: the leading run takes the first
+    // sender the line names later. The pick still wins where it was
+    // made.
+    QString first;
+    for (int i = 0; i < line.size(); ++i) {
+        QString const s = jttyLineSender(line.at(i).text);
+        if (!s.isEmpty()) { first = s; break; }
+    }
+    if (!first.isEmpty())
+        for (int i = 0; i < out.size(); ++i) {
+            if (!jttyLineSender(line.at(i).text).isEmpty()) break;
+            if (out.at(i).isEmpty()) out[i] = first;
+        }
+    return out;
+}
+
+QString UI_Constructor::jttyLineAddressee(QString const &text) const {
+    QStringList const words = text.simplified().toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.isEmpty()) return QString();
+    QString const first = words.first();
+    // JS8 form "FROM: TO ...": the word after the colon, a call or a
+    // group ('#' is the JTTY alphabet's '@', see queueJttyCommand)
+    if (first.endsWith(QLatin1Char(':'))) {
+        if (words.size() < 2) return QString();
+        QString to = jttyBareWord(words.at(1));
+        if (to.startsWith(QLatin1Char('#'))) to[0] = QLatin1Char('@');
+        if (to.startsWith(QLatin1Char('@'))) return to;
+        return Varicode::isValidCallsign(to, nullptr) ? to : QString();
+    }
+    QString const bare = jttyBareWord(first);
+    if (bare == QStringLiteral("CQ") || bare == QStringLiteral("DE"))
+        return QString();
+    if (!jttyCallShaped(bare)) return QString();
+    // "TO FROM ...", "TO DE FROM ...", "TO 599 001": the first word,
+    // unless it is the sender itself ("FROM: ..." was handled above)
+    QString const sender = jttyLineSender(text);
+    if (!sender.isEmpty() && bare.compare(sender, Qt::CaseInsensitive) == 0)
+        return QString();
+    return bare;
+}
+
+QStringList UI_Constructor::jttyLineAddressees(QList<ActivityDetail> const &line) const {
+    QStringList out;
+    QString last;
+    for (auto const &it : line) {
+        QString const to = jttyLineAddressee(it.text);
+        bool const ownSender = !jttyLineSender(it.text).isEmpty();
+        // a message with its own sender starts fresh; a sender-less
+        // piece continues the previous message, addressee included
+        if (!to.isEmpty()) last = to;
+        else if (ownSender) last.clear();
+        out.append(!to.isEmpty() ? to : last);
+    }
+    return out;
+}
+
+void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
+    QList<StationMonitorWindow::Historic> out;
+    QFile f{m_config.writeable_data_dir().absoluteFilePath(QStringLiteral("JTTY.TXT"))};
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        w->runBackfill(out);
+        return;
+    }
+    // the tail only: a mebibyte is far more than six hours of JTTY
+    constexpr qint64 kTail = 1 << 20;
+    if (f.size() > kTail) {
+        f.seek(f.size() - kTail);
+        f.readLine(); // the cut line
+    }
+    QDateTime const cutoff =
+        DriftingDateTime::currentDateTimeUtc().addSecs(-6 * 3600);
+    // "yyyy-MM-dd hh:mm:ss SNR OFFSET status  TEXT" (processJttyUpdate)
+    static QRegularExpression const rxRe{QStringLiteral(
+        R"(^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(-?\d+)\s+(\d+)\s+(complete|expired|ended)\s+(.*)$)")};
+    // "yyyy-MM-dd hh:mm:ss  Transmitting OFFSET  TEXT" (logTransmitEntry)
+    static QRegularExpression const txRe{QStringLiteral(
+        R"(^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+Transmitting\s+(\d+)\s+(.*)$)")};
+    auto const stamp = [](QString const &s) {
+        QDateTime const d = QDateTime::fromString(s, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        return d.isValid() ? QDateTime(d.date(), d.time(), QTimeZone::utc()) : QDateTime();
+    };
+    BandActivity lines; // the 10 Hz lines, built as the live map builds them
+    QString const mycall = m_config.my_callsign();
+    while (!f.atEnd()) {
+        QString const line = QString::fromUtf8(f.readLine()).trimmed();
+        auto m = rxRe.match(line);
+        if (m.hasMatch()) {
+            QDateTime const utc = stamp(m.captured(1));
+            if (!utc.isValid() || utc < cutoff) continue;
+            int const offset = m.captured(3).toInt();
+            ActivityDetail d = {};
+            d.bits = Varicode::JS8CallFirst | Varicode::JS8CallLast;
+            d.offset = offset;
+            d.text = m.captured(5) + QLatin1Char(' ');
+            d.utcTimestamp = utc;
+            d.snr = m.captured(2).toInt();
+            d.submode = Varicode::JS8CallJTTY;
+            int key = offset, best = 11;
+            for (auto it = lines.constBegin(); it != lines.constEnd(); ++it) {
+                int const dist = qAbs(it.key() - offset);
+                if (dist <= 10 && dist < best) { best = dist; key = it.key(); }
+            }
+            if (key != offset) lines[offset] = lines.take(key);
+            lines[offset].append(d);
+            continue;
+        }
+        m = txRe.match(line);
+        if (m.hasMatch()) {
+            QDateTime const utc = stamp(m.captured(1));
+            if (!utc.isValid() || utc < cutoff) continue;
+            QString const text = m.captured(3);
+            out.append({utc, mycall, jttyLineAddressee(text), text,
+                        m.captured(2).toInt(), Varicode::JS8CallJTTY});
+        }
+    }
+    for (auto it = lines.constBegin(); it != lines.constEnd(); ++it) {
+        QStringList const from = jttyLineSenders(it.value());
+        QStringList const to = jttyLineAddressees(it.value());
+        for (int i = 0; i < it.value().size(); ++i) {
+            auto const &d = it.value().at(i);
+            out.append({d.utcTimestamp, from.at(i), to.at(i),
+                        Varicode::rstrip(d.text), d.offset,
+                        Varicode::JS8CallJTTY});
+        }
+    }
+    qCWarning(mainwindow_js8) << "[JTTY] monitor backfill from JTTY.TXT:"
+                              << out.size() << "lines for" << w->windowTitle();
+    w->runBackfill(out);
 }
 
 QStringList UI_Constructor::jttyCallsOnLine(QString const &rowText,
@@ -14320,13 +14663,8 @@ QStringList UI_Constructor::jttyCallsOnLine(QString const &rowText,
     bool formSender = !sender.isEmpty() && fromForm;
     if (!sender.isEmpty()) afterDe.append(sender);
     for (int i = 0; i < words.size(); ++i) {
-        QString w = words.at(i);
-        while (!w.isEmpty() &&
-               !(w.back().isLetterOrNumber() || w.back() == QLatin1Char('/')))
-            w.chop(1);
-        if (w.length() < 3 || w.length() > 15 || w == mycall ||
-            grid.match(w).hasMatch() ||
-            !Varicode::isValidCallsign(w, nullptr))
+        QString const w = jttyBareWord(words.at(i));
+        if (w == mycall || grid.match(w).hasMatch() || !jttyCallShaped(w))
             continue;
         if (afterDe.contains(w) || others.contains(w)) continue;
         if (i > 0 && words.at(i - 1) == QStringLiteral("DE")) {
@@ -14349,7 +14687,13 @@ QString UI_Constructor::pickJttyCallsign(QString const &rowText) {
     bool obvious = false;
     QStringList const calls = jttyCallsOnLine(rowText, &obvious);
     if (calls.isEmpty()) return QString();
-    if (calls.size() == 1 || obvious) return calls.first();
+    // [operator 2026-10-13, "T46KCL TU" at 1033] A lone callsign-shaped
+    // word is NOT definitive: by the WSJT-X convention the first word is
+    // the addressee, and a garbled call looks the same. Only a FORM
+    // sender (obvious) is assigned without the menu; a single bare
+    // candidate is offered as a one-entry menu for the operator to
+    // confirm.
+    if (obvious) return calls.first();
     QMenu menu(this);
     for (auto const &c : calls) menu.addAction(c);
     QAction *const picked = menu.exec(QCursor::pos());
@@ -14358,15 +14702,29 @@ QString UI_Constructor::pickJttyCallsign(QString const &rowText) {
 
 void UI_Constructor::applyJttyPick(int offset) {
     if (offset < 0) return;
+    // [operator 2026-10-13, NP2GG/KZ9V] A station row in callsign mode:
+    // the armed click recorded its call; select it and nothing else.
+    QString const rowCall = m_jttyPickCall;
+    m_jttyPickCall.clear();
+    if (!rowCall.isEmpty()) {
+        qWarning() << "[UI] JTTY station row selected:" << rowCall;
+        selectCallsign(rowCall);
+        return;
+    }
     // Locate the row by its offset: the table may have been rebuilt
-    // since the click that armed this pick (#298).
+    // since the click that armed this pick (#298). In callsign mode
+    // the row wanted is the UNKNOWN one at that offset (blank call),
+    // never one of the station rows sharing the offset.
     QTableWidgetItem *mi = nullptr;
     for (int r = 0; r < ui->tableWidgetRXAll->rowCount(); ++r) {
         auto *oi = ui->tableWidgetRXAll->item(r, BAOffset);
-        if (oi && oi->data(Qt::UserRole).toInt() == offset) {
-            mi = ui->tableWidgetRXAll->item(r, BAMessage);
-            break;
+        if (!oi || oi->data(Qt::UserRole).toInt() != offset) continue;
+        if (bandListByCall()) {
+            auto *ci = ui->tableWidgetRXAll->item(r, BACallsign);
+            if (ci && !ci->data(Qt::UserRole).toString().isEmpty()) continue;
         }
+        mi = ui->tableWidgetRXAll->item(r, BAMessage);
+        break;
     }
     if (!mi) return;
     QString const chosen = pickJttyCallsign(mi->text());

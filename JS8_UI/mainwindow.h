@@ -1402,6 +1402,12 @@ class UI_Constructor : public QMainWindow {
         // populated (e.g., standard period-aligned decoder doesn't
         // set it). See Event::Decoded::absPos for derivation.
         std::int64_t absPos{0};
+        // [operator 2026-10-13] Render-time attribution of a JTTY
+        // message (its own parsed sender, the last parsed sender on
+        // its line, the pick), set by displayBandActivity's attribution
+        // pass and read by the per-message tooltip and bolding. Empty
+        // for JS8 frames, whose sender rides the "CALL: " prefix.
+        QString sender;
     };
 
     struct MessageBuffer {
@@ -1418,6 +1424,19 @@ class UI_Constructor : public QMainWindow {
     bool m_bandActivityWasVisible;
     bool m_rxDirty;
     bool m_rxDisplayDirty = false;
+    // [#298, operator 2026-10-14 "build that"] The band activity is
+    // REBUILT only when its content changed -- measured, not flagged:
+    // a signature over every bucket's items, stored by
+    // displayBandActivity and compared by displayActivity -- or when
+    // the once-per-second age pass asks (a row crossed the aging limit,
+    // a directed tint expired), or when a caller forces it. The tick
+    // itself only rewrites the Age cells in place, as the call list has
+    // done since Build 121, so rows keep their identity under a
+    // double-click at every speed (Subspace's 2 s period forced a
+    // rebuild every second too).
+    quint64 m_bandActivitySignature = 0;
+    quint64 bandActivitySignature() const;
+    void refreshBandActivityAgeOnly();
     // Counter bumped in logCallActivity on every insert/update. The
     // once-per-second tick compares against m_callActivityRenderedVersion
     // and only does a full displayCallActivity rebuild when they differ —
@@ -2129,6 +2148,26 @@ class UI_Constructor : public QMainWindow {
     // DE FROM), not from the bare "second callsign" rule -- the pick
     // offers a menu for the latter (operator 2026-10-13).
     QString jttyLineSender(QString const &text, bool *fromForm = nullptr) const;
+    // Per-message attribution of a whole JTTY line, in order: a
+    // message's own parsed sender, else the last parsed sender earlier
+    // on the line, else the operator's pick for the offset. ONE
+    // authority for the renderer, the arrival path and the band
+    // activity double-click.
+    QStringList jttyLineSenders(QList<ActivityDetail> const &line) const;
+    // [operator 2026-10-13] The sender rule's counterpart: whom a JTTY
+    // message addresses. JS8 form "FROM: TO ..." = the word after the
+    // colon (a call or a group); "CQ ..." and "DE FROM ..." = nobody;
+    // otherwise the first word when it is a callsign other than the
+    // sender ("TO FROM", "TO DE FROM", "TO 599 001"). Per line, a
+    // sender-less piece inherits the previous message's addressee, as
+    // it inherits its sender. Feeds the station monitors.
+    QString jttyLineAddressee(QString const &text) const;
+    QStringList jttyLineAddressees(QList<ActivityDetail> const &line) const;
+    // [operator 2026-10-13, ruling] A station monitor opened in JTTY
+    // mode backfills from JTTY.TXT ONLY: the file's receive and
+    // transmit lines of the last hours, parties by the two rules above
+    // (continuation across each 10 Hz line), handed to the window.
+    void jttyBackfillMonitor(class StationMonitorWindow *w) const;
     // My station as any word of the line: notification + convo window.
     bool jttyLineNamesMe(QString const &text) const;
     // [operator 2026-10-12] The characters the send path will PREPEND to
@@ -2167,6 +2206,12 @@ class UI_Constructor : public QMainWindow {
     void applyJttyPick(int offset);
     QTimer m_jttyPickTimer;
     int m_jttyPickOffset = -1;
+    // [operator 2026-10-13, NP2GG/KZ9V] In callsign mode several station
+    // rows share one offset (a QSO line split per station); the armed
+    // click remembers the ROW's station so the deferred action selects
+    // it and never another row's pick. Empty = offset mode or an
+    // unknown row, where the pick applies.
+    QString m_jttyPickCall;
     // The "JS8 (JTTY ...)" menu item is the JTTY SPEED under JS8
     // conventions; jttyMode() (declared above, unconditionally) is the
     // mode. The guest rule (speed lock, no HB, JS8 commands not

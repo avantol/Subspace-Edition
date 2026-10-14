@@ -240,6 +240,9 @@ const char *const jttyFrequenciesSettingsKey = "SsJttyFrequencies";
 // (Modes::JS8_JTTY), same shape as the map above, beside the list which
 // carries them as JS8.
 const char *const jttySharedFrequenciesSettingsKey = "SsJttySharedFrequencies";
+// [operator 2026-10-13] set once the JTTY calling entries have been
+// seeded into the frequency list (written with the list, see save)
+const char *const jttyFrequencySeedSettingsKey = "SsJttyFrequencySeed";
 }// namespace
 
 //
@@ -2515,6 +2518,40 @@ void Configuration::impl::read_settings() {
         frequencies_.reset_to_defaults();
     }
 
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-13] ONE-TIME seed of the JTTY calling entries,
+    // unconditional: an entry already at the frequency takes the kind
+    // and the comment, a missing one is added (region ALL). Runs until
+    // the flag is written, which write_settings does together with
+    // the list, so a start that never writes seeds again -- the seed
+    // is idempotent.
+    if (!settings_->value(jttyFrequencySeedSettingsKey, false).toBool()) {
+        struct Seed { Radio::Frequency f; Modes::Mode m; char const *d; };
+        static Seed const seeds[] = {
+            {7090000, Modes::JTTY, "JTTY"},
+            {7078000, Modes::JS8_JTTY, "JS8+JTTY"},
+            {14090000, Modes::JTTY, "JTTY"},
+            {14078000, Modes::JS8, "JS8"},
+        };
+        auto items = frequencies_.frequency_list();
+        for (auto const &s : seeds) {
+            bool found = false;
+            for (auto &it : items)
+                if (it.frequency_ == s.f) {
+                    it.mode_ = s.m;
+                    it.description_ = QString::fromLatin1(s.d);
+                    found = true;
+                }
+            if (!found)
+                items.append({s.f, s.m, IARURegions::ALL,
+                              QString::fromLatin1(s.d), QString()});
+        }
+        frequencies_.frequency_list(std::move(items));
+        qWarning() << "[JTTY] frequency list seeded: 7.090 JTTY, 7.078"
+                      " JS8+JTTY, 14.090 JTTY, 14.078 JS8";
+    }
+#endif
+
     stations_.station_list(
         settings_->value("stations").value<StationList::Stations>());
 
@@ -2819,6 +2856,8 @@ void Configuration::impl::write_settings() {
                             QVariant::fromValue(items));
         settings_->setValue(jttyFrequenciesSettingsKey, jtty);
         settings_->setValue(jttySharedFrequenciesSettingsKey, jttyShared);
+        // the one-time seed (see load) is on disk once the list is
+        settings_->setValue(jttyFrequencySeedSettingsKey, true);
     }
 #else
     settings_->setValue(versionedFrequenciesSettingsKey,

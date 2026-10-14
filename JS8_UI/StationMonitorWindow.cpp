@@ -509,6 +509,21 @@ void StationMonitorWindow::runBackfill() {
     });
 }
 
+void StationMonitorWindow::runBackfill(QList<Historic> const &lines) {
+    QList<Historic> hist = lines;
+    std::stable_sort(hist.begin(), hist.end(),
+                     [](Historic const &a, Historic const &b) {
+                         return a.utc < b.utc;
+                     });
+    for (Historic const &h : hist)
+        feed(h.from, h.to, QString(), h.text, h.offset, h.utc, h.submode,
+             true);
+    QTimer::singleShot(0, m_log, [log = m_log]() {
+        auto *sb = log->verticalScrollBar();
+        sb->setValue(sb->maximum());
+    });
+}
+
 bool StationMonitorWindow::eventFilter(QObject *obj, QEvent *event) {
     // Double-click on an anchor: QTextBrowser has no double-click
     // signal, so read the anchor under the cursor ourselves. The

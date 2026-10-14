@@ -154,10 +154,23 @@ void UI_Constructor::displayBandActivity() {
             // seen nearest its offset (operator proposal); only when
             // that finds nothing is it left out of callsign mode.
             QStringList attrib;
-            if (listByCall) {
+            // [operator 2026-10-13] The pass runs in BOTH listing modes:
+            // a JTTY message's sender is wanted per message by the
+            // tooltip and the bolding whichever mode shows it. JS8
+            // frames are attributed in callsign mode only, as before.
+            {
                 QString lastCall;
+#ifdef JS8_ENABLE_JTTY
+                // [operator 2026-10-13] the JTTY items of this key are
+                // m_jttyActivity.value(key) appended in order (above);
+                // their attribution comes from the ONE authority
+                QStringList const jttySenders =
+                    jttyLineSenders(m_jttyActivity.value(key));
+                int jttyIdx = 0;
+#endif
                 for (auto const &it : items) {
-                    QString const c = frameFromCall(it.text, it.bits);
+                    QString const c =
+                        listByCall ? frameFromCall(it.text, it.bits) : QString();
                     if (!c.isEmpty())
                         lastCall = c;
                     // [JTTY] a JTTY message is never attributed to a JS8
@@ -169,20 +182,31 @@ void UI_Constructor::displayBandActivity() {
                     // sender at one offset starts its own row (2076 Hz:
                     // K9AVT's lines sat unknown until picked, then split).
 #ifdef JS8_ENABLE_JTTY
+                    // [operator 2026-10-13] ...and a piece with no sender
+                    // of its own belongs to the last parsed JTTY sender
+                    // earlier in this bucket -- the JS8 continuation rule
+                    // (lastCall) on the JTTY side, which the first cut
+                    // skipped: K9AVT's four continuation pieces sat on
+                    // an UNKNOWN row until a click picked K9AVT for them.
                     if (it.submode == Varicode::JS8CallJTTY) {
-                        QString const s = jttyLineSender(it.text);
-                        attrib.append(s.isEmpty() ? m_jttyRowCall.value(it.offset) : s);
+                        attrib.append(jttyIdx < jttySenders.size()
+                                          ? jttySenders.at(jttyIdx)
+                                          : QString());
+                        ++jttyIdx;
                         continue;
                     }
 #endif
-                    attrib.append(
-                        lastCall.isEmpty()
-                            ? mostLikelyCallAtOffset(it.offset, it.submode)
-                            : lastCall);
+                    attrib.append(!listByCall ? QString()
+                                  : lastCall.isEmpty()
+                                      ? mostLikelyCallAtOffset(it.offset, it.submode)
+                                      : lastCall);
                 }
-            } else {
+#ifdef JS8_ENABLE_JTTY
+                // the attribution rides the item into both renderers
                 for (int i = 0; i < items.size(); ++i)
-                    attrib.append(QString());
+                    if (items[i].submode == Varicode::JS8CallJTTY)
+                        items[i].sender = attrib[i];
+#endif
             }
 
             for (int i = 0; i < items.length(); ++i) {
@@ -406,6 +430,7 @@ void UI_Constructor::displayBandActivity() {
                                 bool snrSuspect, int submode,
                                 QString const &joined,
                                 QVariantList const &groupData,
+                                QVariantList const &tipData,
                                 QString const &lastText, bool selected) {
             ui->tableWidgetRXAll->insertRow(
                 ui->tableWidgetRXAll->rowCount());
@@ -431,6 +456,19 @@ void UI_Constructor::displayBandActivity() {
             auto ageItem = new QTableWidgetItem(age);
             ageItem->setTextAlignment(Qt::AlignCenter);
             ageItem->setToolTip(timestamp.toString());
+            // [#298] what the once-per-second age pass needs to rewrite
+            // this cell in place and to know when a REBUILD is due:
+            // the row's timestamp, and whether it was already past the
+            // aging limit when built (then it is shown as exempt, and
+            // the pass must not ask for a rebuild every second).
+            ageItem->setData(Qt::UserRole, timestamp);
+            {
+                int const aging = m_config.activity_aging();
+                bool const agedOut =
+                    aging && timestamp.secsTo(
+                                 DriftingDateTime::currentDateTimeUtc()) / 60 >= aging;
+                ageItem->setData(Qt::UserRole + 2, agedOut);
+            }
             ui->tableWidgetRXAll->setItem(row, BAAge, ageItem);
 
             auto snrText = snrSuspect ? QString() : Varicode::formatSNR(snr);
@@ -462,6 +500,9 @@ void UI_Constructor::displayBandActivity() {
 
             auto textItem = new QTableWidgetItem(joined);
             textItem->setData(Qt::UserRole, groupData);
+            // [operator 2026-10-13] the per-message list of a JTTY line
+            // (empty otherwise): tooltip and sender bolding read it
+            textItem->setData(Qt::UserRole + 1, tipData);
             textItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
             ui->tableWidgetRXAll->setItem(row, BAMessage, textItem);
 
@@ -471,10 +512,11 @@ void UI_Constructor::displayBandActivity() {
             // readability.
             {
                 // [#240] the delegate's ONE authority, not a copy:
-                // one line per group, each group's sender bold
+                // one line per group, each group's sender bold; one
+                // line per complete message for a JTTY line
                 auto const fullTip =
-                    BandActivityMessageDelegate::rowTooltipHtml(groupData,
-                                                                joined);
+                    BandActivityMessageDelegate::rowTooltipHtml(
+                        tipData.isEmpty() ? groupData : tipData, joined);
                 callItem->setToolTip(fullTip);
                 offsetItem->setToolTip(fullTip);
                 tdriftItem->setToolTip(fullTip);
@@ -498,14 +540,18 @@ void UI_Constructor::displayBandActivity() {
             // free-text mention. Legacy (stock 2.2.0 identical). Meaning
             // is not position: a mention is not an address.
             bool isDirectedAllCall = false;
-            if (isDirectedOffset(offset, &isDirectedAllCall) &&
-                !isDirectedAllCall) {
+            bool const directedTint =
+                isDirectedOffset(offset, &isDirectedAllCall) &&
+                !isDirectedAllCall;
+            if (directedTint) {
                 for (int i = 0; i < ui->tableWidgetRXAll->columnCount();
                      i++) {
                     ui->tableWidgetRXAll->item(row, i)->setBackground(
                         QBrush(m_config.color_MyCall()));
                 }
             }
+            // [#298] the age pass asks for a rebuild when this expires
+            ageItem->setData(Qt::UserRole + 1, directedTint);
 
             if (!joined.isEmpty()) {
                 auto const list = joined.split(QRegularExpression("[:> ]"),
@@ -634,6 +680,10 @@ void UI_Constructor::displayBandActivity() {
                     // Each group: {callsign, accumulated text}
                     struct CallGroup { QString call; QString text; };
                     QList<CallGroup> callGroups;
+                    // [operator 2026-10-13] the per-message tooltip list
+                    // of a JTTY line (UserRole + 1): one entry per
+                    // complete message with its attributed sender
+                    QVariantList tipData;
 
                     foreach (ActivityDetail item, items) {
                         if (!item.shouldDisplay) {
@@ -650,6 +700,15 @@ void UI_Constructor::displayBandActivity() {
                                             .arg(Varicode::rstrip(item.text))
                                             .arg(m_config.eot());
                         }
+
+#ifdef JS8_ENABLE_JTTY
+                        if (item.submode == Varicode::JS8CallJTTY) {
+                            QVariantMap m;
+                            m["call"] = item.sender;
+                            m["text"] = Varicode::rstrip(item.text);
+                            tipData.append(m);
+                        }
+#endif
 
                         // Extract "from" callsign via the shared parse
                         QString frameCall = frameFromCall(item.text, item.bits);
@@ -718,7 +777,7 @@ void UI_Constructor::displayBandActivity() {
 
                     addRow(QString(), offset, tdrift, age, timestamp,
                            snr, snrSuspect, submode, joined, groupData,
-                           text.last(), isOffsetSelected);
+                           tipData, text.last(), isOffsetSelected);
                 }
                 } // end split-by-submode for loop (Build 145)
             }
@@ -796,6 +855,16 @@ void UI_Constructor::displayBandActivity() {
                 int submode = -1;
                 int offset = -1;
 
+                // [operator 2026-10-13] The per-message tooltip list of
+                // a row holding JTTY messages: one entry per complete
+                // JTTY message with its attributed sender (the row's
+                // station for a known row); the row's JS8 frames, if
+                // any, stay one entry as today. Empty for a JS8-only
+                // row, which keeps its single-group tooltip.
+                struct Tip { QString call; QString text; bool jtty; };
+                QList<Tip> tips;
+                bool anyJtty = false;
+
                 foreach (ActivityDetail item, rowItems(rowSrc)) {
                     if (item.isLowConfidence) {
                         item.text = QString("[%1]").arg(item.text);
@@ -807,6 +876,18 @@ void UI_Constructor::displayBandActivity() {
                                         .arg(Varicode::rstrip(item.text))
                                         .arg(m_config.eot());
                     }
+
+#ifdef JS8_ENABLE_JTTY
+                    if (item.submode == Varicode::JS8CallJTTY) {
+                        tips.append({item.sender.isEmpty() ? call : item.sender,
+                                     item.text, true});
+                        anyJtty = true;
+                    } else
+#endif
+                    if (tips.isEmpty() || tips.last().jtty)
+                        tips.append({call, item.text, false});
+                    else
+                        tips.last().text += item.text;
 
                     text.append(item.text);
                     snr = item.snr;
@@ -838,6 +919,15 @@ void UI_Constructor::displayBandActivity() {
                     m["text"] = joined;
                     groupData.append(m);
                 }
+                QVariantList tipData;
+                if (anyJtty) {
+                    for (auto const &t : tips) {
+                        QVariantMap m;
+                        m["call"] = t.call;
+                        m["text"] = Varicode::rstrip(t.text);
+                        tipData.append(m);
+                    }
+                }
 
                 // Selection identity: callsign for station rows; the
                 // offset bucket for unknown rows (only when no
@@ -850,7 +940,7 @@ void UI_Constructor::displayBandActivity() {
                            selectedOffset == rowSrc.second);
 
                 addRow(call, offset, tdrift, age, timestamp, snr,
-                       snrSuspect, submode, joined, groupData,
+                       snrSuspect, submode, joined, groupData, tipData,
                        text.last(), selected);
             }
         }
@@ -917,4 +1007,7 @@ void UI_Constructor::displayBandActivity() {
         ui->tableWidgetRXAll->verticalScrollBar()->setValue(currentScrollPos);
     }
     ui->tableWidgetRXAll->setUpdatesEnabled(true);
+    // [#298] what the table now shows; displayActivity rebuilds only
+    // when the content has moved away from it
+    m_bandActivitySignature = bandActivitySignature();
 }
