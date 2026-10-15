@@ -1324,6 +1324,38 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // of this file (above the #include lines is fine — it just needs
     // to be visible at this point), or pass -DJS8_DISABLE_L2_ASYNC=1
     // via CMake. Touch this file and rebuild to re-evaluate.
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-15, frequency-kind truth table] "Enable decoding
+    // of JTTY speed": hides or shows JTTY decodes on a JS8-only frequency
+    // (and one not in the list). Default ON, saved per configuration. The
+    // receiver keeps running either way; the switch only hides results.
+    // Built in code, beside the Subspace switch, so a build without JTTY
+    // carries none of it. Visibility: updateModeMenus().
+    m_jttyDecodeShown = m_settings->value("SsJttyDecodeShown", true).toBool();
+    m_actionJttyDecode = new QAction(tr("Enable decoding of JTTY speed"), this);
+    m_actionJttyDecode->setCheckable(true);
+    m_actionJttyDecode->setChecked(m_jttyDecodeShown);
+    ui->menuModeJS8->insertAction(ui->actionModeSubspaceDecode, m_actionJttyDecode);
+    connect(m_actionJttyDecode, &QAction::toggled, this, [this](bool on) {
+        setJttyDecodeShown(on, QStringLiteral("menu"));
+        // [operator 2026-10-15] off while transmitting at JTTY speed:
+        // the speed goes to Normal -- never a speed we cannot hear. A
+        // refused change (TX busy) leaves decoding on instead.
+        if (!on && m_nSubMode == Varicode::JS8CallJTTY && !jttyMode()) {
+            setSubmode(Varicode::JS8CallNormal);
+            if (m_nSubMode == Varicode::JS8CallJTTY)
+                setJttyDecodeShown(true, QStringLiteral("speed change refused (TX busy)"));
+        }
+    });
+    // [operator 2026-10-15] the invariant at start-up too: a saved JTTY
+    // speed with its decoding saved off (the menu route used to allow it)
+    if (m_nSubMode == Varicode::JS8CallJTTY && !m_jttyDecodeShown) {
+        m_jttyDecodeShown = true;
+        m_settings->setValue("SsJttyDecodeShown", true);
+        m_actionJttyDecode->setChecked(true);
+        qWarning() << "[JTTY] start-up at JTTY speed: decoding of JTTY speed ON";
+    }
+#endif
 #ifndef JS8_DISABLE_L2_ASYNC
     // [ssdetect] Startup honors the persisted switch. The switch's
     // menu item exists only on stations that have ever seen the
@@ -1336,8 +1368,15 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // [magtitle] Persisted latch changes the version segment to
     // "(vX - MAGNET)"; re-paint now that the flag is known.
     updateWindowTitle();
-    bool const ssDecode =
+    bool ssDecode =
         m_settings->value("SubspaceDecodeEnabled", true).toBool();
+    // [operator 2026-10-15] the invariant at start-up: a saved Subspace
+    // speed with its decoding saved off (the menu route used to allow it)
+    if (m_nSubMode == Varicode::JS8CallFT2 && !ssDecode) {
+        ssDecode = true;
+        m_settings->setValue("SubspaceDecodeEnabled", true);
+        qWarning() << "[SSDETECT] start-up at Subspace speed: Subspace decode ON";
+    }
     m_l2Enabled = ssDecode;
     ui->actionModeSubspaceDecode->blockSignals(true);
     ui->actionModeSubspaceDecode->setChecked(ssDecode);

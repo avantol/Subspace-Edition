@@ -443,9 +443,17 @@ class UI_Constructor : public QMainWindow {
     // any other speed, rendered as a JS8 receiver shows it (addressing,
     // identification, checksum dropped); in JTTY mode it goes as typed.
     // forceData / pDisableTypeahead: the JS8 builder's typeahead rules.
+    // pDirCmd: the JS8 directed command the text carries (JS8 mode).
+    // quiet: a dry run (no "queued" log line) for the send-time checks.
     QList<QPair<QString, int>> buildJttyFrames(QString const &text,
                                                bool forceData = false,
-                                               bool *pDisableTypeahead = nullptr);
+                                               bool *pDisableTypeahead = nullptr,
+                                               QString *pDirCmd = nullptr,
+                                               bool quiet = false);
+    // [operator 2026-10-15] At JTTY speed in JS8 mode a MSG / MSG TO:
+    // must fit ONE JTTY message: the receiver stores only the message
+    // that carries the command. Says so and returns false otherwise.
+    bool ensureFitsJttySpeed(QString const &text);
     // A complete JTTY message in the JS8 directed form ("K9AVT: WM8Q
     // SNR?") becomes a CommandDetail on m_rxCommandQueue, exactly as a
     // decoded JS8 directed frame does; processCommandActivity answers.
@@ -2326,6 +2334,19 @@ class UI_Constructor : public QMainWindow {
     void serviceSubspaceDecodeBorrow();         // 1 Hz predicate check
     void noteSuperSpotterSeen();                // detector latch (persists)
     void applyMagnetJttyVisibility();           // JTTY speed hidden on MAGNET
+    // [operator 2026-10-15, frequency-kind truth table] What a station
+    // may SEE. JS8 decodes (every speed) are hidden on a JTTY-only
+    // frequency; JTTY decodes are hidden on a MAGNET station, and on a
+    // JS8-only or unlisted frequency unless "Enable decoding of JTTY
+    // speed" is on. Hidden decodes still reach ALL.TXT / JTTY.TXT.
+    bool js8DecodesShown() const;
+    void speedChosenForTransmit(int submode);   // its decoding goes on
+#ifdef JS8_ENABLE_JTTY
+    bool jttyDecodesShown() const;
+    void setJttyDecodeShown(bool on, QString const &reason);
+    bool m_jttyDecodeShown = true;              // SsJttyDecodeShown, per config
+    QAction *m_actionJttyDecode = nullptr;      // Mode menu switch
+#endif
     void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }
     void updateModeStatusLabel();               // mode + RX-off truth

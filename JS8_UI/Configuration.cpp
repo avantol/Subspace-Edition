@@ -243,6 +243,10 @@ const char *const jttySharedFrequenciesSettingsKey = "SsJttySharedFrequencies";
 // [operator 2026-10-13] set once the JTTY calling entries have been
 // seeded into the frequency list (written with the list, see save)
 const char *const jttyFrequencySeedSettingsKey = "SsJttyFrequencySeed";
+// [operator 2026-10-15] the seed grows: each seed entry carries the
+// GENERATION that introduced it, and this records the highest generation
+// already applied. The boolean above stays as it was (= generation 1).
+const char *const jttyFrequencySeedGenSettingsKey = "SsJttyFrequencySeedGen";
 }// namespace
 
 //
@@ -574,9 +578,10 @@ class Configuration::impl final : public QDialog {
     QStringListModel auto_route_groups_model_;
     void refresh_auto_route_groups_model();
     FrequencyList_v3 frequencies_;
-    // [audit L2] the one-time JTTY frequency seed has been applied (this
-    // session or an earlier one): only then may write_settings record it
-    bool jtty_seed_done_ = false;
+    // [audit L2] the highest JTTY frequency-seed generation applied (this
+    // session or an earlier one); 0 = none, and only then does
+    // write_settings record nothing
+    int jtty_seed_gen_ = 0;
     FrequencyList_v3 next_frequencies_;
     StationList stations_;
     StationList next_stations_;
@@ -2531,17 +2536,25 @@ void Configuration::impl::read_settings() {
     // [audit L2, 2026-10-14] The v2-profile migration above calls
     // write_settings BEFORE this point; that write must not record a seed
     // that has not happened, or a migrated profile is never seeded.
-    jtty_seed_done_ = settings_->value(jttyFrequencySeedSettingsKey, false).toBool();
-    if (!jtty_seed_done_) {
-        struct Seed { Radio::Frequency f; Modes::Mode m; char const *d; };
-        static Seed const seeds[] = {
-            {7090000, Modes::JTTY, "JTTY"},
-            {7078000, Modes::JS8_JTTY, "JS8+JTTY"},
-            {14090000, Modes::JTTY, "JTTY"},
-            {14078000, Modes::JS8, "JS8"},
-        };
+    // [operator 2026-10-15] Generation 2 adds 18.104 as JS8+JTTY (WSJT-X
+    // 3.3's 17 m JTTY dial is JS8's own). A profile seeded before carries
+    // only the boolean, i.e. generation 1, and receives generation 2 only.
+    struct Seed { Radio::Frequency f; Modes::Mode m; char const *d; int gen; };
+    static Seed const seeds[] = {
+        {7090000, Modes::JTTY, "JTTY", 1},
+        {7078000, Modes::JS8_JTTY, "JS8+JTTY", 1},
+        {14090000, Modes::JTTY, "JTTY", 1},
+        {14078000, Modes::JS8, "JS8", 1},
+        {18104000, Modes::JS8_JTTY, "JS8+JTTY", 2},
+    };
+    int const kSeedGen = 2; // the highest generation above
+    jtty_seed_gen_ = settings_->value(
+        jttyFrequencySeedGenSettingsKey,
+        settings_->value(jttyFrequencySeedSettingsKey, false).toBool() ? 1 : 0).toInt();
+    if (jtty_seed_gen_ < kSeedGen) {
         auto items = frequencies_.frequency_list();
         for (auto const &s : seeds) {
+            if (s.gen <= jtty_seed_gen_) continue; // applied before
             bool found = false;
             for (auto &it : items)
                 if (it.frequency_ == s.f) {
@@ -2554,9 +2567,11 @@ void Configuration::impl::read_settings() {
                               QString::fromLatin1(s.d), QString()});
         }
         frequencies_.frequency_list(std::move(items));
-        qWarning() << "[JTTY] frequency list seeded: 7.090 JTTY, 7.078"
-                      " JS8+JTTY, 14.090 JTTY, 14.078 JS8";
-        jtty_seed_done_ = true;
+        qWarning() << "[JTTY] frequency list seeded from generation"
+                   << jtty_seed_gen_ + 1 << "to" << kSeedGen
+                   << "(gen 1: 7.090 JTTY, 7.078 JS8+JTTY, 14.090 JTTY,"
+                      " 14.078 JS8; gen 2: 18.104 JS8+JTTY)";
+        jtty_seed_gen_ = kSeedGen;
     }
 #endif
 
@@ -2866,8 +2881,10 @@ void Configuration::impl::write_settings() {
         settings_->setValue(jttySharedFrequenciesSettingsKey, jttyShared);
         // the one-time seed (see load) is on disk once the list is --
         // and only once it has been applied [audit L2]
-        if (jtty_seed_done_)
+        if (jtty_seed_gen_ > 0) {
             settings_->setValue(jttyFrequencySeedSettingsKey, true);
+            settings_->setValue(jttyFrequencySeedGenSettingsKey, jtty_seed_gen_);
+        }
     }
 #else
     settings_->setValue(versionedFrequenciesSettingsKey,

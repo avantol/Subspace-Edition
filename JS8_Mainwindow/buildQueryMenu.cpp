@@ -370,6 +370,11 @@ void UI_Constructor::buildQueryMenu(QMenu *menu, QString call) {
                 "and at what protocol level?")
             .arg(call)
             .trimmed());
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-15] JTTY speed has no ARQ: the question would
+    // invite an ARQ answer it cannot carry -- removed, as the relay item is
+    if (m_nSubMode == Varicode::JS8CallJTTY) qsoQueryArqAction->setVisible(false);
+#endif
     connect(qsoQueryArqAction, &QAction::triggered, this, [this]() {
         QString selectedCall = callsignSelected();
         if (selectedCall.isEmpty()) {

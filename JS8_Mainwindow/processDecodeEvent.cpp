@@ -354,6 +354,16 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 writeAllTxt(date + " " + decodedtext.string() + " " +
                             decodedtext.message());
 
+                // [operator 2026-10-15, truth table row 2] A JTTY-only
+                // frequency carries no JS8 speed: the frame is on the
+                // record above and goes nowhere the operator sees.
+                if (!js8DecodesShown()) {
+                    qCDebug(mainwindow_js8)
+                        << "[JTTY] JS8 decode hidden on a JTTY frequency:"
+                        << decodedtext.message();
+                    return;
+                }
+
                 /**
                  * @brief Send decode to WSJT-X protocol
                  *

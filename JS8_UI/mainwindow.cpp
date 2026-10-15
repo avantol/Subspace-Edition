@@ -1139,6 +1139,20 @@ void UI_Constructor::on_menuModeJS8_aboutToShow() {
     // forces it, every other frequency forces JS8 mode).
     ui->actionModeJTTY->setEnabled(canChangeSpeed &&
                                    (onJttyFrequency() || onSharedJttyFrequency()));
+    // [operator 2026-10-15, amended] "Enable decoding of JTTY speed" is
+    // shown wherever JS8 mode is possible -- a JS8-only, JS8+JTTY or
+    // unlisted frequency -- on a station that is not MAGNET; hidden on a
+    // JTTY frequency (always JTTY). DISABLED in JTTY mode (which always
+    // decodes JTTY), its checked state kept for JS8 mode.
+    if (m_actionJttyDecode) {
+        m_actionJttyDecode->setVisible(!m_superSpotterSeen && !onJttyFrequency());
+        m_actionJttyDecode->setEnabled(!jttyMode());
+    }
+    // [operator 2026-10-15] JTTY mode decodes no JS8 speeds for itself and
+    // sends no auto-replies: "Enable simultaneous decoding" and "Enable
+    // Autoreply" are disabled there, their checked state kept for JS8 mode.
+    ui->actionModeMultiDecoder->setEnabled(!jttyMode());
+    ui->actionModeAutoreply->setEnabled(!jttyMode());
     // ARQ has no JTTY transport (a JTTY message never reaches the ARQ
     // engine), so the switch cannot be turned on while JTTY is selected.
     ui->actionModeReplicatorProtocol->setEnabled(
@@ -1982,6 +1996,25 @@ Radio::Frequency UI_Constructor::operatingDial() {
     return dialFrequency();
 }
 
+// [ssdetect ruling 2026-09-08; operator 2026-10-15] A speed chosen for
+// transmit turns its own decoding on, and it stays on: Subspace's switch,
+// and "Enable decoding of JTTY speed". ONE rule for the two routes a speed
+// is chosen by -- setSubmode (buttons, API, auto-switches, restores) and
+// the Mode menu's speed items, which go straight to setupJS8 (the menu
+// route skipped the rule until 2026-10-15).
+void UI_Constructor::speedChosenForTransmit(int submode) {
+#ifdef JS8_ENABLE_FT2
+    if (submode == Varicode::JS8CallFT2 && !m_l2Enabled)
+        setSubspaceDecodeEnabled(true,
+                                 QStringLiteral("Subspace mode entry"));
+#endif
+#ifdef JS8_ENABLE_JTTY
+    if (submode == Varicode::JS8CallJTTY && !m_jttyDecodeShown)
+        setJttyDecodeShown(true, QStringLiteral("JTTY speed chosen for transmit"));
+#endif
+    Q_UNUSED(submode);
+}
+
 void UI_Constructor::setSubmode(int submode) {
     // Block mode switch during active TX — stale m_TRperiod causes truncated frames
     if (m_transmitting || m_txFrameCount > 0 || !m_txFrameQueue.isEmpty()) {
@@ -2003,15 +2036,7 @@ void UI_Constructor::setSubmode(int submode) {
     }
 #endif
     m_nSubMode = submode;
-#ifdef JS8_ENABLE_FT2
-    // [ssdetect ruling 2026-09-08] Entering Subspace by ANY route
-    // (lightning button, Mode menu, click auto-switch, API) — this
-    // is the one mode chokepoint — re-enables decoding and
-    // re-checks the menu switch.
-    if (submode == Varicode::JS8CallFT2 && !m_l2Enabled)
-        setSubspaceDecodeEnabled(true,
-                                 QStringLiteral("Subspace mode entry"));
-#endif
+    speedChosenForTransmit(submode);
     ui->actionModeJS8Normal->setChecked(submode == Varicode::JS8CallNormal);
     ui->actionModeJS8Fast->setChecked(submode == Varicode::JS8CallFast);
     ui->actionModeJS8Turbo->setChecked(submode == Varicode::JS8CallTurbo);
@@ -6911,6 +6936,14 @@ bool UI_Constructor::ensureCreateMessageReady(const QString &text) {
         return false;
     }
 
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-15] a MSG at JTTY speed must fit one JTTY message
+    if (!ensureFitsJttySpeed(text)) {
+        stopTxMechanical();
+        return false;
+    }
+#endif
+
     // [BUILD 353 haltwrap] Pre-flight failures are AUTOMATIC error
     // paths, not operator gestures — mechanical stop only, never
     // haltAll (an idle-watchdog block during an auto-ACK keyup must
@@ -8085,10 +8118,16 @@ void UI_Constructor::on_actionModeJS8Slow_triggered() { setupJS8(); }
 
 void UI_Constructor::on_actionModeJS8Ultra_triggered() { setupJS8(); }
 
-void UI_Constructor::on_actionModeFT2_triggered() { setupJS8(); }
+void UI_Constructor::on_actionModeFT2_triggered() {
+    setupJS8();
+    speedChosenForTransmit(m_nSubMode); // the menu route (see the rule)
+}
 
 void UI_Constructor::on_actionModeJTTY_triggered() { setupJS8(); }
-void UI_Constructor::on_actionModeJS8JTTY_triggered() { setupJS8(); }
+void UI_Constructor::on_actionModeJS8JTTY_triggered() {
+    setupJS8();
+    speedChosenForTransmit(m_nSubMode); // the menu route (see the rule)
+}
 
 // [ssdetect] Status-bar mode label: submode name, " + ARQ" when the
 // reliability mode is active, and the Subspace-RX-off truth so a
@@ -8116,6 +8155,17 @@ void UI_Constructor::updateModeStatusLabel() {
 void UI_Constructor::on_actionModeSubspaceDecode_toggled(bool checked) {
 #ifdef JS8_ENABLE_FT2
     setSubspaceDecodeEnabled(checked, QStringLiteral("menu"));
+    // [operator 2026-10-15] off while transmitting at Subspace speed: the
+    // speed goes to Normal, never a speed we cannot hear (the mirror of
+    // "Enable decoding of JTTY speed"). Only this OPERATOR switch does it;
+    // the ARQ borrow and the API turn decoding off without moving speed.
+    // A refused change (TX busy) leaves decoding on instead.
+    if (!checked && m_nSubMode == Varicode::JS8CallFT2) {
+        setSubmode(Varicode::JS8CallNormal);
+        if (m_nSubMode == Varicode::JS8CallFT2)
+            setSubspaceDecodeEnabled(true,
+                                     QStringLiteral("speed change refused (TX busy)"));
+    }
 #else
     Q_UNUSED(checked);
 #endif
@@ -14390,6 +14440,16 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         return;
     }
 
+    // [operator 2026-10-15, truth table] JTTY decodes are not shown where
+    // JTTY is not used: a MAGNET station, or a JS8-only / unlisted
+    // frequency with "Enable decoding of JTTY speed" off. Nothing the
+    // operator sees gets them; the on-air record above keeps them.
+    if (!jttyDecodesShown()) {
+        qCDebug(mainwindow_js8) << "[JTTY] decode hidden (JTTY not shown here):"
+                                << offset << "Hz" << text;
+        return;
+    }
+
     // [operator 2026-10-14, "#2"] Floor-level false decodes from the
     // band-wide search we run and WSJT-X does not: a ONE-FRAME message at
     // -16 dB or below, outside WSJT-X's own 1200-1800 Hz channels and
@@ -14557,7 +14617,12 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         // (own sender, last parsed sender on the line, the pick). The
         // piece itself is already the bucket's last item; scan the ones
         // before it, newest first.
-        if (sender.isEmpty()) {
+        // [operator 2026-10-15, K9AVT "TU 73" at 1313] The JTTY line's
+        // continuation rule (a sender-less message borrows the line's
+        // sender, or the pick) is JTTY MODE's. In JS8 mode JTTY is only a
+        // speed, and JS8 never labels, maps or lists a station a frame
+        // does not name: no borrowed sender there.
+        if (sender.isEmpty() && jttyMode()) {
             auto const &line = m_jttyActivity.value(offset);
             if (!line.isEmpty()) sender = jttyLineSenders(line, offset).last();
         }
@@ -14781,8 +14846,11 @@ void UI_Constructor::writeJttyTxt(QStringView line, std::int64_t lineDial) {
 // duration-scaled safety cap); the ARQ intercept is never reached.
 QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text,
                                                            bool forceData,
-                                                           bool *pDisableTypeahead) {
+                                                           bool *pDisableTypeahead,
+                                                           QString *pDirCmd,
+                                                           bool quiet) {
     QList<QPair<QString, int>> out;
+    if (pDirCmd) pDirCmd->clear();
     QString body = text.trimmed();
     if (body.isEmpty()) return out;
 
@@ -14819,6 +14887,7 @@ QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text,
         if (pDisableTypeahead)
             *pDisableTypeahead = !info.dirCmd.isEmpty() &&
                                  Varicode::isCommandChecksumed(info.dirCmd);
+        if (pDirCmd) *pDirCmd = info.dirCmd;
         if (!rendered.trimmed().isEmpty()) body = rendered;
     }
 
@@ -14870,9 +14939,31 @@ QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text,
         // the TX path trims before packing.
         out.append({remaining.isEmpty() ? folded : folded + QLatin1Char(' '), bits});
     }
-    qCWarning(mainwindow_js8) << "[JTTY-TX] queued" << out.size()
-                              << "message(s) for:" << body;
+    if (!quiet)
+        qCWarning(mainwindow_js8) << "[JTTY-TX] queued" << out.size()
+                                  << "message(s) for:" << body;
     return out;
+}
+
+// [operator 2026-10-15, K9AVT's MSG: 58 of its characters stored] At JTTY
+// speed in JS8 mode text longer than one JTTY message goes out as several;
+// a MSG / MSG TO: is a command, and the receiver acts on -- and stores --
+// only the message that carries it (the rest arrive as plain text, and our
+// own ACK went out on top of them). So the whole line must fit one.
+bool UI_Constructor::ensureFitsJttySpeed(QString const &text) {
+    if (m_nSubMode != Varicode::JS8CallJTTY || jttyMode()) return true;
+    QString cmd;
+    auto const pieces = buildJttyFrames(
+        replaceMacros(text, buildMacroValues(), false), false, nullptr, &cmd,
+        /*quiet=*/true);
+    bool const msgCmd = cmd == QStringLiteral(" MSG") ||
+                        cmd == QStringLiteral(" MSG TO:");
+    if (!msgCmd || pieces.size() <= 1) return true;
+    qWarning() << "[JTTY-TX] refused: a" << cmd.trimmed() << "needs"
+               << pieces.size() << "JTTY messages, one is the limit";
+    JS8MessageBox::warning_message(this, tr("JTTY speed"),
+                                   tr("Message is too long for JTTY speed."));
+    return false;
 }
 bool UI_Constructor::jttyPlaceMacro(QString const &payload) {
     if (!jttyMode()) return false;
@@ -15442,6 +15533,9 @@ void UI_Constructor::jttyNoteStation(QString const &call, QString const &grid,
 
 bool UI_Constructor::onJttyFrequency() const {
 #ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-15, truth table row 4] A MAGNET station overrides
+    // the frequency table's JTTY marking: every frequency is JS8 to it.
+    if (m_superSpotterSeen) return false;
     auto const dial = const_cast<UI_Constructor *>(this)->operatingDial();
     for (auto const &it : m_config.frequencies()->frequency_list())
         if (it.frequency_ == dial && it.mode_ == Modes::JTTY)
@@ -15450,8 +15544,43 @@ bool UI_Constructor::onJttyFrequency() const {
     return false;
 }
 
+bool UI_Constructor::js8DecodesShown() const {
+    // row 2: a JTTY-only frequency carries no JS8 speed (MAGNET excepted,
+    // inside onJttyFrequency)
+    return !onJttyFrequency();
+}
+
 #ifdef JS8_ENABLE_JTTY
+bool UI_Constructor::jttyDecodesShown() const {
+    if (m_superSpotterSeen) return false;                       // row 4
+    // [operator 2026-10-15, amended] JTTY MODE always shows JTTY (a JTTY
+    // frequency, or the Mode menu's JTTY on a JS8+JTTY one); in JS8 mode
+    // -- a JS8-only, JS8+JTTY or unlisted frequency -- the switch decides
+    if (jttyMode()) return true;
+    return m_jttyDecodeShown;
+}
+
+// The switch: the Mode menu, and JTTY speed chosen for transmit (which
+// turns it ON and leaves it on, as Subspace does its own). Persisted per
+// configuration; the display is redrawn at once so rows already shown
+// for JTTY appear or vanish with it.
+void UI_Constructor::setJttyDecodeShown(bool on, QString const &reason) {
+    if (m_jttyDecodeShown == on) return;
+    m_jttyDecodeShown = on;
+    m_settings->setValue("SsJttyDecodeShown", on);
+    if (m_actionJttyDecode && m_actionJttyDecode->isChecked() != on) {
+        m_actionJttyDecode->blockSignals(true);
+        m_actionJttyDecode->setChecked(on);
+        m_actionJttyDecode->blockSignals(false);
+    }
+    qWarning() << "[JTTY] decoding of JTTY speed" << (on ? "ON" : "OFF")
+               << "--" << reason;
+    ++m_callActivityVersion;
+    displayActivity(true);
+}
+
 bool UI_Constructor::onSharedJttyFrequency() const {
+    if (m_superSpotterSeen) return false; // row 4, as onJttyFrequency
     auto const dial = const_cast<UI_Constructor *>(this)->operatingDial();
     for (auto const &it : m_config.frequencies()->frequency_list())
         if (it.frequency_ == dial && it.mode_ == Modes::JS8_JTTY)
@@ -15690,8 +15819,24 @@ void UI_Constructor::applyMagnetJttyVisibility() {
     bool const hide = m_superSpotterSeen;
     if (ui->actionModeJS8JTTY) ui->actionModeJS8JTTY->setVisible(!hide);
     if (ui->modeBtnJTTY) ui->modeBtnJTTY->setVisible(!hide);
+    // [operator 2026-10-15] ...and the JTTY MODE item with the separator
+    // above it (the menu's entry right before the item; the .ui gives
+    // separators no name)
+    if (ui->actionModeJTTY) {
+        ui->actionModeJTTY->setVisible(!hide);
+        auto const acts = ui->menuModeJS8->actions();
+        int const at = acts.indexOf(ui->actionModeJTTY);
+        if (at > 0 && acts.at(at - 1)->isSeparator())
+            acts.at(at - 1)->setVisible(!hide);
+    }
     if (hide)
         qWarning() << "[JTTY] MAGNET station: JTTY speed item and J button hidden";
+    // [operator 2026-10-15, truth table row 4] A MAGNET station is never
+    // in JTTY MODE: onJttyFrequency()/onSharedJttyFrequency() now answer
+    // false for it, so the transition drops JTTY mode (restoring a speed
+    // a JTTY frequency had stashed) and the rule below leaves JTTY speed.
+    if (hide && ui->actionModeJTTY && ui->actionModeJTTY->isChecked())
+        applyJttyModeTransition();
     // [operator 2026-10-14, "switch to Normal at that moment"] A MAGNET
     // station that is AT JTTY speed in JS8 mode when this applies (the
     // saved speed restored at start-up, or the latch set mid-session)

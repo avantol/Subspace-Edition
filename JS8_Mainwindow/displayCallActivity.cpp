@@ -73,6 +73,17 @@ void UI_Constructor::displayCallActivity() {
 
         auto const sort = getSortByReverse("callActivity", "callsign");
         auto keys = activity.keys();
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-15, truth table] where JTTY decodes are not
+        // shown, a station last heard at JTTY speed is not listed either
+        if (!jttyMode() && !jttyDecodesShown())
+            keys.erase(std::remove_if(keys.begin(), keys.end(),
+                                      [&activity](QString const &k) {
+                                          return activity[k].submode ==
+                                                 Varicode::JS8CallJTTY;
+                                      }),
+                       keys.end());
+#endif
 
         auto const compareOffset = [this, &activity](QString const &lhsKey,
                                           QString const &rhsKey) {

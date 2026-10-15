@@ -116,12 +116,19 @@ void UI_Constructor::displayBandActivity() {
 
         // Sort!
         auto const sort = getSortByReverse("bandActivity", "offset");
-        auto keys = m_bandActivity.keys();
+        // [operator 2026-10-15, truth table] a kind of decode that is not
+        // shown here contributes no rows: rows already listed vanish the
+        // moment the switch goes off or the dial moves onto a frequency
+        // that does not carry that mode
+        bool const showJs8 = js8DecodesShown();
+        auto keys = showJs8 ? m_bandActivity.keys() : QList<int>{};
 #ifdef JS8_ENABLE_JTTY
+        bool const showJtty = jttyDecodesShown();
         // [JTTY] the JTTY map is merged here and nowhere else; a
         // JTTY-only offset becomes a row of its own.
-        for (int key : m_jttyActivity.keys())
-            if (!m_bandActivity.contains(key)) keys.append(key);
+        if (showJtty)
+            for (int key : m_jttyActivity.keys())
+                if (!keys.contains(key)) keys.append(key);
 #endif
 
         // Compute shouldDisplay for every item per offset BEFORE sort, using
@@ -141,9 +148,11 @@ void UI_Constructor::displayBandActivity() {
             bool isOffsetSelected = (key == selectedOffset);
             // value(), not []: a JTTY-only key must not create an empty
             // JS8 bucket.
-            QList<ActivityDetail> items = m_bandActivity.value(key);
+            QList<ActivityDetail> items =
+                showJs8 ? m_bandActivity.value(key) : QList<ActivityDetail>{};
 #ifdef JS8_ENABLE_JTTY
-            items.append(m_jttyActivity.value(key));
+            if (showJtty)
+                items.append(m_jttyActivity.value(key));
 #endif
 
             // [bandcall] Attribute every frame in bucket order: a frame

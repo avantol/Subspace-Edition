@@ -994,6 +994,7 @@ if(type == "STATION.SET_SPOT") {
 #endif
             }
             setupJS8();
+            speedChosenForTransmit(m_nSubMode); // [2026-10-15] every speed's rule
         }
         sendNetworkMessage("MODE.SET_SPEED", "",
                            {
