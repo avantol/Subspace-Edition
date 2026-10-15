@@ -132,6 +132,17 @@ void UI_Constructor::onChunkedWantsResponseTx(QString const &text) {
             << "active):" << text.left(40);
         return;
     }
+    // [audit T4 2026-10-14] No ARQ response in JTTY mode, where JS8
+    // traffic is band activity only; the command loop and the native
+    // frame feed already refuse, this holds it at the emission site.
+#ifdef JS8_ENABLE_JTTY
+    if (jttyMode()) {
+        qCWarning(chunkedarq_js8)
+            << "[REPLY-GATE] ARQ response suppressed (JTTY mode):"
+            << text.left(40);
+        return;
+    }
+#endif
     // [autoreplynudge 2026-09-28, operator ruling] Auto-reply off now
     // means off for an inbound text transfer too. Without the
     // acknowledgement the sender exhausts its retries and reports the

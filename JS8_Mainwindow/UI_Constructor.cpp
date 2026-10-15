@@ -407,6 +407,15 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             writeNoticeTextToUI(utc, text);
         },
         [this](QString const &relayMsg) {
+            // [audit T4 2026-10-14] an automatic transmission: not in
+            // JTTY mode, where it would go out unaddressed at JTTY speed
+#ifdef JS8_ENABLE_JTTY
+            if (jttyMode()) {
+                qWarning() << "[JTTY] APRS-IS relay to RF dropped in JTTY"
+                              " mode:" << relayMsg;
+                return;
+            }
+#endif
             enqueueMessage(PriorityHigh, relayMsg, -1, nullptr,
                            /*autoReply=*/true);
         },
@@ -812,8 +821,11 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 case GreetingSeedResult::Seeded: {
                     QString const key = call.trimmed().toUpper();
                     int offset = -1;
-                    if (auto const it = m_callActivity.constFind(key);
-                        it != m_callActivity.constEnd()) {
+                    // [audit L8] the list SHOWN: in JTTY mode the JTTY
+                    // stations' own list
+                    auto const &shown = shownCallActivity();
+                    if (auto const it = shown.constFind(key);
+                        it != shown.constEnd()) {
                         offset = it->offset;
                     }
                     if (qsyOffsetAllowed(offset)) {
@@ -1320,6 +1332,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     m_superSpotterSeen =
         m_settings->value("SuperSpotterSeen", false).toBool();
     ui->actionModeSubspaceDecode->setVisible(m_superSpotterSeen);
+    applyMagnetJttyVisibility(); // [operator 2026-10-14] same condition
     // [magtitle] Persisted latch changes the version segment to
     // "(vX - MAGNET)"; re-paint now that the flag is known.
     updateWindowTitle();
@@ -1831,6 +1844,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         m_bandActivity.remove(selectedOffset);
 #ifdef JS8_ENABLE_JTTY
         m_jttyActivity.remove(selectedOffset);
+        // [audit L9] the line's pick goes with it: a later sender-less
+        // line at this offset must not inherit it
+        m_jttyRowCall.remove(selectedOffset);
 #endif
         displayActivity(true);
     });
@@ -1891,6 +1907,32 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 row != -1)
                 on_tableWidgetRXAll_cellClicked(
                     row, ui->tableWidgetRXAll->columnAt(point.x()));
+#ifdef JS8_ENABLE_JTTY
+            // [audit M10, operator 2026-10-14] On a JTTY row the click
+            // above only ARMS a deferred action (it waits out a possible
+            // double-click and may open the pick menu), so this menu was
+            // built from the OLD selection and the pick fired under it.
+            // A right-click is never a double-click: the selection is
+            // made NOW, as a JS8 row's click makes it, with no pick menu
+            // and no assignment -- the station row's call, else the
+            // sender the line itself names, else the row alone.
+            if (m_jttyPickTimer.isActive()) {
+                m_jttyPickTimer.stop();
+                int const off = m_jttyPickOffset;
+                QString call = m_jttyPickCall;
+                m_jttyPickOffset = -1;
+                m_jttyPickCall.clear();
+                if (call.isEmpty()) {
+                    auto const &line = m_jttyActivity.value(off);
+                    if (!line.isEmpty())
+                        call = jttyLineSenders(line, off).last();
+                }
+                if (!call.isEmpty())
+                    selectCallsign(call);
+                else
+                    clearSelection(true /* keepBandRow */);
+            }
+#endif
 
             QString selectedCall = callsignSelected();
             bool missingCallsign = selectedCall.isEmpty();
@@ -2001,22 +2043,39 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                         haveFrame = true;
                     }
                 }
-                if (haveFrame) {
+                // [audit M11, operator 2026-10-14] The call list's rules:
+                // no speed or drift jumps in JTTY mode (the speed is
+                // fixed there). And a JTTY row has no time drift in any
+                // mode -- its "Jump to 0 ms" would wipe the real JS8
+                // drift -- so the drift jump is offered for JS8 rows only.
+                bool const jttyRow =
+#ifdef JS8_ENABLE_JTTY
+                    submode == Varicode::JS8CallJTTY;
+#else
+                    false;
+#endif
+                if (haveFrame && !jttyMode()) {
                     auto speed = JS8::Submode::name(submode);
                     if (submode != m_nSubMode) {
-                        auto qrqAction =
-                            menu->addAction(QString("Jump to %1%2 speed")
-                                                .arg(speed.left(1))
-                                                .arg(speed.mid(1).toLower()));
+                        // the JTTY name is an acronym: never title-cased
+                        QString const speedLabel =
+#ifdef JS8_ENABLE_JTTY
+                            jttyRow ? speed :
+#endif
+                            speed.left(1) + speed.mid(1).toLower();
+                        auto qrqAction = menu->addAction(
+                            QString("Jump to %1 speed").arg(speedLabel));
                         connect(qrqAction, &QAction::triggered, this,
                                 [this, submode]() { setSubmode(submode); });
                     }
 
-                    int tdrift = -int(tdriftVal * 1000);
-                    auto qtrAction = menu->addAction(
-                        QString("Jump to %1 ms time drift").arg(tdrift));
-                    connect(qtrAction, &QAction::triggered, this,
-                            [this, tdrift]() { setDrift(tdrift); });
+                    if (!jttyRow) {
+                        int tdrift = -int(tdriftVal * 1000);
+                        auto qtrAction = menu->addAction(
+                            QString("Jump to %1 ms time drift").arg(tdrift));
+                        connect(qtrAction, &QAction::triggered, this,
+                                [this, tdrift]() { setDrift(tdrift); });
+                    }
                 }
 
                 menu->addSeparator();
@@ -2030,15 +2089,19 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             auto savedMenu = menu->addMenu("Saved Messages...");
             buildSavedMessagesMenu(savedMenu);
 
-            auto directedMenu =
-                menu->addMenu(QString("Directed to %1...").arg(selectedCall));
-            directedMenu->setDisabled(missingCallsign);
-            buildQueryMenu(directedMenu, selectedCall);
+            // [audit M11] Directed to... and Relay via... are JS8
+            // machinery: not in JTTY mode (the call list's rule)
+            if (!jttyMode()) {
+                auto directedMenu =
+                    menu->addMenu(QString("Directed to %1...").arg(selectedCall));
+                directedMenu->setDisabled(missingCallsign);
+                buildQueryMenu(directedMenu, selectedCall);
 
-            auto relayAction = buildRelayAction(selectedCall);
-            relayAction->setText(QString("Relay via %1...").arg(selectedCall));
-            relayAction->setDisabled(missingCallsign);
-            menu->addActions({relayAction});
+                auto relayAction = buildRelayAction(selectedCall);
+                relayAction->setText(QString("Relay via %1...").arg(selectedCall));
+                relayAction->setDisabled(missingCallsign);
+                menu->addActions({relayAction});
+            }
 
             auto deselectAction =
                 menu->addAction(QString("Deselect %1").arg(selectedCall));
@@ -2363,10 +2426,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                         int submode = m_callActivity[selectedCall].submode;
                         auto speed = JS8::Submode::name(submode);
                         if (submode != m_nSubMode) {
-                            auto qrqAction =
-                                menu->addAction(QString("Jump to %1%2 speed")
-                                                    .arg(speed.left(1))
-                                                    .arg(speed.mid(1).toLower()));
+                            // the JTTY name is an acronym: never title-cased
+                            QString const speedLabel =
+#ifdef JS8_ENABLE_JTTY
+                                submode == Varicode::JS8CallJTTY ? speed :
+#endif
+                                speed.left(1) + speed.mid(1).toLower();
+                            auto qrqAction = menu->addAction(
+                                QString("Jump to %1 speed").arg(speedLabel));
                             connect(qrqAction, &QAction::triggered, this,
                                     [this, submode]() { setSubmode(submode); });
                         }
@@ -2833,15 +2900,26 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             // Priority -1: [operator 2026-10-14, "make that last
             // balloon the highest priority"] JTTY mode -- Mode menu,
             // ABOVE the MAGNET seed and every other hint.
-            if (!self->m_settings->value("HintJttyModeShown", false)
+            // [operator 2026-10-15] Not on a MAGNET station: JTTY speed
+            // is hidden there, and the flag is left unset so the hint
+            // still shows if the station is ever not MAGNET.
+            if (!self->m_superSpotterSeen &&
+                !self->m_settings->value("HintJttyModeShown", false)
                      .toBool()) {
                 auto *bar = self->menuBar();
                 auto *balloon = new SpeechBalloon(
                     tr("JTTY conversational mode is now available "
                        "(also JTTY speed in JS8), select at the Mode "
-                       "menu.\n"
-                       "Click to dismiss."),
+                       "menu."),
                     bar);
+                // [operator 2026-10-15] the step-by-step guide, on its
+                // own line before the dismiss line
+                balloon->setLinkLine(
+                    tr("Click here (and bookmark) for step-by-step "
+                       "instructions"),
+                    QUrl(QStringLiteral(
+                        "https://groups.io/g/Subspace/message/378")),
+                    tr("Click to dismiss."));
                 balloon->setTargetRectOverride(bar->actionGeometry(
                     self->ui->menuModeJS8->menuAction()));
                 balloon->setTailSide(SpeechBalloon::TailSide::Top);

@@ -16,6 +16,12 @@ on:
       - '**.md'
       - 'docs/**'
   workflow_dispatch:
+    inputs:
+      enable-jtty:
+        description: 'Build with ENABLE_JTTY (jtty branch .deb)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build_amd64:
@@ -44,7 +50,8 @@ jobs:
     - name: Build
       run: |
         mkdir -p build && cd build
-        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cmake -DCMAKE_BUILD_TYPE=Release \
+          -DENABLE_JTTY=${{ inputs.enable-jtty && 'ON' || 'OFF' }} ..
         make -j$(nproc)
 
     - name: Package .deb

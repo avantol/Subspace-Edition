@@ -63,6 +63,42 @@ void UI_Constructor::networkMessage(Message const &message) {
 
     qCDebug(mainwindow_js8) << "try processing network message" << type << id;
 
+#ifdef JS8_ENABLE_JTTY
+    // [audit D3, operator 2026-10-14: "fail for all api requests in JTTY
+    // mode (for now) as gracefully as possible"] Every request is
+    // answered with its own type and the REFUSED / REASON "jtty_mode"
+    // shape TX.SEND_MESSAGE already uses -- a client that waits for a
+    // reply gets one, and a known field never carries a new value.
+    // RIG.TX_HALT is the one exception: a request to STOP transmitting
+    // is honoured in every mode. Each refused type is logged once per
+    // JTTY-mode spell, so a polling client does not flood the log.
+    // [operator 2026-10-14, "yes"] ...and at JTTY SPEED in JS8 mode too:
+    // a form or any message over one 80-character JTTY message arrives
+    // cut after its first piece (only that piece carries "FROM: TO"),
+    // its checksum is dropped, and the JTTY receive path sends an API
+    // client no progressive RX.ACTIVITY -- a clear refusal beats a form
+    // that silently arrives broken. The REASON stays "jtty_mode": a new
+    // value in a known field is what the API rule forbids.
+    {
+        static QSet<QString> refusedLogged;
+        bool const jttyNow = jttyMode() || m_nSubMode == Varicode::JS8CallJTTY;
+        if (jttyNow && type != "RIG.TX_HALT") {
+            if (!refusedLogged.contains(type)) {
+                refusedLogged.insert(type);
+                qWarning() << "[API] refused in JTTY mode or at JTTY speed:" << type;
+            }
+            sendNetworkMessage(type, "",
+                               {{"_ID", message.params().value(
+                                            "_ID", QVariant(-1))},
+                                {"REFUSED", true},
+                                {"REASON", QStringLiteral("jtty_mode")}});
+            return;
+        }
+        if (!jttyNow)
+            refusedLogged.clear();
+    }
+#endif
+
     // Inspired by FLDigi
     // TODO: MAIN.RX - Turn on RX
     // TODO: MAIN.TX - Transmit
@@ -663,19 +699,8 @@ if(type == "STATION.SET_SPOT") {
                                  QStringLiteral("auto_route_active")}});
             return;
         }
-        // [JTTY, operator 2026-10-12] In JTTY mode a send would leave as
-        // JTTY text with no "FROM:" -- not the JS8 directed message the
-        // requester (SpotterX, MAGforms) intended. Logged and dropped,
-        // with the same REFUSED reply shape as the auto-route lock.
-        if (jttyMode()) {
-            qWarning() << "[API] TX.SEND_MESSAGE refused: JTTY mode";
-            sendNetworkMessage("TX.SEND_MESSAGE", "",
-                               {{"_ID", message.params().value(
-                                            "_ID", QVariant(-1))},
-                                {"REFUSED", true},
-                                {"REASON", QStringLiteral("jtty_mode")}});
-            return;
-        }
+        // [JTTY] In JTTY mode this request never reaches here: the gate
+        // at the top of networkMessage refuses every request (audit D3).
         auto text = message.value();
 #ifdef JS8_ENABLE_FT2
         // [ss701] Same second signature as TX.SET_TEXT above -- the

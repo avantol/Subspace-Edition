@@ -53,8 +53,12 @@ public:
 
     /// HTML for a whole row: one line per group, each group's sender
     /// bold. `joined` is the fallback when there are no groups.
+    /// bareSender: also bold a sender named WITHOUT the "CALL: " prefix,
+    /// at its first whole-word mention -- for the JTTY per-message list
+    /// only; JS8 groups keep the prefix-only rule (audit, OFF-build leak).
     static QString rowTooltipHtml(const QVariantList &groups,
-                                  const QString &joined);
+                                  const QString &joined,
+                                  bool bareSender = false);
 
 private:
     static QVariantList getGroups(const QModelIndex &index);

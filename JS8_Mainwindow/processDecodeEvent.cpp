@@ -202,6 +202,13 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 // protect the reassembler from ring re-decodes.
                 if (ev.mode == 16 &&
                     (ev.type & Varicode::JS8CallNativeBinary)) {
+                    // [audit T4 2026-10-14] In JTTY mode no ARQ session
+                    // is accepted: an accepted marker switches the speed
+                    // to Subspace (leaving JTTY mode) and keys ACKs.
+                    // Binary frames never reach band activity, so the
+                    // frame is simply not handed to the reassembler.
+                    if (jttyMode())
+                        return;
                     quint8 rem = 0;
                     quint64 const value = Varicode::unpack72bits(
                         QString::fromStdString(ev.data), &rem);

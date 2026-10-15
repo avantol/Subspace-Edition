@@ -51,7 +51,8 @@ QRegularExpressionMatch bareSenderMatch(const QString &text,
     return re.match(text);
 }
 
-QString boldSenderBody(const QString &text, const QString &senderCall) {
+QString boldSenderBody(const QString &text, const QString &senderCall,
+                       bool bareSender = false) {
     QString html;
     int lastEnd = 0;
     bool prefixed = false;
@@ -69,7 +70,7 @@ QString boldSenderBody(const QString &text, const QString &senderCall) {
         prefixed = true;
     }
     // [operator 2026-10-13] no prefix form: the bare sender, bold
-    if (!prefixed) {
+    if (!prefixed && bareSender) {
         auto const m = bareSenderMatch(text, senderCall);
         if (m.hasMatch())
             return text.left(m.capturedStart()).toHtmlEscaped() +
@@ -92,14 +93,15 @@ QString BandActivityMessageDelegate::boldCallsignsHtml(
 }
 
 QString BandActivityMessageDelegate::rowTooltipHtml(
-    const QVariantList &groups, const QString &joined) {
+    const QVariantList &groups, const QString &joined, bool bareSender) {
     if (groups.isEmpty())
         return boldCallsignsHtml(joined, QString());
     QStringList lines;
     for (auto const &g : groups) {
         auto const map = g.toMap();
         lines << boldSenderBody(map[QStringLiteral("text")].toString(),
-                                map[QStringLiteral("call")].toString());
+                                map[QStringLiteral("call")].toString(),
+                                bareSender);
     }
     return wrapTooltip(lines.join(QStringLiteral("<br/>")));
 }
@@ -376,7 +378,8 @@ bool BandActivityMessageDelegate::helpEvent(QHelpEvent *event,
     if (!perMessage.isEmpty()) {
         QToolTip::showText(
             event->globalPos(),
-            rowTooltipHtml(perMessage, index.data(Qt::DisplayRole).toString()),
+            rowTooltipHtml(perMessage, index.data(Qt::DisplayRole).toString(),
+                           /*bareSender=*/true),
             view);
         return true;
     }

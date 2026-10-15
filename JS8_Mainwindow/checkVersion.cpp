@@ -81,6 +81,18 @@ constexpr char kStoreUrl[] = "https://apps.microsoft.com/detail/9nhk74bnkxkc";
 constexpr char kReleasesUrl[] =
     "https://github.com/avantol/Subspace-Edition/releases";
 
+// [TODO #299, operator 2026-10-15] MAGNET stations (the persisted
+// SuperSpotter latch, m_superSpotterSeen) take their updates ONLY from the
+// release-only repository of approved MAGNET builds, on its own cadence:
+// "approved" = published there. Its placeholder release carries the
+// public release's tag (4.1.0.478) so nothing prompts until a real one.
+constexpr char kMagnetReleasesUrl[] =
+    "https://github.com/avantol/Subspace-Edition-Magnet/releases";
+constexpr char kMagnetLatestApi[] =
+    "https://api.github.com/repos/avantol/Subspace-Edition-Magnet/releases/latest";
+constexpr char kPublicLatestApi[] =
+    "https://api.github.com/repos/avantol/Subspace-Edition/releases/latest";
+
 // [2026-07-24 dcCheck] Microsoft Store DisplayCatalog — the ONE public
 // endpoint that carries the REAL Store package version (storeedgefd
 // returns "Unknown"; the web page hides it). It returns the version in
@@ -103,7 +115,11 @@ void UI_Constructor::checkVersion(bool const alertOnUpToDate) {
     // (default auto = runningAsAppx()); the choice is logged so a single
     // real appx launch confirms runningAsAppx() detection from the log.
     QByteArray const chOverride = qgetenv("JS8_UPDATE_CHANNEL");
-    bool const appx = (chOverride == "store")    ? true
+    // [TODO #299] A MAGNET station never follows the Store or the public
+    // releases: the Store would offer whatever public build is newest.
+    bool const magnet = m_superSpotterSeen;
+    bool const appx = magnet                     ? false
+                      : (chOverride == "store")  ? true
                       : (chOverride == "github") ? false
                                                  : runningAsAppx();
     if (!chOverride.isEmpty()) {
@@ -230,10 +246,15 @@ void UI_Constructor::checkVersion(bool const alertOnUpToDate) {
     }
 
     // --- Plain build: GitHub Releases API version check ---
+    // (a MAGNET station: the MAGNET release-only repository instead)
+    QString const releasesUrl = QString::fromLatin1(magnet ? kMagnetReleasesUrl
+                                                           : kReleasesUrl);
+    QString const edition = magnet ? tr("Subspace Edition for MAGNET")
+                                   : tr("Subspace Edition");
     auto *m = new QNetworkAccessManager(this);
     connect(
         m, &QNetworkAccessManager::finished, this,
-        [this, alertOnUpToDate](QNetworkReply *reply) {
+        [this, alertOnUpToDate, releasesUrl, edition](QNetworkReply *reply) {
             reply->manager()->deleteLater();
             reply->deleteLater();
 
@@ -304,14 +325,12 @@ void UI_Constructor::checkVersion(bool const alertOnUpToDate) {
                 // exists. Manual check unchanged.
                 Q_UNUSED(normStr);
 
-                QString const link = htmlUrl.isEmpty()
-                                         ? QString::fromLatin1(kReleasesUrl)
-                                         : htmlUrl;
+                QString const link = htmlUrl.isEmpty() ? releasesUrl : htmlUrl;
                 (new SelfDestructMessageBox(
                      60, tr("New Version Available"),
-                     tr("A new version of Subspace Edition is available. "
-                        "<a href=\"%1\">%2</a>")
-                         .arg(link, tr("More information here.")),
+                     tr("A new version of %1 is available. "
+                        "<a href=\"%2\">%3</a>")
+                         .arg(edition, link, tr("More information here.")),
                      QMessageBox::Information, QMessageBox::Ok,
                      QMessageBox::Ok, false, this))
                     ->show();
@@ -319,25 +338,23 @@ void UI_Constructor::checkVersion(bool const alertOnUpToDate) {
                 // Plain build: up-to-date still offers the release page
                 // for general info + change log (GitHub is this channel's
                 // home). The appx up-to-date dialog stays GitHub-free.
-                QString const relLink =
-                    htmlUrl.isEmpty() ? QString::fromLatin1(kReleasesUrl)
-                                      : htmlUrl;
+                QString const relLink = htmlUrl.isEmpty() ? releasesUrl : htmlUrl;
                 (new SelfDestructMessageBox(
                      60, tr("No Updates Available"),
-                     tr("Your version (%1) of Subspace Edition is "
+                     tr("Your version (%1) of %2 is "
                         "up-to-date.<br>General information and change "
-                        "log is <a href=\"%2\">here</a>.")
-                         .arg(version(), relLink),
+                        "log is <a href=\"%3\">here</a>.")
+                         .arg(version(), edition, relLink),
                      QMessageBox::Information, QMessageBox::Ok,
                      QMessageBox::Ok, false, this))
                     ->show();
             }
         });
 
-    qWarning() << "[UPDATE-CHECK] querying GitHub releases API";
-    QNetworkRequest r(
-        QUrl(QStringLiteral("https://api.github.com/repos/avantol/"
-                            "Subspace-Edition/releases/latest")));
+    qWarning() << "[UPDATE-CHECK] querying GitHub releases API"
+               << (magnet ? "(MAGNET repository)" : "(public repository)");
+    QNetworkRequest r(QUrl(QString::fromLatin1(magnet ? kMagnetLatestApi
+                                                      : kPublicLatestApi)));
     // GitHub rejects requests with NO Accept / No User-Agent (403).
     r.setRawHeader("Accept", "application/vnd.github+json");
     r.setHeader(QNetworkRequest::UserAgentHeader,

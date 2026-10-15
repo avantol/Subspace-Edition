@@ -538,8 +538,11 @@ void UI_Constructor::writeSettings() {
     m_settings->setValue("SsJttyTxMode", chosenMode == Varicode::JS8CallJTTY);
     // [operator 2026-10-12] which of the two JTTY items: the MODE item
     // only when the operator chose it (not when a frequency forced it).
-    m_settings->setValue("SsJttyMode", m_jttyFreqPrevSubmode < 0 &&
-                                           ui->actionModeJTTY->isChecked());
+    // [audit M2] while a JTTY frequency forces JTTY mode, the choice
+    // remembered is the one made before it
+    m_settings->setValue("SsJttyMode", m_jttyFreqPrevSubmode >= 0
+                                           ? m_jttyFreqPrevModeItem
+                                           : ui->actionModeJTTY->isChecked());
 #else
     m_settings->setValue("SsSubMode", m_nSubMode);
 #endif
@@ -587,6 +590,15 @@ void UI_Constructor::writeSettings() {
         if (cd.call.trimmed().isEmpty()) {
             continue;
         }
+#ifdef JS8_ENABLE_JTTY
+        // [audit D2, operator 2026-10-14] A station heard at JTTY SPEED
+        // belongs in the list like any speed, but this flat group is
+        // read by older builds, which do not know speed 32. It is saved
+        // only in the per-entry snapshot, in "JttySpeedCalls".
+        if (cd.submode == Varicode::JS8CallJTTY) {
+            continue;
+        }
+#endif
         if (callsignAging &&
             cd.utcTimestamp.secsTo(now) / 60 >= callsignAging) {
             continue;
@@ -625,10 +637,16 @@ void UI_Constructor::writeSettings() {
     // entry no longer in the frequency list is dropped here, which is
     // how "deleting an entry deletes its persisted context" is met.
     {
+        // jttySpeed: -1 = every row, 0 = rows NOT heard at JTTY speed,
+        // 1 = only rows heard at JTTY speed [audit D2]
         auto const writeCalls =
-            [this, now, callsignAging](QMap<QString, CallDetail> const &calls) {
+            [this, now, callsignAging](QMap<QString, CallDetail> const &calls,
+                                       int jttySpeed = -1) {
                 for (auto const &cd : calls) {
                     if (cd.call.trimmed().isEmpty())
+                        continue;
+                    if (jttySpeed >= 0 &&
+                        (cd.submode == Varicode::JS8CallJTTY) != (jttySpeed == 1))
                         continue;
                     if (callsignAging &&
                         cd.utcTimestamp.secsTo(now) / 60 >= callsignAging)
@@ -677,10 +695,25 @@ void UI_Constructor::writeSettings() {
                 m_settings->setValue("RangeHi", r->hi);
                 m_settings->setValue("RangeN", r->samples);
             }
+#ifdef JS8_ENABLE_JTTY
+            // [audit D2, operator 2026-10-14] "Calls" keeps its shape for
+            // older builds: no speed-32 row. A station heard at JTTY SPEED
+            // in JS8 mode is saved in "JttySpeedCalls" beside it and
+            // loaded back into the same list.
+            m_settings->beginGroup("Calls");
+            writeCalls(live ? m_callActivity
+                            : m_callActivityBandCache.value(key), 0);
+            m_settings->endGroup();
+            m_settings->beginGroup("JttySpeedCalls");
+            writeCalls(live ? m_callActivity
+                            : m_callActivityBandCache.value(key), 1);
+            m_settings->endGroup();
+#else
             m_settings->beginGroup("Calls");
             writeCalls(live ? m_callActivity
                             : m_callActivityBandCache.value(key));
             m_settings->endGroup();
+#endif
 #ifdef JS8_ENABLE_JTTY
             // [JTTY step 3, operator 2026-10-12] the JTTY stations in
             // their OWN subgroup: an older build reading "Calls" would
@@ -931,6 +964,18 @@ void UI_Constructor::readSettings() {
                 }
                 m_settings->endGroup();
 #ifdef JS8_ENABLE_JTTY
+                // [audit D2] stations heard at JTTY speed in JS8 mode:
+                // the same list as "Calls", saved apart for older builds
+                m_settings->beginGroup("JttySpeedCalls");
+                for (auto const &call : m_settings->allKeys()) {
+                    auto cd = readCall(call, m_settings->value(call).toMap());
+                    if (!admit(cd))
+                        continue;
+                    cd.submode = Varicode::JS8CallJTTY;
+                    m_callActivityBandCache[key][cd.call] = cd;
+                    ++rows;
+                }
+                m_settings->endGroup();
                 m_settings->beginGroup("JttyCalls"); // [JTTY step 3]
                 for (auto const &call : m_settings->allKeys()) {
                     auto cd = readCall(call, m_settings->value(call).toMap());
@@ -1578,6 +1623,16 @@ void UI_Constructor::openSettings(int tab) {
         // reads m_config->miles() at paint time.
         if (m_spotMapWindow)
             m_spotMapWindow->configRefresh();
+
+#ifdef JS8_ENABLE_JTTY
+        // [audit M4, operator 2026-10-14] The current frequency's kind
+        // may have been edited (JS8 -> JTTY, JS8+JTTY -> JS8, ...): the
+        // transition decides from the list, not from a dial change, and
+        // is idempotent. Before, it ran only when the dial moved, so an
+        // edit left JTTY rules at a JS8 speed, or JTTY mode on a JS8
+        // frequency, until the next retune.
+        applyJttyModeTransition();
+#endif
 
         enable_DXCC_entity(m_config.DXCC()); // sets text window proportions and
                                              // (re)inits the logbook
@@ -3416,9 +3471,10 @@ void UI_Constructor::openStationMonitor(QString const &call) {
     connect(w, &StationMonitorWindow::callDoubleClicked, this,
             [this](QString const &c) {
                 selectCallsign(c);
-                if (auto const it =
-                        m_callActivity.constFind(c.toUpper());
-                    it != m_callActivity.constEnd() &&
+                // [audit L8] the list SHOWN (JTTY stations in JTTY mode)
+                auto const &shown = shownCallActivity();
+                if (auto const it = shown.constFind(c.toUpper());
+                    it != shown.constEnd() &&
                     qsyOffsetAllowed(it->offset))
                     changeFreq(it->offset);
             });
@@ -3806,6 +3862,14 @@ void UI_Constructor::pskLogReport(QString const &mode, int const dial,
                                        utcTimestamp);
 }
 
+// [audit L1, 2026-10-14] The 30 m WSPR guard band, ONE authority for the
+// once-per-second guard below and for keying points that do not wait for
+// it (the un-slotted JTTY send keys as soon as text is staged).
+bool UI_Constructor::inWsprGuardBand() const {
+    Frequency const onAirFreq = m_freqNominal + freq();
+    return 10139900 <= onAirFreq && onAirFreq <= 10140320;
+}
+
 void UI_Constructor::refuseToSendIn30mWSPRBand() {
     if (m_transmitting or m_auto or m_tune) {
         m_dateTimeLastTX = DriftingDateTime::currentDateTimeLocal();
@@ -3815,7 +3879,7 @@ void UI_Constructor::refuseToSendIn30mWSPRBand() {
 
         // qCDebug(mainwindow_js8) << "transmitting on" << onAirFreq;
 
-        if (10139900 <= onAirFreq && onAirFreq <= 10140320) {
+        if (inWsprGuardBand()) {
             qCWarning(mainwindow_js8)
                 << "QRG" << onAirFreq
                 << "found to be in WSPR guard band 10139.9 - 10140.32 kHz "
@@ -4017,7 +4081,9 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     // circuits the floor enforcement when ARQ is active anyway.
     if (m_iptt == 0 &&
         (m_tune || (arqFullRelax && msgLength > 0 && arqIntervalOK) ||
-         (jttyAsync && msgLength > 0) ||
+         // [audit L1] the un-slotted JTTY send keys at once, ahead of
+         // the once-per-second WSPR guard: it checks the band itself
+         (jttyAsync && msgLength > 0 && !inWsprGuardBand()) ||
          (m_timeToSend &&
           (fraction_of_tx_slot < lateThreshold || time_is_in_tx_delay) &&
           0 < msgLength &&
@@ -4125,8 +4191,10 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
                     << "ms) at" << (freq() + m_XIT) << "Hz:" << jttyText;
                 m_modulator->setFullFrameBoltWaveform(std::move(wave));
             } else {
-                // Cannot happen for text buildJttyFrames produced; the
-                // Modulator then plays silence and ends the cycle.
+                // Cannot happen for text buildJttyFrames produced. If it
+                // did, the Modulator plays silence and the cycle ends on
+                // its 5 s safety cap, not at once (audit L4): with no
+                // waveform the audio-end poll never fires.
                 qCWarning(mainwindow_js8)
                     << "[JTTY-TX] nothing staged: packJtty returned"
                     << nframes << "for" << jttyText;
@@ -4650,6 +4718,12 @@ void UI_Constructor::guiUpdate() {
         } else {
             refreshCallActivityAgeOnly();
         }
+#ifdef JS8_ENABLE_JTTY
+        // [audit M3] a frequency-driven speed switch that was refused
+        // while transmitting is retried the moment it is allowed
+        if (m_jttyTransitionPending && canChangeSpeedNow())
+            applyJttyModeTransition();
+#endif
         // [#298] the band activity's own age-only tick: rewrites the
         // Age cells of the rows that exist, and asks displayActivity
         // for a rebuild only when a row aged out or a directed tint
@@ -5491,7 +5565,9 @@ void UI_Constructor::stopTx() {
                            : m_lastComposedMessage);
 
         // Notify API clients that the queued transmission block finished.
-        sendNetworkMessage("TX.COMPLETE", dt.message(),
+        // [audit M13] the same text the Last Tx label shows: a JTTY
+        // message is plain text, never a JS8 frame to unpack
+        sendNetworkMessage("TX.COMPLETE", lastTxText,
                            {{"_ID", QVariant(-1)},
                             {"SUBMODE", m_nSubMode},
                             {"UTC", QVariant(
@@ -5730,27 +5806,62 @@ void UI_Constructor::applyEntryTransition(QString const &entryKey,
 #ifdef JS8_ENABLE_JTTY
 // Arriving on a JTTY frequency stashes the operator's speed and forces
 // JTTY mode; leaving one is the symmetric counterpart: the stash is
-// restored. setSubmode refuses during an active TX; the stash then
-// stays pending and the next transition retries nothing -- the refusal
-// is logged by setSubmode itself. Idempotent, called on every entry
-// transition. The Mode menu's own choice of JTTY mode needs no stash:
+// restored. setSubmode refuses during an active TX; the stash is then
+// kept and the switch retried once per second until it is allowed
+// (audit M3). Idempotent, called on every entry transition and by that
+// retry. The Mode menu's own choice of JTTY mode needs no stash:
 // the operator picks the way back like any other speed.
 void UI_Constructor::applyJttyModeTransition() {
     bool const nowJtty = onJttyFrequency();
-    if (nowJtty && m_jttyFreqPrevSubmode < 0) {
-        m_jttyFreqPrevSubmode = m_nSubMode;
-        qWarning() << "[JTTY] JTTY frequency" << operatingDial()
-                   << "-- forcing JTTY mode, stashed speed" << m_jttyFreqPrevSubmode;
+    // [audit M3, operator 2026-10-14] setSubmode refuses while we
+    // transmit or have messages queued. The remembered speed is kept
+    // until the switch has HAPPENED, and a refused switch is retried by
+    // the once-per-second update as soon as a speed change is allowed
+    // (m_jttyTransitionPending). Before, leaving lost the remembered
+    // speed, and arriving left JTTY conventions at a JS8 speed.
+    m_jttyTransitionPending = false;
+    if (nowJtty) {
+        if (m_jttyFreqPrevSubmode < 0) {
+            m_jttyFreqPrevSubmode = m_nSubMode;
+            m_jttyFreqPrevModeItem = ui->actionModeJTTY->isChecked();
+            qWarning() << "[JTTY] JTTY frequency" << operatingDial()
+                       << "-- forcing JTTY mode, stashed speed" << m_jttyFreqPrevSubmode
+                       << "jtty mode" << m_jttyFreqPrevModeItem;
+        }
         // The frequency wins over the menu: setSubmode checks the
         // JTTY MODE item while onJttyFrequency() holds.
         if (m_nSubMode != Varicode::JS8CallJTTY || !ui->actionModeJTTY->isChecked())
             setSubmode(Varicode::JS8CallJTTY);
-    } else if (!nowJtty && m_jttyFreqPrevSubmode >= 0) {
+        if (m_nSubMode != Varicode::JS8CallJTTY) {
+            m_jttyTransitionPending = true;
+            qWarning() << "[JTTY] switch to JTTY refused (TX busy) -- retry pending";
+        }
+    } else if (m_jttyFreqPrevSubmode >= 0) {
         int const prev = m_jttyFreqPrevSubmode;
-        m_jttyFreqPrevSubmode = -1;
-        qWarning() << "[JTTY] left the JTTY frequency -- restoring speed" << prev;
+        bool const prevModeItem = m_jttyFreqPrevModeItem;
+        qWarning() << "[JTTY] left the JTTY frequency -- restoring speed" << prev
+                   << "jtty mode" << prevModeItem;
         if (m_nSubMode != prev)
             setSubmode(prev);
+        if (m_nSubMode != prev) {
+            // refused: keep what is remembered and try again
+            m_jttyTransitionPending = true;
+            qWarning() << "[JTTY] speed restore refused (TX busy) -- retry pending";
+            refreshJttyModeIndicators();
+            return;
+        }
+        m_jttyFreqPrevSubmode = -1;
+        m_jttyFreqPrevModeItem = false;
+        // [audit M2, operator 2026-10-14] The speed is back, but JTTY
+        // speed and JTTY mode are the same speed: which Mode-menu entry
+        // was checked is restored too. Leaving 7.090 for 7.078 in JS8
+        // mode at JTTY speed used to stay in JTTY mode. (A JS8 frequency
+        // forces JS8 mode below anyway.)
+        if (m_nSubMode == Varicode::JS8CallJTTY &&
+            ui->actionModeJTTY->isChecked() != prevModeItem) {
+            ui->actionModeJTTY->setChecked(prevModeItem);   // explicit pair
+            ui->actionModeJS8JTTY->setChecked(!prevModeItem);
+        }
     }
     // [operator 2026-10-12] The symmetric half: a JS8 (or ALL, or
     // unlisted) frequency forces JS8 MODE; only a JS8+JTTY entry leaves
@@ -5783,6 +5894,13 @@ void UI_Constructor::refreshJttyModeIndicators() {
         m_stationMonitorAction->setEnabled(true);
     displayDialFrequency();
     updateModeButtonText();
+    // [audit M1(a), operator 2026-10-14] A mode change changes which
+    // list is shown and how rows are labelled, and is not a new message:
+    // both panes are redrawn. Deferred one event-loop turn -- this also
+    // runs from setupJS8 during start-up and from the entry restore,
+    // which renders BEFORE the transition that calls here.
+    ++m_callActivityVersion;
+    QTimer::singleShot(0, this, [this]() { displayActivity(true); });
 }
 #endif
 
@@ -7052,7 +7170,11 @@ QString UI_Constructor::createMessageTransmitQueue(QString const &text,
 #ifdef JS8_ENABLE_JTTY
         // [JTTY] an entry is the message text itself, not a JS8 frame
         if (m_nSubMode == Varicode::JS8CallJTTY) {
-            lines.append(frame.first + QLatin1Char(' '));
+            // [audit L13] every piece but the last already carries its
+            // separator (buildJttyFrames): add one only where missing
+            lines.append(frame.first.endsWith(QLatin1Char(' '))
+                             ? frame.first
+                             : frame.first + QLatin1Char(' '));
             continue;
         }
 #endif
@@ -7170,9 +7292,9 @@ QPair<QString, int> UI_Constructor::popMessageFrame() {
 }
 
 void UI_Constructor::currentTextChanged() {
-    // [operator 2026-10-13] The 80-character box limit at JTTY speed
-    // (dev 499.55/56) is DROPPED for testing: long text is cut into
-    // successive JTTY messages again in buildJttyFrames.
+    // [operator 2026-10-13/14] The 80-character box limit at JTTY speed
+    // (dev 499.55/56) is DROPPED, in JTTY and JS8 modes: long text is
+    // cut into successive JTTY messages in buildJttyFrames.
     auto const text = ui->extFreeTextMsgEdit->toPlainText();
 
     // keep track of dirty flags
@@ -7200,11 +7322,13 @@ UI_Constructor::buildMessageFrames(const QString &text, bool isData,
         // isData is the typeahead's "force data frames" flag (set on
         // every continuation send), not native binary -- binary frames
         // are injected by injectNativeMarkerFrame and never come here.
-        // JTTY has no frame-type header, so the flag has no meaning.
-        (void)isData;
+        // [audit L14 2026-10-14] JTTY has no frame-type header, but the
+        // flag also stops the JS8 builder from re-addressing a typeahead
+        // continuation, so it is passed through with the JS8 rule.
         if (pDisableTypeahead) *pDisableTypeahead = false;
         m_txChecksumTail = 0;
-        return buildJttyFrames(text);
+        return buildJttyFrames(text, m_txFrameCountSent > 0 && isData,
+                               pDisableTypeahead);
     }
 #endif
     // prepare selected callsign for directed message
@@ -7360,7 +7484,17 @@ bool UI_Constructor::prepareNextMessageFrame() {
 
     // append this frame to the total message sent so far
     auto dt = DecodedText(frame, bits, m_nSubMode);
-    m_totalTxMessage.append(dt.message());
+    // [audit M13, 2026-10-14] A JTTY piece is plain text: the JS8 unpack
+    // turned a 12+ character word with no space ("CONGRATULATIONS", an
+    // 80-character hard cut) into whatever the 72-bit decode yields.
+    // The air was right; the window, the accumulator and the monitors
+    // were not.
+    QString const frameText =
+#ifdef JS8_ENABLE_JTTY
+        m_nSubMode == Varicode::JS8CallJTTY ? frame :
+#endif
+                                              dt.message();
+    m_totalTxMessage.append(frameText);
     ui->extFreeTextMsgEdit->setCharsSent(m_totalTxMessage.length());
     m_txFrameCountSent += 1;
     if (m_txFrameCountSent == 1)
@@ -7379,7 +7513,7 @@ bool UI_Constructor::prepareNextMessageFrame() {
     // display the frame...
     if (m_txFrameQueue.isEmpty()) {
         displayTextForFreq(
-            QString("%1 %2 ").arg(dt.message()).arg(m_config.eot()), freq(),
+            QString("%1 %2 ").arg(frameText).arg(m_config.eot()), freq(),
             DriftingDateTime::currentDateTimeUtc(), true, false, true, m_nSubMode);
         // [stamon] Our own side of the conversation: the message is
         // fully on the air at its last frame; the wire text carries
@@ -7415,7 +7549,7 @@ bool UI_Constructor::prepareNextMessageFrame() {
                 m_nSubMode);
         }
     } else {
-        displayTextForFreq(dt.message(), freq(),
+        displayTextForFreq(frameText, freq(),
                            DriftingDateTime::currentDateTimeUtc(), true,
                            m_txFrameCountSent == 1, false, m_nSubMode);
     }
@@ -8016,7 +8150,9 @@ void UI_Constructor::on_actionModeAutoreply_toggled(bool const on) {
 bool UI_Constructor::canCurrentModeSendHeartbeat() const {
     // [JTTY, operator 2026-10-12] no heartbeat networking on a JTTY
     // frequency (noise to its users); CQ stays available.
-    if (onJttyFrequency()) return false;
+    // [audit M5, 2026-10-14] ...nor in JTTY MODE chosen from the menu on
+    // a JS8+JTTY frequency: the rule is the mode, not the frequency.
+    if (jttyMode()) return false;
     return (m_nSubMode == Varicode::JS8CallFast ||
             m_nSubMode == Varicode::JS8CallNormal ||
             m_nSubMode == Varicode::JS8CallSlow ||
@@ -8482,6 +8618,16 @@ void UI_Constructor::sendHeartbeatAck(QString to, int snr, QString extra) {
     // common reply gates, so the mode discipline never saw HB acks.
     // Enforce it AT THE EMISSION SITE: no autoreplies during
     // auto-route or an ARQ session -- every caller covered.
+#ifdef JS8_ENABLE_JTTY
+    // [audit T4 2026-10-14] ...and never in JTTY mode, where JS8 traffic
+    // is band activity only (the command loop already refuses it; the
+    // emission site holds the rule for every caller).
+    if (jttyMode()) {
+        qCWarning(mainwindow_js8)
+            << "[REPLY-GATE] HB ack suppressed (JTTY mode): to=" << to;
+        return;
+    }
+#endif
     if (m_autoRouteActive ||
         (m_chunkedArq && (m_chunkedArq->hasActiveRxTransfer() ||
                           m_chunkedArq->hasActiveTxSession()))) {
@@ -8593,6 +8739,26 @@ void UI_Constructor::sendCQ(bool repeat) {
     // same template as on a JS8 frequency; it REPLACES whatever is in
     // the outgoing box.
     if (jttyMode()) {
+        // [audit T1, operator 2026-10-14] JTTY mode sends the CQ as
+        // typed, with no "MYCALL:" prefix, so a template without our
+        // call went out with no identification ("CQ CQ CQ EM12"). When
+        // the Settings CQ names neither <MYCALL> nor the call itself,
+        // JTTY mode uses "CQ <MYCALL> <MYGRID4>" -- the form WSJT-X's
+        // spot rule and our own sender rule read (second word = the
+        // sender). Otherwise the Settings CQ as it is. JS8 mode always
+        // uses the Settings CQ (below).
+        {
+            QString const mycall = m_config.my_callsign().trimmed();
+            bool const namesMe =
+                message.contains(QStringLiteral("<MYCALL>"), Qt::CaseInsensitive) ||
+                (!mycall.isEmpty() &&
+                 message.toUpper()
+                     .split(QRegularExpression(QStringLiteral("[^A-Z0-9/]+")),
+                            Qt::SkipEmptyParts)
+                     .contains(mycall.toUpper()));
+            if (!namesMe)
+                message = QStringLiteral("CQ <MYCALL> <MYGRID4>");
+        }
         addMessageText(replaceMacros(message, buildMacroValues(), true),
                        /*clear=*/true);
         if (repeat || m_config.transmit_directed())
@@ -8670,12 +8836,10 @@ void UI_Constructor::on_snrMacroButton_clicked() {
 
 #ifdef JS8_ENABLE_JTTY
     if (jttyMode()) {
-        int snrValue = 0;
-        if (!jttySnrFor(call, &snrValue)) {
-            if (!m_callActivity.contains(call)) return;
-            snrValue = m_callActivity[call].snr;
-        }
-        jttyPlaceMacro(QStringLiteral("SNR %1").arg(Varicode::formatSNR(snrValue)));
+        // [audit T5] the station's own signal (jttyStationSnr)
+        int snr = 0;
+        if (!jttyStationSnr(call, &snr)) return;
+        jttyPlaceMacro(QStringLiteral("SNR %1").arg(Varicode::formatSNR(snr)));
         return;
     }
 #endif
@@ -10303,25 +10467,36 @@ QMap<QString, QString> UI_Constructor::buildMacroValues() {
         {"<MYIDLE>", myIdle},
     };
 
+    // [audit T5, operator 2026-10-14] The list shown is the authority:
+    // in JTTY mode the JTTY call list, whose SNR is the station's own
+    // (written by jttyNoteStation from its attributed message), never
+    // the newest line that merely mentions the call. No <TDELTA> for a
+    // JTTY station: its drift is always zero.
     auto selectedCall = callsignSelected();
-    if (m_callActivity.contains(selectedCall)) {
-        auto cd = m_callActivity[selectedCall];
+    auto const &shown = shownCallActivity();
+    if (shown.contains(selectedCall)) {
+        auto cd = shown[selectedCall];
 
         values["<CALL>"] = selectedCall;
-        values["<TDELTA>"] = QString("%1 ms").arg((int)(1000 * cd.tdrift));
+        if (!jttyMode())
+            values["<TDELTA>"] = QString("%1 ms").arg((int)(1000 * cd.tdrift));
 
         if (cd.snr > -31) {
             values["<SNR>"] = Varicode::formatSNR(cd.snr);
         }
     }
 #ifdef JS8_ENABLE_JTTY
-    // [operator 2026-10-12] A JTTY station is not in the call list yet
-    // (step 3): the selection itself fills <CALL>, the newest JTTY line
-    // naming the call fills <SNR>; no <TDELTA> for JTTY.
-    else if (!selectedCall.isEmpty()) {
+    // A JTTY station selected but not in the list (its messages may all
+    // be partial -- "expired" -- which the list does not take): the
+    // selection fills <CALL>.
+    else if (jttyMode() && !selectedCall.isEmpty()) {
         values["<CALL>"] = selectedCall;
+    }
+    // In JTTY mode <SNR> is the station's own signal from its newest
+    // credited message, complete or partial (jttyStationSnr).
+    if (jttyMode() && !selectedCall.isEmpty()) {
         int snr = 0;
-        if (jttySnrFor(selectedCall, &snr))
+        if (jttyStationSnr(selectedCall, &snr))
             values["<SNR>"] = Varicode::formatSNR(snr);
     }
 #endif
@@ -10414,6 +10589,27 @@ void UI_Constructor::buildSavedMessagesMenu(QMenu *menu) {
         QAction *action = menu->addAction(replaceMacros(macro, values, false));
         connect(action, &QAction::triggered, this, [this, macro]() {
             auto values = buildMacroValues();
+#ifdef JS8_ENABLE_JTTY
+            // [TODO #300, operator 2026-10-14] During a JTTY send the entry
+            // is TYPE-AHEAD: appended after everything in the box (never
+            // over a highlight or into the text already on the air), and
+            // picked up before the next piece like typed text.
+            if (jttyMode() && isMessageQueuedForTransmit()) {
+                auto *edit = ui->extFreeTextMsgEdit;
+                if (edit->isReadOnly()) return; // type-ahead locked
+                QString const add = replaceMacros(macro, values, true);
+                QTextCursor c = edit->textCursor();
+                c.clearSelection();
+                c.movePosition(QTextCursor::End);
+                QString const box = edit->toPlainText();
+                if (!box.isEmpty() && !box.back().isSpace())
+                    c.insertText(QStringLiteral(" "));
+                c.insertText(add);
+                edit->setTextCursor(c);
+                edit->setFocus();
+                return;
+            }
+#endif
             addMessageText(replaceMacros(macro, values, true));
             // [2026-07-14 operator request] No auto-send on saved-
             // message selection (previously fired toggleTx(true) when
@@ -10445,12 +10641,24 @@ void UI_Constructor::buildSavedMessagesMenu(QMenu *menu) {
     });
 }
 
+#ifdef JS8_ENABLE_JTTY
+// [TODO #301] ONE test for "the box already starts with the address
+// <CALL> <MYCALL>", used by the Directed-to button and the macro buttons
+// (jttyPlaceMacro): whole words, so "K1JT WM8QX ..." is not "K1JT WM8Q".
+static bool jttyStartsWithAddress(QString const &box, QString const &address) {
+    if (address.isEmpty()) return false;
+    QString const text = box.simplified();
+    return text.compare(address, Qt::CaseInsensitive) == 0 ||
+           text.startsWith(address + QLatin1Char(' '), Qt::CaseInsensitive);
+}
+#endif
+
 void UI_Constructor::on_queryButton_pressed() {
 #ifdef JS8_ENABLE_JTTY
-    // [operator 2026-10-12] On a JTTY frequency the button prints the
-    // RTTY-convention address "<CALL> DE <MYCALL> " and nothing else;
-    // the Saved menu's macros fill in the rest. No menu (a menu left
-    // on the button from a JS8 frequency would pop by itself).
+    // [operator 2026-10-12] In JTTY mode the button places the address
+    // "<CALL> <MYCALL> " and nothing else; the Saved menu's macros fill
+    // in the rest. No menu (a menu left on the button from a JS8
+    // frequency would pop by itself).
     if (jttyMode()) {
         ui->queryButton->setMenu(nullptr);
         QString const selectedCall = callsignSelected();
@@ -10458,9 +10666,27 @@ void UI_Constructor::on_queryButton_pressed() {
         // "<CALL> <MYCALL> ": the FT8-world "to from" form WSJT-X's own
         // spot rule reads (second word = sender); "<CALL> DE <MYCALL>"
         // is never spotted by it (JttyReceiveResultController.cpp).
-        addMessageText(QStringLiteral("%1 %2 ")
-                           .arg(selectedCall, m_config.my_callsign()),
-                       true);
+        QString const address =
+            QStringLiteral("%1 %2").arg(selectedCall, m_config.my_callsign());
+        QString const current =
+            ui->extFreeTextMsgEdit->toPlainText().simplified();
+        if (current.isEmpty()) {
+            addMessageText(address + QLatin1Char(' '), true);
+            return;
+        }
+        // [TODO #301, operator 2026-10-14] Text already typed keeps its
+        // place: the address is PREPENDED unless the text already starts
+        // with it. The highlight is cleared first -- a highlighted
+        // selection is what the next keystroke or insert replaces.
+        if (isMessageQueuedForTransmit()) return;
+        if (jttyStartsWithAddress(current, address)) return;
+        QTextCursor c = ui->extFreeTextMsgEdit->textCursor();
+        c.clearSelection();
+        ui->extFreeTextMsgEdit->setTextCursor(c);
+        QTextCursor head(ui->extFreeTextMsgEdit->document());
+        head.movePosition(QTextCursor::Start);
+        head.insertText(address + QLatin1Char(' '));
+        ui->extFreeTextMsgEdit->setFocus();
         return;
     }
 #endif
@@ -10492,6 +10718,8 @@ void UI_Constructor::on_macrosMacroButton_pressed() {
 void UI_Constructor::on_deselectButton_pressed() { clearCallsignSelected(); }
 
 void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
+    // [audit M1(b)] the selected band row (offset mode) is aging-exempt
+    scheduleSelectionRedraw();
     ui->tableWidgetCalls->blockSignals(true);
     ui->tableWidgetCalls->selectionModel()->select(
         ui->tableWidgetCalls->selectionModel()->selection(),
@@ -10530,29 +10758,56 @@ void UI_Constructor::on_tableWidgetRXAll_cellClicked(int row, int /*col*/) {
         QString rowText;
         if (auto *mi = ui->tableWidgetRXAll->item(row, BAMessage))
             rowText = mi->text();
-        QStringList const calls = jttyCallsOnLine(rowText);
+        bool obvious = false;
+        QStringList const calls = jttyCallsOnLine(rowText, &obvious);
+        // [operator 2026-10-14] The click acts AT ONCE, as a JS8 row's
+        // does, whenever the station is already known: a station row
+        // (callsign mode), a line the operator picked before, or a line
+        // that names its sender by a form (noted like a pick, no menu).
+        // The table is no longer rebuilt under the cursor (#298), so Qt
+        // sees double-clicks itself; only a line whose callsign menu
+        // might open still waits out the double-click interval below.
+        if (!m_jttyPickTimer.isActive()) {
+            if (!rowCall.isEmpty()) {
+                selectCallsign(rowCall);
+                return;
+            }
+            if (QString const picked = m_jttyRowCall.value(offset);
+                !picked.isEmpty()) {
+                selectCallsign(picked);
+                return;
+            }
+            if (obvious) {
+                m_jttyPickCall.clear();
+                applyJttyPick(offset); // the form sender: no menu opens
+                return;
+            }
+        }
         if (!calls.isEmpty() || !rowCall.isEmpty()) {
-            // [#298 2026-10-12] In JTTY speed the table is rebuilt every
-            // second, and a rebuild between the two presses makes Qt
-            // deliver a double-click as two single clicks (NA5M
-            // 17:57:51.941/52.115, every miss in the log straddled a
-            // tick). So the double-click is recognised HERE: a second
-            // click on the same row while the first click's deferred
-            // action is still armed is the double-click, whatever Qt saw.
+            // A line whose callsign menu might open waits out the
+            // double-click interval: the menu must not pop up between the
+            // two presses. A second click on the same row while armed is
+            // the double-click (kept from #298's workaround as a backstop;
+            // with the table no longer rebuilt every second Qt reports it
+            // too). A double-click cancels the timer, runs its own
+            // action, then picks.
             if (m_jttyPickTimer.isActive() && m_jttyPickOffset == offset &&
                 m_jttyPickCall == rowCall) {
                 on_tableWidgetRXAll_cellDoubleClicked(row, BAMessage);
                 return;
             }
-            // Deferred by the double-click interval for EVERY row with a
-            // call, not only multi-call rows: the pick re-renders the
-            // table. A double-click cancels the timer, runs its own
-            // action, then picks.
             m_jttyPickOffset = offset;
             m_jttyPickCall = rowCall;
             m_jttyPickTimer.start(QApplication::doubleClickInterval());
             return;
         }
+        // [audit M9, operator 2026-10-14] A JTTY row with no callsign at
+        // all ("TU 73 GL") selects the row and no station. It used to
+        // fall through to the JS8 fallback below, which took the JS8
+        // station heard nearest the offset -- a JTTY message is never
+        // attributed to a JS8 station seen nearby.
+        clearSelection(true /* keepBandRow */);
+        return;
     }
 #endif
 
@@ -10694,7 +10949,11 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
     // click and accepted "exploratory clicks move the speed" as the cost;
     // that cost is no longer accepted. Same call selectCallsign used to
     // make for us -- nothing else moves.
-    if (rowSubmode >= 0)
+    // [audit M11, operator 2026-10-14] ...except in JTTY mode, where the
+    // speed is fixed: the call list's double-click skips it there too.
+    // Adopting a JS8 row's speed left JTTY mode, which only the Mode menu
+    // may do.
+    if (rowSubmode >= 0 && !jttyMode())
         autoSwitchMode(rowSubmode);
 
     // [bandcall] Callsign mode: the history is the STATION's frames,
@@ -10741,7 +11000,7 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
              it != m_jttyActivity.constEnd(); ++it) {
             if (unknownRow && it.key() != offset)
                 continue;
-            QStringList const senders = jttyLineSenders(it.value());
+            QStringList const senders = jttyLineSenders(it.value(), it.key());
             for (int i = 0; i < it.value().size(); ++i)
                 if (senders.at(i) == rowCall)
                     mine.append(it.value().at(i));
@@ -11259,6 +11518,27 @@ void UI_Constructor::qsy(int const hzDelta) {
     for (auto [key, value] : m_callActivity.asKeyValueRange()) {
         value.offset -= hzDelta;
     }
+
+#ifdef JS8_ENABLE_JTTY
+    // [audit L12, 2026-10-14] ...and the JTTY lines, the operator's picks
+    // filed under their keys, and the JTTY stations' offsets: the same
+    // shift, so a QSY that keeps the signals still keeps their lines.
+    {
+        BandActivity jtty;
+        for (auto it = m_jttyActivity.constBegin(); it != m_jttyActivity.constEnd(); ++it) {
+            auto items = it.value();
+            for (auto &d : items) d.offset -= hzDelta;
+            jtty[it.key() - hzDelta] = items;
+        }
+        m_jttyActivity.swap(jtty);
+        QMap<int, QString> picks;
+        for (auto it = m_jttyRowCall.constBegin(); it != m_jttyRowCall.constEnd(); ++it)
+            picks[it.key() - hzDelta] = it.value();
+        m_jttyRowCall.swap(picks);
+        for (auto it = m_jttyCallActivity.begin(); it != m_jttyCallActivity.end(); ++it)
+            it->offset -= hzDelta;
+    }
+#endif
 
     displayActivity(true);
 }
@@ -11877,7 +12157,17 @@ void UI_Constructor::updateButtonDisplay() {
             isTransmitting || m_nSubMode != Varicode::JS8CallFT2
             || (emptyCallsign && !onPartnerFreq));
     }
+#ifdef JS8_ENABLE_JTTY
+    // [TODO #300, operator 2026-10-14] In JTTY mode "Saved" stays
+    // enabled while transmitting: its entry is appended as type-ahead
+    // (see buildSavedMessagesMenu) -- unless the box is locked against
+    // type-ahead.
+    setDisabledIfChanged(ui->macrosMacroButton,
+                         isTransmitting &&
+                             (!jttyMode() || ui->extFreeTextMsgEdit->isReadOnly()));
+#else
     setDisabledIfChanged(ui->macrosMacroButton, isTransmitting);
+#endif
     setDisabledIfChanged(ui->queryButton, isTransmitting || emptyCallsign);
     setDisabledIfChanged(ui->deselectButton, isTransmitting || emptyCallsign);
 #ifdef JS8_ENABLE_JTTY
@@ -12265,12 +12555,19 @@ void UI_Constructor::updateTextStatsDisplay(QString text, int count) {
         QString stats = QString("%1wpm / %2cpm").arg(wpm).arg(cpm);
 #ifdef JS8_ENABLE_JTTY
         // [operator 2026-10-12] at JTTY speed the character count,
-        // address included, beside the rate. [2026-10-13] The limit is
-        // dropped for testing: 80 is now the size of ONE message.
-        if (m_nSubMode == Varicode::JS8CallJTTY)
+        // address included, beside the rate; 80 is the size of ONE
+        // message. [audit L15, 2026-10-14] Counted from what goes on the
+        // air, not estimated: in JS8 mode `text` is the JS8 builder's
+        // rendering, which buildJttyFrames sends as it is; in JTTY mode
+        // the box text goes as typed.
+        if (m_nSubMode == Varicode::JS8CallJTTY) {
+            int const onAir = jttyMode()
+                ? ui->extFreeTextMsgEdit->toPlainText().simplified().length()
+                : Varicode::rstrip(text).simplified().length();
             stats += QString(" / %1 chars (%2 per msg)")
-                         .arg(text.simplified().length() + jttyAddressLength(text))
+                         .arg(onAir)
                          .arg(JTTY::MESSAGE_CHARS);
+        }
 #endif
         wpm_label.setText(stats);
         wpm_label.setVisible(true);
@@ -12432,6 +12729,7 @@ QString UI_Constructor::callsignSelected(bool) {
 void UI_Constructor::selectCallsign(QString call, int submode) {
     if (call.isEmpty())
         return;
+    scheduleSelectionRedraw(); // [audit M1(b)]
 
     // [TODO #84] Strip trailing punctuation from the selected
     // callsign. Clicking a message whose freetext begins with
@@ -12544,6 +12842,7 @@ void UI_Constructor::refreshOutgoingPlaceholder() {
 }
 
 void UI_Constructor::clearSelection(bool keepBandRow) {
+    scheduleSelectionRedraw(); // [audit M1(b)]
     // Restore HB if it was paused for this QSO (Build 122 set m_hbPaused
     // when entering selectCallsign() with heartbeat_qso_pause enabled).
     // The historical restore lived in callsignSelectedChanged(), but that
@@ -13521,10 +13820,24 @@ quint64 UI_Constructor::bandActivitySignature() const {
         }
     };
     fold(m_bandActivity);
+    // [audit M1(d)] callsign mode attributes a sender-less piece to the
+    // station last heard nearest it: a change in the station list is a
+    // change in what the band activity shows
+    mix(static_cast<quint64>(m_callActivityVersion));
 #ifdef JS8_ENABLE_JTTY
     fold(m_jttyActivity);
 #endif
     return sig;
+}
+
+void UI_Constructor::scheduleSelectionRedraw() {
+    if (m_selectionRedrawPending) return; // one redraw per burst of clicks
+    m_selectionRedrawPending = true;
+    QTimer::singleShot(QApplication::doubleClickInterval() + 50, this,
+                       [this]() {
+                           m_selectionRedrawPending = false;
+                           displayActivity(true);
+                       });
 }
 
 // [#298] The once-per-second pass over the EXISTING rows: rewrite the
@@ -13545,6 +13858,11 @@ void UI_Constructor::refreshBandActivityAgeOnly() {
             if (agedNow && !ageItem->data(Qt::UserRole + 2).toBool())
                 m_rxDisplayDirty = true;
         }
+        // [audit M1(c)] an older piece of the row crossing the limit
+        QDateTime const oldest = ageItem->data(Qt::UserRole + 3).toDateTime();
+        if (aging && oldest.isValid() && oldest.secsTo(now) / 60 >= aging &&
+            !ageItem->data(Qt::UserRole + 4).toBool())
+            m_rxDisplayDirty = true;
         if (auto *offsetItem = table->item(r, BAOffset)) {
             bool allCall = false;
             bool const tintNow =
@@ -14008,6 +14326,36 @@ void UI_Constructor::jttyDecodeDone() { m_jttyDecoding = false; }
 
 // GUI thread. A message is shown once, when it closes: complete, or cut
 // off by a gap or by reception ending with text already in hand.
+// [operator 2026-10-12/13; audit M12 2026-10-14] THE line-join rule,
+// one copy for the live map and for the JTTY.TXT history: a message at
+// `offset` takes over EVERY line within kJttyLineMergeHz (a CHOSEN
+// constant: WSJT-X's continuation tolerance, the spread measured in
+// #297), nearest first; the joined items are re-sorted by time. Returns
+// the keys joined, nearest first, for the caller's own bookkeeping.
+static constexpr int kJttyLineMergeHz = 10;
+template <typename Map>
+static QList<int> jttyJoinLines(Map &map, int offset) {
+    QList<int> near;
+    for (auto it = map.constBegin(); it != map.constEnd(); ++it)
+        if (it.key() != offset && qAbs(it.key() - offset) <= kJttyLineMergeHz)
+            near.append(it.key());
+    std::sort(near.begin(), near.end(), [offset](int a, int b) {
+        return qAbs(a - offset) < qAbs(b - offset);
+    });
+    for (int const prev : near)
+        map[offset].append(map.take(prev));
+    if (!near.isEmpty()) {
+        auto &items = map[offset];
+        std::stable_sort(items.begin(), items.end(),
+                         [](auto const &a, auto const &b) {
+                             return a.utcTimestamp < b.utcTimestamp;
+                         });
+    }
+    return near;
+}
+
+static QString jttyBareWord(QString w); // defined with the sender rules below
+
 void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
                                        std::int64_t dial) {
     QString const text = QString::fromStdString(u.text).trimmed();
@@ -14026,7 +14374,39 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
                      .arg(u.snr, 3)
                      .arg(offset, 5)
                      .arg(QString::fromLatin1(word), -8)
-                     .arg(text));
+                     .arg(text),
+                 dial); // [audit M12] the decode's own dial heads it
+
+    // [audit M8, operator 2026-10-14] The JS8 path's rule (#235 rule 9):
+    // a message decoded on another dial -- the decode began before a
+    // retune -- stays out of the band table, the conversation window,
+    // the label, the map, the spot and the monitors: its offset belongs
+    // to the old dial. The on-air record above keeps it.
+    if (!decodeDialIsCurrent(static_cast<int>(dial))) {
+        qCWarning(mainwindow_js8) << "[JTTY] message dropped: decode dial"
+                                  << dial << "!= dial" << operatingDial()
+                                  << "text=" << text.left(24);
+        return;
+    }
+
+    // [operator 2026-10-14, "#2"] Floor-level false decodes from the
+    // band-wide search we run and WSJT-X does not: a ONE-FRAME message at
+    // -16 dB or below, outside WSJT-X's own 1200-1800 Hz channels and
+    // outside our offset +- F Tol, is kept out of everything the operator
+    // sees. Measured 2026-10-14 in JTTY.TXT: ~35 false decodes in 22 h,
+    // all at -16/-17 dB, mostly one frame (7N0FFI AGN?, OD8MVT, }.KL).
+    // -16 dB is CHOSEN from that census. The on-air record above keeps it.
+    {
+        bool const oneFrame = u.latestTsync == u.startTsync;
+        bool const inWsjtxBand = offset >= 1200 && offset <= 1800;
+        bool const inMyWindow =
+            std::abs(offset - freq()) <= m_wideGraph->jttyFtol();
+        if (oneFrame && u.snr <= -16 && !inWsjtxBand && !inMyWindow) {
+            qCWarning(mainwindow_js8) << "[JTTY] floor decode hidden:" << offset
+                                      << "Hz" << u.snr << "dB text=" << text;
+            return;
+        }
+    }
 
     // Band activity row in the JTTY map, submode JTTY: displayBandActivity
     // renders it as JTTY; nothing else reads the map.
@@ -14060,7 +14440,6 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // JTTY map. 10 Hz is a CHOSEN constant: WSJT-X's own continuation
     // tolerance between frames, and the spread measured in #297. The
     // bucket's callsign assignment and an armed pick move with it.
-    static constexpr int kJttyLineMergeHz = 10;
     // [operator 2026-10-13, log 17:24-17:56] EVERY line within the
     // tolerance joins, not only the nearest: two lines born 16 Hz apart
     // (1519, 1503) each followed its newest message and ended 3 Hz
@@ -14068,20 +14447,10 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // line but a line never joined a line. Nearest first, so its
     // callsign assignment and armed pick are the ones that survive.
     {
-        QList<int> near;
-        for (auto it = m_jttyActivity.constBegin();
-             it != m_jttyActivity.constEnd(); ++it) {
-            if (it.key() != offset && qAbs(it.key() - offset) <= kJttyLineMergeHz)
-                near.append(it.key());
-        }
-        std::sort(near.begin(), near.end(), [offset](int a, int b) {
-            return qAbs(a - offset) < qAbs(b - offset);
-        });
+        QList<int> const near = jttyJoinLines(m_jttyActivity, offset);
         for (int const prev : near) {
             qCWarning(mainwindow_js8) << "[JTTY] line" << prev << "->" << offset
-                                      << "items=" << m_jttyActivity[prev].size()
                                       << "joined=" << near.size();
-            m_jttyActivity[offset].append(m_jttyActivity.take(prev));
             if (m_jttyRowCall.contains(prev)) {
                 if (!m_jttyRowCall.contains(offset))
                     m_jttyRowCall[offset] = m_jttyRowCall.value(prev);
@@ -14089,15 +14458,38 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
             }
             if (m_jttyPickOffset == prev) m_jttyPickOffset = offset;
         }
-        if (!near.isEmpty()) {
-            auto &items = m_jttyActivity[offset];
-            std::stable_sort(items.begin(), items.end(),
-                             [](ActivityDetail const &a, ActivityDetail const &b) {
-                                 return a.utcTimestamp < b.utcTimestamp;
-                             });
-        }
     }
     m_jttyActivity[offset].append(d);
+    // [audit D1, operator 2026-10-14] Old messages fall off their line,
+    // as JS8's buckets drop old frames: past the operator's band-activity
+    // aging (already hidden there), and in any case beyond
+    // kJttyLineMaxMessages per line -- a CHOSEN constant, sized so a long
+    // QSO keeps its whole history for the double-click and the monitor.
+    {
+        static constexpr int kJttyLineMaxMessages = 100;
+        auto &line = m_jttyActivity[offset];
+        int const aging = m_config.activity_aging();
+        if (aging > 0) {
+            while (line.size() > 1 &&
+                   line.first().utcTimestamp.secsTo(now) / 60 >= aging)
+                line.removeFirst();
+        }
+        while (line.size() > kJttyLineMaxMessages)
+            line.removeFirst();
+    }
+    // [operator 2026-10-13; audit L6, 2026-10-14] A line that names my
+    // station is highlighted in the "my call" colour like a JS8 directed
+    // message: the SAME marker and the same two-minute timeout. Set
+    // BEFORE the row is drawn (it was set at the end, so the row was
+    // drawn untinted and redrawn a second later). A JS8-form line in
+    // JTTY mode is band activity only and is not marked.
+    {
+        bool const js8FormLine = text.simplified()
+                                     .section(QLatin1Char(' '), 0, 0)
+                                     .endsWith(QLatin1Char(':'));
+        if (jttyLineNamesMe(text) && !(jttyMode() && js8FormLine))
+            markOffsetDirected(offset, /*isAllCall=*/false);
+    }
     displayBandActivity();
 
     // [operator 2026-10-12] the line's speed indicator "J" says JTTY;
@@ -14109,18 +14501,26 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     bool const namesMe = jttyLineNamesMe(text);
     bool const nearMyOffset =
         std::abs(offset - freq()) <= JS8::Submode::rxThreshold(Varicode::JS8CallJTTY);
-    if (nearMyOffset || namesMe)
-        displayTextForFreq(text, offset, now, false, true, true,
-                           Varicode::JS8CallJTTY);
-
+    // [audit M7, operator 2026-10-14] A complete JS8-form command goes to
+    // the command path, which prints it itself -- the JS8 receive path
+    // skips directed frames for the same reason (processRxActivity).
+    // Queued FIRST, so the line is printed once, by one of the two.
     // [operator 2026-10-12] In JTTY MODE, JS8-form traffic ("K9AVT: ...")
-    // is shown in the band activity and nothing else: no label, map,
-    // spot, notification or command. Operators who want it switch mode.
+    // is shown in the band activity and nothing else: no conversation
+    // line, label, map, spot, notification or command. Operators who
+    // want it switch mode. [audit L3, 2026-10-14] Checked BEFORE the
+    // conversation print, which used to come first.
     if (jttyMode() &&
         text.simplified().section(QLatin1Char(' '), 0, 0).endsWith(QLatin1Char(':'))) {
         qCDebug(mainwindow_js8) << "[JTTY] JS8-form line ignored in JTTY mode:" << text;
         return;
     }
+
+    bool const queued = u.terminal == JTTY::UPDATE_COMPLETE &&
+                        queueJttyCommand(text, u.snr, offset, dial, now);
+    if (!queued && (nearMyOffset || namesMe))
+        displayTextForFreq(text, offset, now, false, true, true,
+                           Varicode::JS8CallJTTY);
 
     if (u.terminal == JTTY::UPDATE_COMPLETE) {
         // The sender: WSJT-X's own spot rule (JttyReceiveResultController.cpp
@@ -14129,7 +14529,16 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         // "FROM: ..." (operator 2026-10-12: "K9AVT: WM8Q DN61" was
         // neither labelled nor mapped). The grid sits third in both;
         // never ourselves; mode "JTTY".
-        QString sender = jttyLineSender(text);
+        bool ownForm = false;
+        QString sender = jttyLineSender(text, &ownForm);
+        // [audit D1, operator 2026-10-14] PSKReporter is told only of a
+        // sender this message NAMES by a form (CQ FROM, TO FROM, TO DE
+        // FROM, FROM:) -- never a sender borrowed from the line, the
+        // operator's pick, or the bare second-callsign guess. The
+        // display still uses all of them.
+        bool const spotable = !sender.isEmpty() && ownForm;
+        // [operator 2026-10-14] the bare guess is no sender until picked
+        if (!ownForm) sender.clear();
         // [operator 2026-10-12, "I'm in a QSO with him"] A line with no
         // sender form still has a sender of record when the operator
         // assigned its offset by the pick: that assignment is the
@@ -14143,18 +14552,55 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         // before it, newest first.
         if (sender.isEmpty()) {
             auto const &line = m_jttyActivity.value(offset);
-            if (!line.isEmpty()) sender = jttyLineSenders(line).last();
+            if (!line.isEmpty()) sender = jttyLineSenders(line, offset).last();
         }
         if (!sender.isEmpty()) {
             QStringList const fields = text.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
             static QRegularExpression const gridRe(QStringLiteral("^[A-R]{2}[0-9]{2}([A-X]{2})?$"));
-            QString const grid = (fields.size() >= 3 && gridRe.match(fields.at(2)).hasMatch())
-                                     ? fields.at(2) : QString();
+            // The grid is the word right after the sender ("CQ DX HK4L
+            // FJ26", operator 2026-10-15), else the third word as before
+            // ("K9AVT: WM8Q DN61", "CQ K9AVT DN61").
+            QString grid;
+            for (int i = 0; i + 1 < fields.size(); ++i) {
+                if (jttyBareWord(fields.at(i).toUpper())
+                        .compare(sender, Qt::CaseInsensitive) != 0)
+                    continue;
+                if (gridRe.match(fields.at(i + 1)).hasMatch()) grid = fields.at(i + 1);
+                break;
+            }
+            if (grid.isEmpty() && fields.size() >= 3 && gridRe.match(fields.at(2)).hasMatch())
+                grid = fields.at(2);
             // [operator 2026-10-12] "K9AVT:" IS the standard callsign
             // K9AVT in JS8 syntax; the upstream test only fails on the
             // raw token. Spotted like the WSJT-X forms.
-            pskLogReport(QStringLiteral("JTTY"), static_cast<int>(dial), offset,
-                         u.snr, sender, grid, now);
+            // [operator 2026-10-14] A JS8-form message ("K9AVT: ...") is
+            // a JS8 station using JTTY as a SPEED: it is reported as JS8,
+            // like every other speed -- "PSKR doesn't need to know
+            // anything special". (It only reaches here in JS8 mode; JTTY
+            // mode drops JS8-form lines above.) The command path's own
+            // JS8 report of the same reception collapses into this one in
+            // the reporter (one spot per call and band).
+            // [operator 2026-10-14] The STATION is a JS8 station when the
+            // message that names it is in the JS8 form -- this message,
+            // or for a borrowed sender the line's message that named it.
+            auto const isJs8Form = [](QString const &t) {
+                return t.simplified().section(QLatin1Char(' '), 0, 0)
+                           .endsWith(QLatin1Char(':'));
+            };
+            bool js8Station = isJs8Form(text);
+            if (!js8Station && !ownForm) {
+                for (auto const &it : m_jttyActivity.value(offset))
+                    if (isJs8Form(it.text) &&
+                        jttyLineSender(it.text).compare(sender, Qt::CaseInsensitive) == 0) {
+                        js8Station = true;
+                        break;
+                    }
+            }
+            if (spotable)
+                pskLogReport(js8Station ? QStringLiteral("JS8")
+                                        : QStringLiteral("JTTY"),
+                             static_cast<int>(dial), offset,
+                             u.snr, sender, grid, now);
             // [operator 2026-10-12] "TO FROM GRID", "CQ FROM GRID" and
             // "FROM: ..." parse safely even when the band-activity line
             // cannot be labelled: the station goes on the Spots Map as
@@ -14178,7 +14624,8 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
                 for (auto const &w : fields)
                     if (snrRe.match(w).hasMatch()) { theirSnr = w.toInt(); break; }
             }
-            jttyNoteStation(sender, grid, offset, u.snr, dial, toMe, theirSnr);
+            jttyNoteStation(sender, grid, offset, u.snr, dial, toMe, theirSnr,
+                            /*label=*/true, js8Station);
             if (m_wsjtxMessageMapper && m_config.wsjtx_protocol_enabled())
                 m_wsjtxMessageMapper->sendDecode(
                     true, now.time(), u.snr, 0.0f, static_cast<quint32>(offset),
@@ -14186,8 +14633,7 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         }
     }
 
-    bool const queued = u.terminal == JTTY::UPDATE_COMPLETE &&
-                        queueJttyCommand(text, u.snr, offset, dial, now);
+    // ("queued" was decided before the conversation print above)
 
     // [operator 2026-10-12] A received JTTY line that names my station
     // rings the existing "Directed Message Received" notification --
@@ -14198,12 +14644,7 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     if (!queued && namesMe) {
         qCWarning(mainwindow_js8) << "[JTTY] line names my station:" << text;
         tryNotify(QStringLiteral("directed"), Varicode::JS8CallJTTY);
-        // [operator 2026-10-13] ...and the band-activity line is
-        // highlighted in the "my call" colour like a JS8 directed
-        // message: the SAME marker and the same timeout (two minutes,
-        // isDirectedOffset) -- the line's key is this offset after the
-        // join above.
-        markOffsetDirected(offset, /*isAllCall=*/false);
+        // (the "my call" highlight was set before the row was drawn)
     }
 
     // [operator 2026-10-13] The station monitors, back in JTTY mode:
@@ -14214,7 +14655,7 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // by parties, so an offset drifting with the 10 Hz join is harmless.
     if (!queued && !m_stationMonitors.isEmpty()) {
         auto const &line = m_jttyActivity.value(offset);
-        QString const from = line.isEmpty() ? QString() : jttyLineSenders(line).last();
+        QString const from = line.isEmpty() ? QString() : jttyLineSenders(line, offset).last();
         QString const to = line.isEmpty() ? QString() : jttyLineAddressees(line).last();
         qCWarning(mainwindow_js8) << "[JTTY] parties from=" << from
                                   << "to=" << to << "text=" << text;
@@ -14299,7 +14740,7 @@ bool UI_Constructor::queueJttyCommand(QString const &text, int snr,
 
 // JTTY.TXT: its own file, so ALL.TXT keeps the exact shape third-party
 // parsers expect. Header as ALL.TXT's, on a new file or a new UTC date.
-void UI_Constructor::writeJttyTxt(QStringView line) {
+void UI_Constructor::writeJttyTxt(QStringView line, std::int64_t lineDial) {
     if (!m_config.write_logs()) return;
     QFile f{m_config.writeable_data_dir().absoluteFilePath(QStringLiteral("JTTY.TXT"))};
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Append)) {
@@ -14309,12 +14750,21 @@ void UI_Constructor::writeJttyTxt(QStringView line) {
     }
     QTextStream out(&f);
     QDate const utcDate = DriftingDateTime::currentDateTimeUtc().date();
-    if (f.size() == 0 || utcDate != m_lastJttyTxtHeaderDate) {
+    // [audit M12, 2026-10-14] ...and on every DIAL change, as ALL.TXT
+    // does: the frequency line is the only dial a JTTY.TXT line has, so
+    // a reader (the station-monitor backfill) must find the one that
+    // applies above every line. The operating dial, the one each decode
+    // is stamped with.
+    Radio::Frequency const dialNow =
+        lineDial > 0 ? static_cast<Radio::Frequency>(lineDial) : operatingDial();
+    if (f.size() == 0 || utcDate != m_lastJttyTxtHeaderDate ||
+        dialNow != m_lastJttyTxtHeaderDial) {
         out << DriftingDateTime::currentDateTimeUtc().toString(
                    QStringLiteral("yyyy-MM-dd hh:mm:ss"))
-            << "  " << qSetRealNumberPrecision(12) << (m_freqNominal / 1.e6)
+            << "  " << qSetRealNumberPrecision(12) << (dialNow / 1.e6)
             << " MHz  JTTY" << Qt::endl;
         m_lastJttyTxtHeaderDate = utcDate;
+        m_lastJttyTxtHeaderDial = dialNow;
     }
     out << line << Qt::endl;
 }
@@ -14322,43 +14772,75 @@ void UI_Constructor::writeJttyTxt(QStringView line) {
 // checksum, no compound frames. Interlocks are the ordinary send path's
 // (idle watchdog, ensureCreateMessageReady, Halt, modulator-idle guard,
 // duration-scaled safety cap); the ARQ intercept is never reached.
-QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text) {
+QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text,
+                                                           bool forceData,
+                                                           bool *pDisableTypeahead) {
     QList<QPair<QString, int>> out;
     QString body = text.trimmed();
     if (body.isEmpty()) return out;
 
-    // JS8 directed syntax, the form every Subspace station parses and a
-    // WSJT-X operator reads as plain text: "MYCALL: SELECTED body".
-    QString const mycall = m_config.my_callsign();
-    QString const selected = callsignSelected();
-    bool const alreadyAddressed =
-        body.startsWith(mycall + QLatin1Char(':'), Qt::CaseInsensitive);
-    // [operator 2026-10-12] On a JTTY frequency the text goes exactly as
-    // typed: the address there is "<CALL> DE <MYCALL>", placed by the
-    // Directed-to button, never the JS8 "MYCALL:" form.
-    if (!alreadyAddressed && !jttyMode()) {
-        // Text that already names its addressee with a command
-        // ("K9AVT SNR +05": every auto-reply, or a typed query) gets our
-        // call only, as the JS8 builder does; otherwise the selected
-        // station is the addressee. Same parser as the receive side.
-        QString to, cmd, num;
-        bool toCompound = false;
-        int consumed = 0;
-        bool const directed = !Varicode::packDirectedMessage(
-                                   body, mycall, &to, &toCompound, &cmd,
-                                   &num, &consumed).isEmpty();
-        if (directed)
-            body = mycall + QStringLiteral(": ") + body;
-        else if (!selected.isEmpty())
-            body = mycall + QStringLiteral(": ") + selected + QLatin1Char(' ') + body;
+    // [audit T2/T3, operator 2026-10-14: "why would that be different for
+    // other speeds? fix"] In JS8 mode the addressing is the JS8 builder's,
+    // the one authority every other speed uses: identification of
+    // unaddressed text (ALLOW_FORCE_IDENTIFY), the selected call only
+    // when the line does not already open with it, @ALLCALL, CQ, HB or
+    // another call, a directed command's "MYCALL:". The JS8 frames are
+    // built as at Normal speed and rendered as a JS8 receiver shows
+    // them -- the same rendering our own conversation window uses -- and
+    // that text is what goes out in JTTY. The checksum a checksummed
+    // command carries is dropped: the JTTY receive path does not verify
+    // one, and it would reach the receiver as body text.
+    // [operator 2026-10-12] In JTTY MODE the text goes as typed: the
+    // address there is "<CALL> <MYCALL>", placed by the Directed-to
+    // button, never the JS8 "MYCALL:" form.
+    if (!jttyMode()) {
+        Varicode::MessageInfo info;
+        auto const frames = Varicode::buildMessageFrames(
+            m_config.my_callsign(), m_config.my_grid().left(4),
+            callsignSelected(), body, !m_config.avoid_forced_identify(),
+            forceData, Varicode::JS8CallNormal, &info);
+        QString rendered;
+        for (auto const &f : frames)
+            rendered += DecodedText(f.first, f.second, Varicode::JS8CallNormal)
+                            .message();
+        rendered = Varicode::rstrip(rendered);
+        int const tail = info.checksumSize == 32 ? 6
+                       : info.checksumSize == 16 ? 3 : 0;
+        if (tail > 0 && rendered.length() > tail + 1 &&
+            rendered.at(rendered.length() - tail - 1) == QLatin1Char(' '))
+            rendered = rendered.left(rendered.length() - tail - 1);
+        if (pDisableTypeahead)
+            *pDisableTypeahead = !info.dirCmd.isEmpty() &&
+                                 Varicode::isCommandChecksumed(info.dirCmd);
+        if (!rendered.trimmed().isEmpty()) body = rendered;
     }
 
-    // [operator 2026-10-13] The one-message 80-character limit of dev
-    // 499.55/56 is DROPPED for testing. Text over JTTY::MESSAGE_CHARS is
-    // cut at word boundaries into successive messages, as before 499.55
-    // (known: a continuation piece carries no sender, so a receiver
-    // shows it as a separate message). normalizeJttyMessage truncates
-    // at 80, so it runs per piece.
+    // [audit T6, operator 2026-10-14: "mask off non-ascii, just like JS8
+    // mode"] Only printable ASCII reaches the JTTY packer: compatibility
+    // decomposition first (an accented capital keeps its base letter),
+    // then everything outside 32..126 is dropped, as the outgoing box
+    // drops it. The codec pads and truncates in BYTES, so a multi-byte
+    // character inside an 80-character piece used to push its last
+    // characters off the air.
+    {
+        QString masked;
+        masked.reserve(body.size());
+        for (QChar const c : body.normalized(QString::NormalizationForm_KD)) {
+            ushort const u = c.unicode();
+            if (u >= 32 && u <= 126)
+                masked += c;
+            else if (c.isSpace())
+                masked += QLatin1Char(' ');
+        }
+        body = masked;
+    }
+
+    // [operator 2026-10-14] NO limit on the total, in JTTY mode and in
+    // JS8 mode at JTTY speed: text over JTTY::MESSAGE_CHARS (the
+    // protocol's size of ONE message) is cut at word boundaries into
+    // successive messages. A continuation piece names no sender; the
+    // receive side attributes it from its line. normalizeJttyMessage
+    // truncates at 80, so it runs per piece.
     QString remaining = body.toUpper().simplified();
     while (!remaining.isEmpty()) {
         QString piece = remaining;
@@ -14392,8 +14874,7 @@ bool UI_Constructor::jttyPlaceMacro(QString const &payload) {
         call.isEmpty() ? QString()
                        : QStringLiteral("%1 %2").arg(call, m_config.my_callsign());
     QString const box = ui->extFreeTextMsgEdit->toPlainText();
-    bool const present = !address.isEmpty() &&
-                         box.trimmed().startsWith(address, Qt::CaseInsensitive);
+    bool const present = jttyStartsWithAddress(box, address);
     QString text;
     if (present) {
         text = box;
@@ -14469,6 +14950,16 @@ QString UI_Constructor::jttyLineSender(QString const &text, bool *fromForm) cons
         if (from.compare(m_config.my_callsign(), Qt::CaseInsensitive) == 0) return QString();
         return from;
     }
+    // [operator 2026-10-15, "CQ DX HK4L FJ26"] CQ with ONE word that is
+    // not a callsign before the caller -- CQ DX, CQ NA, CQ POTA, CQ CQ --
+    // names the sender as surely as "CQ <call>" does.
+    if (words.size() >= 3 && jttyBareWord(words.at(0)) == QStringLiteral("CQ") &&
+        !jttyCallShaped(jttyBareWord(words.at(1)))) {
+        QString const w = jttyBareWord(words.at(2));
+        if (jttyCallShaped(w) &&
+            w.compare(m_config.my_callsign(), Qt::CaseInsensitive) != 0)
+            return w;
+    }
     // "... DE X": the RTTY habit names the sender after DE ("599 WHO DE
     // W5NM", 2026-10-12). A line with no sender form at all -- "K6KH
     // 599 001", "W5NM DM62" -- names its ADDRESSEE first by the WSJT-X
@@ -14500,33 +14991,94 @@ QString UI_Constructor::jttyLineSender(QString const &text, bool *fromForm) cons
     return QString();
 }
 
-QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line) const {
-    QStringList out;
-    QString last;
-    for (auto const &it : line) {
-        QString const s = jttyLineSender(it.text);
-        if (!s.isEmpty()) last = s;
-        out.append(!s.isEmpty() ? s
-                   : !last.isEmpty() ? last
-                   : m_jttyRowCall.value(it.offset));
-    }
-    // [operator 2026-10-14, 1385 Hz "WM8Q 599 013" then "DE K4JAT K"]
-    // A sender-less piece BEFORE any sender on its line sat on the
-    // unknown row while the rest of the line went to K4JAT. JS8 gives
-    // such a frame to the station nearest its offset; the JTTY
-    // counterpart is the line itself: the leading run takes the first
-    // sender the line names later. The pick still wins where it was
-    // made.
-    QString first;
-    for (int i = 0; i < line.size(); ++i) {
-        QString const s = jttyLineSender(line.at(i).text);
-        if (!s.isEmpty()) { first = s; break; }
-    }
-    if (!first.isEmpty())
-        for (int i = 0; i < out.size(); ++i) {
-            if (!jttyLineSender(line.at(i).text).isEmpty()) break;
-            if (out.at(i).isEmpty()) out[i] = first;
+// [audit T5, operator 2026-10-14, DK6LF at 1783 Hz] The station's OWN
+// signal report: the SNR of the newest band-activity message CREDITED to
+// the call (the one sender authority, so never a line that merely
+// mentions it), complete or partial -- DK6LF's two receptions were both
+// "expired" (cut short), the JTTY call list takes only complete ones,
+// and the SNR button found nothing while REPLY worked. The call list's
+// SNR is the fallback.
+bool UI_Constructor::jttyStationSnr(QString const &call, int *snr) const {
+    QDateTime newest;
+    bool found = false;
+    for (auto it = m_jttyActivity.constBegin(); it != m_jttyActivity.constEnd(); ++it) {
+        QStringList const senders = jttyLineSenders(it.value(), it.key());
+        for (int i = 0; i < it.value().size(); ++i) {
+            auto const &d = it.value().at(i);
+            if (senders.at(i).compare(call, Qt::CaseInsensitive) != 0) continue;
+            if (!found || d.utcTimestamp > newest) {
+                newest = d.utcTimestamp;
+                *snr = d.snr;
+                found = true;
+            }
         }
+    }
+    if (!found && m_jttyCallActivity.contains(call) &&
+        m_jttyCallActivity.value(call).snr > -31) {
+        *snr = m_jttyCallActivity.value(call).snr;
+        found = true;
+    }
+    return found;
+}
+
+QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line,
+                                            int lineKey) const {
+    // [audit D1, operator 2026-10-14 "agreed on all 3 points"] A message
+    // that names no sender borrows one from its line only from a message
+    // within kOrphanSenderMaxAgeSecs of it -- JS8's own limit for its
+    // nearest-station fallback. Before, a line never forgot: a
+    // stranger's "TNX FER QSO 73" three hours after K9AVT's CQ at the
+    // same frequency was K9AVT's. The operator's pick is not a guess
+    // and has no limit.
+    // [operator 2026-10-14, "K1JT OK N7GCR OK TOO"] Only a sender FORM
+    // names a message's sender here. The bare second-callsign guess is
+    // not a sender until the operator confirms it by the pick: it only
+    // leads the pick menu (jttyCallsOnLine).
+    QStringList own;
+    own.reserve(line.size());
+    for (auto const &it : line) {
+        bool form = false;
+        QString const s = jttyLineSender(it.text, &form);
+        own.append(form ? s : QString());
+    }
+    auto const near = [](ActivityDetail const &a, ActivityDetail const &b) {
+        return qAbs(a.utcTimestamp.secsTo(b.utcTimestamp)) <=
+               kOrphanSenderMaxAgeSecs;
+    };
+    QStringList out;
+    out.reserve(line.size());
+    int lastIdx = -1;
+    for (int i = 0; i < line.size(); ++i) {
+        if (!own.at(i).isEmpty()) {
+            lastIdx = i;
+            out.append(own.at(i));
+        } else if (lastIdx >= 0 && near(line.at(lastIdx), line.at(i))) {
+            out.append(own.at(lastIdx));
+        } else {
+            out.append(QString());
+        }
+    }
+    // the operator's pick for the line, where no earlier sender applies.
+    // [audit M6, operator 2026-10-14] The pick is filed under the LINE
+    // (its key) and covers every message on it, whatever Hz each one
+    // arrived at -- it was looked up by each message's own offset, so a
+    // drifting line kept only the messages at the exact Hz clicked.
+    QString const pick = lineKey >= 0 ? m_jttyRowCall.value(lineKey) : QString();
+    for (int i = 0; i < line.size(); ++i)
+        if (out.at(i).isEmpty())
+            out[i] = pick;
+    // [operator 2026-10-14, 1385 Hz "WM8Q 599 013" then "DE K4JAT K"]
+    // A sender-less piece BEFORE any sender on its line takes the next
+    // sender the line names -- the JTTY counterpart of JS8's
+    // nearest-station fallback -- under the same time limit. The pick
+    // above still wins where it was made.
+    int nextIdx = -1;
+    for (int i = line.size() - 1; i >= 0; --i) {
+        if (!own.at(i).isEmpty()) { nextIdx = i; continue; }
+        if (out.at(i).isEmpty() && nextIdx >= 0 &&
+            near(line.at(i), line.at(nextIdx)))
+            out[i] = own.at(nextIdx);
+    }
     return out;
 }
 
@@ -14560,7 +15112,8 @@ QStringList UI_Constructor::jttyLineAddressees(QList<ActivityDetail> const &line
     QString last;
     for (auto const &it : line) {
         QString const to = jttyLineAddressee(it.text);
-        bool const ownSender = !jttyLineSender(it.text).isEmpty();
+        bool form = false; // the bare guess names no sender (jttyLineSenders)
+        bool const ownSender = !jttyLineSender(it.text, &form).isEmpty() && form;
         // a message with its own sender starts fresh; a sender-less
         // piece continues the previous message, addressee included
         if (!to.isEmpty()) last = to;
@@ -14577,14 +15130,52 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
         w->runBackfill(out);
         return;
     }
+    // [audit M12, operator 2026-10-14] The history must read like the live
+    // feed: only lines heard on the CURRENT dial (the frequency line above
+    // each line is its dial -- written on every dial change, as ALL.TXT
+    // does), no JS8-form lines (live JTTY mode drops them), the live
+    // line-join rule, and no live pick on hours-old lines.
+    Radio::Frequency const dialNow =
+        const_cast<UI_Constructor *>(this)->operatingDial();
+    static QRegularExpression const hdrRe{QStringLiteral(
+        R"(^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+([0-9.]+) MHz\s+JTTY\s*$)")};
+    auto const headerDial = [](QString const &l, Radio::Frequency *fr) {
+        auto const m = hdrRe.match(l);
+        if (!m.hasMatch()) return false;
+        *fr = static_cast<Radio::Frequency>(std::llround(m.captured(1).toDouble() * 1e6));
+        return true;
+    };
+    Radio::Frequency curDial = 0; // 0 = no frequency line seen
     // the tail only: a mebibyte is far more than six hours of JTTY
     constexpr qint64 kTail = 1 << 20;
     if (f.size() > kTail) {
-        f.seek(f.size() - kTail);
+        qint64 const start = f.size() - kTail;
+        // the frequency line in force where the tail begins: search back
+        qint64 pos = start;
+        QByteArray carry; // a line split by the chunk boundary
+        while (pos > 0 && curDial == 0) {
+            qint64 const from = qMax<qint64>(0, pos - (1 << 16));
+            f.seek(from);
+            QByteArray const chunk = f.read(pos - from) + carry;
+            QList<QByteArray> parts = chunk.split('\n');
+            carry = (from > 0) ? parts.takeFirst() : QByteArray();
+            for (int i = parts.size() - 1; i >= 0 && curDial == 0; --i) {
+                Radio::Frequency fr = 0;
+                if (headerDial(QString::fromUtf8(parts.at(i)).trimmed(), &fr))
+                    curDial = fr;
+            }
+            pos = from;
+        }
+        f.seek(start);
         f.readLine(); // the cut line
     }
     QDateTime const cutoff =
         DriftingDateTime::currentDateTimeUtc().addSecs(-6 * 3600);
+    auto const js8Form = [](QString const &t) {
+        return t.simplified().section(QLatin1Char(' '), 0, 0)
+                   .endsWith(QLatin1Char(':'));
+    };
+    auto const onThisDial = [&]() { return curDial == 0 || curDial == dialNow; };
     // "yyyy-MM-dd hh:mm:ss SNR OFFSET status  TEXT" (processJttyUpdate)
     static QRegularExpression const rxRe{QStringLiteral(
         R"(^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(-?\d+)\s+(\d+)\s+(complete|expired|ended)\s+(.*)$)")};
@@ -14599,10 +15190,16 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
     QString const mycall = m_config.my_callsign();
     while (!f.atEnd()) {
         QString const line = QString::fromUtf8(f.readLine()).trimmed();
+        {
+            Radio::Frequency fr = 0;
+            if (headerDial(line, &fr)) { curDial = fr; continue; }
+        }
         auto m = rxRe.match(line);
         if (m.hasMatch()) {
             QDateTime const utc = stamp(m.captured(1));
-            if (!utc.isValid() || utc < cutoff) continue;
+            if (!utc.isValid() || utc < cutoff || !onThisDial() ||
+                js8Form(m.captured(5)))
+                continue;
             int const offset = m.captured(3).toInt();
             ActivityDetail d = {};
             d.bits = Varicode::JS8CallFirst | Varicode::JS8CallLast;
@@ -14611,20 +15208,16 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
             d.utcTimestamp = utc;
             d.snr = m.captured(2).toInt();
             d.submode = Varicode::JS8CallJTTY;
-            int key = offset, best = 11;
-            for (auto it = lines.constBegin(); it != lines.constEnd(); ++it) {
-                int const dist = qAbs(it.key() - offset);
-                if (dist <= 10 && dist < best) { best = dist; key = it.key(); }
-            }
-            if (key != offset) lines[offset] = lines.take(key);
+            jttyJoinLines(lines, offset); // the live rule
             lines[offset].append(d);
             continue;
         }
         m = txRe.match(line);
         if (m.hasMatch()) {
             QDateTime const utc = stamp(m.captured(1));
-            if (!utc.isValid() || utc < cutoff) continue;
             QString const text = m.captured(3);
+            if (!utc.isValid() || utc < cutoff || !onThisDial() || js8Form(text))
+                continue;
             out.append({utc, mycall, jttyLineAddressee(text), text,
                         m.captured(2).toInt(), Varicode::JS8CallJTTY});
         }
@@ -14722,6 +15315,12 @@ void UI_Constructor::applyJttyPick(int offset) {
         if (bandListByCall()) {
             auto *ci = ui->tableWidgetRXAll->item(r, BACallsign);
             if (ci && !ci->data(Qt::UserRole).toString().isEmpty()) continue;
+        } else {
+            // [audit L11] offset mode emits a JS8 row and a JTTY row at
+            // one key, JS8 first: the pick reads the JTTY row
+            auto *si = ui->tableWidgetRXAll->item(r, BASpeed);
+            if (!si || si->data(Qt::UserRole).toInt() != Varicode::JS8CallJTTY)
+                continue;
         }
         mi = ui->tableWidgetRXAll->item(r, BAMessage);
         break;
@@ -14735,8 +15334,11 @@ void UI_Constructor::applyJttyPick(int offset) {
     // station goes on the map and the waterfall now, at the line's
     // newest SNR, not only on the next message it sends.
     {
-        int snr = -99;
-        jttySnrFor(chosen, &snr);
+        // [audit T5] the picked LINE's newest SNR -- the station the
+        // operator just named sent it -- not the newest line anywhere
+        // that mentions the call
+        auto const &line = m_jttyActivity.value(offset);
+        int const snr = line.isEmpty() ? -99 : line.last().snr;
         jttyNoteStation(chosen, QString(), offset, snr,
                         static_cast<std::int64_t>(operatingDial()),
                         /*addressedToMe=*/false, -99, /*label=*/false);
@@ -14745,17 +15347,6 @@ void UI_Constructor::applyJttyPick(int offset) {
     // (bandActivityDoubleClick), as for every other row.
     selectCallsign(chosen);
     displayBandActivity();
-}
-
-int UI_Constructor::jttyAddressLength(QString const &boxText) {
-    if (jttyMode()) return 0;
-    QString const mycall = m_config.my_callsign();
-    if (boxText.trimmed().startsWith(mycall + QLatin1Char(':'), Qt::CaseInsensitive))
-        return 0;
-    int n = mycall.length() + 2;                     // "MYCALL: "
-    QString const selected = callsignSelected();
-    if (!selected.isEmpty()) n += selected.length() + 1; // "SELECTED "
-    return n;
 }
 
 // A JTTY station we heard: the waterfall label at its offset (under the
@@ -14767,16 +15358,35 @@ int UI_Constructor::jttyAddressLength(QString const &boxText) {
 void UI_Constructor::jttyNoteStation(QString const &call, QString const &grid,
                                      int offset, int snr, std::int64_t dial,
                                      bool addressedToMe, int theirSnrOfMe,
-                                     bool label) {
+                                     bool label, bool js8Station) {
     if (call.isEmpty()) return;
     if (label) {
         m_wideGraph->setCallsignOverlayEnabled(m_config.show_calls_on_waterfall());
         m_wideGraph->annotateCall(call, offset, Varicode::JS8CallJTTY);
     }
+    // [operator 2026-10-14, "in JS8 mode JTTY is only a speed"] A JS8
+    // station heard at JTTY speed goes into the ordinary call list with
+    // its speed, like any speed (not reported again: the caller already
+    // did), and onto the Spots Map as JS8, so the JS8 map shows it.
+    QString const mapMode = js8Station ? QStringLiteral("JS8")
+                                       : QStringLiteral("JTTY");
+    if (js8Station) {
+        CallDetail cd = {};
+        cd.call = call;
+        cd.grid = grid;
+        cd.dial = static_cast<int>(dial);
+        cd.offset = offset;
+        cd.utcTimestamp = DriftingDateTime::currentDateTimeUtc();
+        cd.snr = snr;
+        cd.bits = Varicode::JS8CallFirst | Varicode::JS8CallLast;
+        cd.tdrift = 0.0f;
+        cd.submode = Varicode::JS8CallJTTY;
+        logCallActivity(cd, /*spot=*/false);
+    }
     // [JTTY step 3, operator 2026-10-12] ... and the station enters the
     // JTTY callsign list at the same moment (its own list, see
     // m_jttyCallActivity). A known grid is never replaced by an empty one.
-    {
+    else {
         CallDetail &cd = m_jttyCallActivity[call];
         cd.call = call;
         if (!grid.isEmpty()) cd.grid = grid;
@@ -14798,13 +15408,13 @@ void UI_Constructor::jttyNoteStation(QString const &call, QString const &grid,
         band, call, grid, {}, {}, /*reportedToMeSnr=*/-99,
         QDateTime{}, /*heardSnr=*/-99, /*source=*/QString{},
         /*hearerRfHz=*/txHz, /*edgeHz=*/0,
-        /*edgeSource=*/QString{}, QStringLiteral("JTTY"));
+        /*edgeSource=*/QString{}, mapMode);
     m_spotMapWindow->addHearingReport(
         band, myC, m_config.my_grid(), {call}, {grid},
         /*reportedToMeSnr=*/-99, QDateTime{},
         /*heardSnr=*/snr, /*source=*/QString{},
         /*hearerRfHz=*/0, /*edgeHz=*/txHz,
-        /*edgeSource=*/QString{}, QStringLiteral("JTTY"));
+        /*edgeSource=*/QString{}, mapMode);
     // [operator 2026-10-12, "N4NM not shown, we hear each other"] A line
     // addressed to me IS the observation "call heard WM8Q": the My view
     // draws only from that edge, and it colours the dot with their
@@ -14817,28 +15427,10 @@ void UI_Constructor::jttyNoteStation(QString const &call, QString const &grid,
             /*reportedToMeSnr=*/theirSnrOfMe, QDateTime{},
             /*heardSnr=*/theirSnrOfMe, /*source=*/QString{},
             /*hearerRfHz=*/txHz, /*edgeHz=*/txHz,
-            /*edgeSource=*/QString{}, QStringLiteral("JTTY"));
+            /*edgeSource=*/QString{}, mapMode);
     }
 }
 
-bool UI_Constructor::jttySnrFor(QString const &call, int *snr) const {
-    QDateTime newest;
-    bool found = false;
-    QString const needle = call.trimmed().toUpper();
-    for (auto const &items : m_jttyActivity) {
-        for (auto const &it : items) {
-            if (!it.text.toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts)
-                     .contains(needle))
-                continue;
-            if (!found || it.utcTimestamp > newest) {
-                newest = it.utcTimestamp;
-                if (snr) *snr = it.snr;
-                found = true;
-            }
-        }
-    }
-    return found;
-}
 #endif // JS8_ENABLE_JTTY
 
 bool UI_Constructor::onJttyFrequency() const {
@@ -15080,6 +15672,32 @@ void UI_Constructor::serviceSubspaceDecodeBorrow() {
     updateModeStatusLabel();
 }
 
+// [operator 2026-10-14] JTTY SPEED is hidden from MAGNET stations -- the
+// same condition that SHOWS "Enable decoding of Subspace" (the persisted
+// SuperSpotter latch): the Mode-menu "JS8 (JTTY ...)" item and the "J"
+// speed button are invisible. JTTY MODE (its own menu item, and the
+// JTTY frequencies) is untouched. Called at start-up and the moment the
+// latch is set; nothing else makes these two visible again.
+void UI_Constructor::applyMagnetJttyVisibility() {
+#ifdef JS8_ENABLE_JTTY
+    bool const hide = m_superSpotterSeen;
+    if (ui->actionModeJS8JTTY) ui->actionModeJS8JTTY->setVisible(!hide);
+    if (ui->modeBtnJTTY) ui->modeBtnJTTY->setVisible(!hide);
+    if (hide)
+        qWarning() << "[JTTY] MAGNET station: JTTY speed item and J button hidden";
+    // [operator 2026-10-14, "switch to Normal at that moment"] A MAGNET
+    // station that is AT JTTY speed in JS8 mode when this applies (the
+    // saved speed restored at start-up, or the latch set mid-session)
+    // goes to Normal: the speed it can no longer see is not left in use.
+    // JTTY MODE keeps its speed.
+    if (hide && m_nSubMode == Varicode::JS8CallJTTY && !jttyMode()) {
+        setSubmode(Varicode::JS8CallNormal);
+        qWarning() << "[JTTY] MAGNET station at JTTY speed -> Normal"
+                   << (m_nSubMode == Varicode::JS8CallNormal ? "" : "(refused: TX busy)");
+    }
+#endif
+}
+
 void UI_Constructor::noteSuperSpotterSeen() {
     if (m_superSpotterSeen)
         return;
@@ -15087,6 +15705,7 @@ void UI_Constructor::noteSuperSpotterSeen() {
     m_settings->setValue("SuperSpotterSeen", true);
     if (ui->actionModeSubspaceDecode)
         ui->actionModeSubspaceDecode->setVisible(true);
+    applyMagnetJttyVisibility(); // [operator 2026-10-14] same condition
     updateWindowTitle();
     qWarning() << "[SSDETECT] SuperSpotter client signature seen --"
                << "Subspace-decode menu switch unlocked permanently";

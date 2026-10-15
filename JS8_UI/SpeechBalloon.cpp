@@ -1,6 +1,7 @@
 #include "SpeechBalloon.h"
 
 #include <QApplication>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QEvent>
 #include <QFontMetrics>
@@ -108,6 +109,28 @@ void SpeechBalloon::setYesNoChoice(std::function<void()> onYes) {
 // buried it.
 void SpeechBalloon::setWithdrawOnModal(std::function<void()> onWithdrawn) {
     m_onWithdrawn = std::move(onWithdrawn);
+}
+
+// [operator 2026-10-15] Link line + footer under the text. The balloon
+// grows by their wrapped heights; the link is painted as an underlined
+// link and its rectangle is remembered for the click test.
+void SpeechBalloon::setLinkLine(QString const &text, QUrl const &url,
+                                QString const &footer) {
+    m_linkText = text;
+    m_linkUrl = url;
+    m_footer = footer;
+    auto const wrapped = [](QFont const &f, QString const &s) {
+        return QFontMetrics(f).boundingRect(QRect(0, 0, TEXT_MAX_WIDTH_PX, 10000),
+                                            Qt::AlignLeft | Qt::TextWordWrap, s);
+    };
+    QFont linkFont = font();
+    linkFont.setUnderline(true);
+    QRect const lr = wrapped(linkFont, text);
+    QRect const fr = footer.isEmpty() ? QRect() : wrapped(font(), footer);
+    m_linkH = lr.height();
+    m_footerH = footer.isEmpty() ? 0 : fr.height();
+    int const needW = qMax(lr.width(), fr.width()) + 2 * m_paddingX;
+    resize(qMax(width(), needW), height() + m_linkH + m_footerH);
 }
 
 void SpeechBalloon::withdraw() {
@@ -287,12 +310,33 @@ void SpeechBalloon::paintEvent(QPaintEvent *) {
     p.setPen(balloonText());
     QRect const textArea = body.toRect().adjusted(
         m_paddingX, m_paddingY, -m_paddingX,
-        -m_paddingY - m_buttonRowH);
+        -m_paddingY - m_buttonRowH - m_linkH - m_footerH);
     p.drawText(textArea, Qt::AlignLeft | Qt::TextWordWrap, m_text);
+
+    // [operator 2026-10-15] link line, then the footer, under the text
+    if (!m_linkText.isEmpty()) {
+        m_linkRect = QRect(textArea.left(), textArea.bottom() + 1,
+                           textArea.width(), m_linkH);
+        QFont linkFont = font();
+        linkFont.setUnderline(true);
+        p.setFont(linkFont);
+        p.setPen(QColor("#0645AD")); // link blue, readable on the cream fill
+        p.drawText(m_linkRect, Qt::AlignLeft | Qt::TextWordWrap, m_linkText);
+        if (!m_footer.isEmpty()) {
+            p.setFont(font());
+            p.setPen(balloonText());
+            p.drawText(QRect(textArea.left(), m_linkRect.bottom() + 1,
+                             textArea.width(), m_footerH),
+                       Qt::AlignLeft | Qt::TextWordWrap, m_footer);
+        }
+    }
 }
 
 void SpeechBalloon::mousePressEvent(QMouseEvent *e) {
     if (e->button() == Qt::LeftButton) {
+        // a click on the link line opens it; any click closes the balloon
+        if (!m_linkUrl.isEmpty() && m_linkRect.contains(e->pos()))
+            QDesktopServices::openUrl(m_linkUrl);
         close();
     }
 }

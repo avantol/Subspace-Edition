@@ -343,7 +343,7 @@
                <item>
                 <widget class="QSpinBox" name="jttyFtolSpinBox">
                  <property name="toolTip">
-                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;JTTY frequency tolerance, as in WSJT-X: the JTTY receiver listens with full sensitivity within this many Hz of your offset, and with WSJT-X's stricter wide-channel test over the rest of the decode range. Default 50.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                  <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;JTTY hears weak stations best within this many Hz of your offset (default 50, as in WSJT-X). Elsewhere from 200 to 2800 Hz it needs a slightly cleaner signal.&lt;/p&gt;&lt;p&gt;In a QSO, keep your offset on your partner: double-click their line to follow them. Looking for contacts, double-click a CQ or message in band activity to move there.&lt;/p&gt;&lt;p&gt;WSJT-X operators look only between 1200 and 1800 Hz unless they move: call CQ there to be found by them.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                  </property>
                  <property name="prefix">
                   <string>JTTY F Tol: </string>

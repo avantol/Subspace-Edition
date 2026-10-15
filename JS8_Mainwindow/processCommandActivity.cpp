@@ -62,6 +62,20 @@ void UI_Constructor::processCommandActivity() {
         auto d = m_rxCommandQueue.dequeue();
 
 #ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-12, "ignore all JS8-form traffic in JTTY
+        // mode"; audit T4 2026-10-14] In JTTY MODE a JS8 command --
+        // from the JS8/Subspace decoders as well as over JTTY -- is
+        // band activity only: no reply, no relay, no HB-ACK, no remote
+        // AV HAIL, no call-list or conversation entry. The JTTY path
+        // already refused its own (queueJttyCommand); this is the same
+        // rule for the decoders, which reached every auto-reply here
+        // and sent it unidentified at JTTY speed.
+        if (jttyMode()) {
+            qCWarning(mainwindow_js8)
+                << "[JTTY] JS8 command ignored in JTTY mode:" << d.from
+                << d.to << d.cmd;
+            continue;
+        }
         // [JTTY] A command that arrived as JTTY text. No ARQ transport
         // exists on JTTY, so every ARQ path below stands aside:
         // chunked-DATA detection, ACK/NACK, the QUERY ARQ? reply.

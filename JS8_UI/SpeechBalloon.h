@@ -3,6 +3,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QString>
+#include <QUrl>
 #include <QWidget>
 
 #include <functional>
@@ -79,6 +80,15 @@ class SpeechBalloon : public QWidget {
      */
     void setWithdrawOnModal(std::function<void()> onWithdrawn);
 
+    /**
+     * [operator 2026-10-15] A clickable link line under the text, then
+     * an optional footer line (e.g. "Click to dismiss."). A click on the
+     * link opens `url` and closes the balloon; a click anywhere else just
+     * closes it. Call BEFORE showAtTarget().
+     */
+    void setLinkLine(QString const &text, QUrl const &url,
+                     QString const &footer = QString());
+
     /** Compute position relative to target and show. */
     void showAtTarget();
 
@@ -94,6 +104,12 @@ class SpeechBalloon : public QWidget {
     void withdraw(); // [#227] close unseen and report
 
     QString             m_text;
+    QString             m_linkText;           // link line (setLinkLine)
+    QUrl                m_linkUrl;
+    QString             m_footer;             // line under the link
+    int                 m_linkH{0};           // link line height
+    int                 m_footerH{0};         // footer height
+    QRect               m_linkRect;           // where the link was painted
     QPointer<QWidget>   m_target;
     QPushButton        *m_yesButton{nullptr}; // [bandhint] choice mode
     QPushButton        *m_noButton{nullptr};

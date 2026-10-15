@@ -684,6 +684,39 @@ void CPlotter::drawMetrics() {
     p.setPen(QPen(BAND_EDGE, 3));
     drawBand(bandX(0.0f, 4000));
     p.setPen(QPen(BAND_WARN, 3));
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-14] In JTTY MODE the yellow stretch is green and
+    // yellow dashes over the span the JTTY receiver searches, 200-2800 Hz
+    // (the receiver's clamp, from WSJT-X's rjtty): we hear JTTY stations
+    // there under the stricter wide-channel test (WSJT-X does not search
+    // there at all); the looser test applies only near our offset.
+    // Three green dashes per 200 Hz (operator's spacing), laid in Hz so
+    // they follow the zoom, and laid OUTWARD from the solid 1200-1800
+    // green so a yellow dash always borders it (laid from 200 Hz up, a
+    // green dash ran into 1200 and the solid bar looked to start at 1150).
+    if (m_jttyMode) {
+        constexpr float kLoHz = 200.0f, kHiHz = 2800.0f;
+        constexpr float kSolidLo = 1200.0f, kSolidHi = 1800.0f;
+        drawBand(bandX(kLoHz, static_cast<int>(kHiHz - kLoHz)));
+        constexpr float kDashHz = 200.0f / 6.0f;
+        p.setPen(QPen(BAND_GOOD, 3, Qt::SolidLine, Qt::FlatCap));
+        auto const dash = [&](float a, float b) {
+            a = a < kLoHz ? kLoHz : a;
+            b = b > kHiHz ? kHiHz : b;
+            if (b <= a) return;
+            int const x1 = xFromFreq(a), x2 = xFromFreq(b);
+            if (x2 <= 0 || x1 > m_w) return;
+            p.drawLine(x1, 26, x2, 26);
+            p.drawLine(x1, 28, x2, 28);
+        };
+        // below: yellow next to 1200, then green, going down
+        for (float f = kSolidLo - kDashHz; f > kLoHz; f -= 2 * kDashHz)
+            dash(f - kDashHz, f);
+        // above: yellow next to 1800, then green, going up
+        for (float f = kSolidHi + kDashHz; f < kHiHz; f += 2 * kDashHz)
+            dash(f, f + kDashHz);
+    } else
+#endif
     drawBand(bandX(500.0f, 2500));
     p.setPen(QPen(BAND_GOOD, 3));
 #ifdef JS8_ENABLE_JTTY

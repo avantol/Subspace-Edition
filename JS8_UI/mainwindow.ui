@@ -2683,7 +2683,7 @@ background-color: #22ff22;
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>JS8 (&amp;Subspace, 1.9 sec, 166 Hz, ~64 WPM)</string>
+    <string>JS8 (&amp;Subspace, 3.75 sec, 166 Hz, ~64 WPM)</string>
    </property>
   </action>
   <action name="actionModeJS8JTTY">

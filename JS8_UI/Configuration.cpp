@@ -574,6 +574,9 @@ class Configuration::impl final : public QDialog {
     QStringListModel auto_route_groups_model_;
     void refresh_auto_route_groups_model();
     FrequencyList_v3 frequencies_;
+    // [audit L2] the one-time JTTY frequency seed has been applied (this
+    // session or an earlier one): only then may write_settings record it
+    bool jtty_seed_done_ = false;
     FrequencyList_v3 next_frequencies_;
     StationList stations_;
     StationList next_stations_;
@@ -2525,7 +2528,11 @@ void Configuration::impl::read_settings() {
     // the flag is written, which write_settings does together with
     // the list, so a start that never writes seeds again -- the seed
     // is idempotent.
-    if (!settings_->value(jttyFrequencySeedSettingsKey, false).toBool()) {
+    // [audit L2, 2026-10-14] The v2-profile migration above calls
+    // write_settings BEFORE this point; that write must not record a seed
+    // that has not happened, or a migrated profile is never seeded.
+    jtty_seed_done_ = settings_->value(jttyFrequencySeedSettingsKey, false).toBool();
+    if (!jtty_seed_done_) {
         struct Seed { Radio::Frequency f; Modes::Mode m; char const *d; };
         static Seed const seeds[] = {
             {7090000, Modes::JTTY, "JTTY"},
@@ -2549,6 +2556,7 @@ void Configuration::impl::read_settings() {
         frequencies_.frequency_list(std::move(items));
         qWarning() << "[JTTY] frequency list seeded: 7.090 JTTY, 7.078"
                       " JS8+JTTY, 14.090 JTTY, 14.078 JS8";
+        jtty_seed_done_ = true;
     }
 #endif
 
@@ -2856,8 +2864,10 @@ void Configuration::impl::write_settings() {
                             QVariant::fromValue(items));
         settings_->setValue(jttyFrequenciesSettingsKey, jtty);
         settings_->setValue(jttySharedFrequenciesSettingsKey, jttyShared);
-        // the one-time seed (see load) is on disk once the list is
-        settings_->setValue(jttyFrequencySeedSettingsKey, true);
+        // the one-time seed (see load) is on disk once the list is --
+        // and only once it has been applied [audit L2]
+        if (jtty_seed_done_)
+            settings_->setValue(jttyFrequencySeedSettingsKey, true);
     }
 #else
     settings_->setValue(versionedFrequenciesSettingsKey,

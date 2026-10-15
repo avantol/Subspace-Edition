@@ -88,8 +88,10 @@ void Modulator::start(double const frequency, int const submode,
     // Play silence and report the waveform done at once.
     if (submode == 32 /* Varicode::JS8CallJTTY */ && !m_tuning &&
         !(m_ft2Mode && m_ft2Wave && m_ft2WaveLen > 0)) {
+        // [audit L4] the cycle actually ends on the stop path's safety
+        // cap: with no waveform the audio-end poll never fires
         qWarning() << "[JTTY-TX] Modulator::start: no waveform staged;"
-                      " transmitting silence, cycle ends immediately";
+                      " transmitting silence until the safety cap";
         m_ft2Mode = true;
         m_ft2Wave = nullptr;
         m_ft2WaveLen = 0;

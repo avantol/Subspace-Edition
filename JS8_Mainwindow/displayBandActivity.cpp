@@ -59,13 +59,14 @@ QString UI_Constructor::mostLikelyCallAtOffset(int offset,
     // unattributed frame by offset if it was heard RECENTLY: last
     // message older than 15 minutes disqualifies it. Keeps a long-gone
     // station's stale offset from swallowing fresh fragments.
-    static constexpr qint64 kMaxAgeSecs = 15 * 60;
+    // [audit D1 2026-10-14] the ONE constant, shared with the JTTY
+    // continuation rule (jttyLineSenders)
     QDateTime const now = DriftingDateTime::currentDateTimeUtc();
     QString best;
     int bestDist = threshold + 1;
     for (auto it = m_callActivity.constBegin();
          it != m_callActivity.constEnd(); ++it) {
-        if (it.value().utcTimestamp.secsTo(now) > kMaxAgeSecs)
+        if (it.value().utcTimestamp.secsTo(now) > kOrphanSenderMaxAgeSecs)
             continue;
         int const dist = qAbs(it.value().offset - offset);
         if (dist <= threshold && dist < bestDist) {
@@ -165,7 +166,7 @@ void UI_Constructor::displayBandActivity() {
                 // m_jttyActivity.value(key) appended in order (above);
                 // their attribution comes from the ONE authority
                 QStringList const jttySenders =
-                    jttyLineSenders(m_jttyActivity.value(key));
+                    jttyLineSenders(m_jttyActivity.value(key), key);
                 int jttyIdx = 0;
 #endif
                 for (auto const &it : items) {
@@ -231,7 +232,19 @@ void UI_Constructor::displayBandActivity() {
                     shouldDisplay = false;
                 }
 
-                if (!showHB) {
+                // [audit L10] The heartbeat/ACK filter and its look-backs
+                // (items[i-1]) are JS8 frame rules. A JTTY message is a
+                // whole message: it neither gets them nor serves as the
+                // "preceding frame" of one -- the JTTY items follow the
+                // JS8 frames in this list, so the first one looked back
+                // into JS8.
+                bool const jttyItem =
+#ifdef JS8_ENABLE_JTTY
+                    item.submode == Varicode::JS8CallJTTY;
+#else
+                    false;
+#endif
+                if (!showHB && !jttyItem) {
                     // hide heartbeats; also hide preceding bare "CALL:" prefix
                     if (item.text.contains(" @HB ") ||
                         item.text.contains(" HEARTBEAT ")) {
@@ -420,6 +433,11 @@ void UI_Constructor::displayBandActivity() {
             }
             for (auto &list : callItems)
                 std::stable_sort(list.begin(), list.end(), detailTimestamp);
+            // [audit L10] an unknown row mixing JS8 frames and JTTY
+            // messages at one key is time-ordered too (its Age, SNR and
+            // speed come from the newest item)
+            for (auto &list : unknownItems)
+                std::stable_sort(list.begin(), list.end(), detailTimestamp);
         }
 
         // Row builder shared by both modes: creates all 7 cells for
@@ -516,7 +534,8 @@ void UI_Constructor::displayBandActivity() {
                 // line per complete message for a JTTY line
                 auto const fullTip =
                     BandActivityMessageDelegate::rowTooltipHtml(
-                        tipData.isEmpty() ? groupData : tipData, joined);
+                        tipData.isEmpty() ? groupData : tipData, joined,
+                        /*bareSender=*/!tipData.isEmpty()); // JTTY only
                 callItem->setToolTip(fullTip);
                 offsetItem->setToolTip(fullTip);
                 tdriftItem->setToolTip(fullTip);
@@ -586,6 +605,22 @@ void UI_Constructor::displayBandActivity() {
                     }
                 }
             }
+        };
+
+        // [audit M1(c), operator 2026-10-14] The age pass watches every
+        // piece of a row, not only its newest: the row just added records
+        // its OLDEST visible piece and whether that one was already past
+        // the aging limit when built (shown because exempt), so the pass
+        // asks for a rebuild only when an old piece crosses the limit.
+        auto const noteOldest = [&](QDateTime const &oldest) {
+            int const r = ui->tableWidgetRXAll->rowCount() - 1;
+            auto *ai = r >= 0 ? ui->tableWidgetRXAll->item(r, BAAge) : nullptr;
+            if (!ai || !oldest.isValid()) return;
+            int const aging = m_config.activity_aging();
+            ai->setData(Qt::UserRole + 3, oldest);
+            ai->setData(Qt::UserRole + 4,
+                        aging && oldest.secsTo(
+                                     DriftingDateTime::currentDateTimeUtc()) / 60 >= aging);
         };
 
         if (!listByCall) {
@@ -665,6 +700,7 @@ void UI_Constructor::displayBandActivity() {
                 QList<ActivityDetail> const & items = *itemsPtr;
                 if (items.length() > 0) {
                     QDateTime timestamp;
+                    QDateTime oldest; // [audit M1(c)]
                     QStringList text;
                     QString age;
                     int snr = 0;
@@ -750,6 +786,8 @@ void UI_Constructor::displayBandActivity() {
                         snrSuspect = item.snrSuspect;
                         age = since(item.utcTimestamp);
                         timestamp = item.utcTimestamp;
+                        if (!oldest.isValid() || item.utcTimestamp < oldest)
+                            oldest = item.utcTimestamp;
                         tdrift = item.tdrift;
                         submode = item.submode;
                     }
@@ -778,6 +816,7 @@ void UI_Constructor::displayBandActivity() {
                     addRow(QString(), offset, tdrift, age, timestamp,
                            snr, snrSuspect, submode, joined, groupData,
                            tipData, text.last(), isOffsetSelected);
+                    noteOldest(oldest);
                 }
                 } // end split-by-submode for loop (Build 145)
             }
@@ -847,6 +886,7 @@ void UI_Constructor::displayBandActivity() {
             for (auto const &rowSrc : rows) {
                 QString const call = rowSrc.first; // empty = unknown
                 QDateTime timestamp;
+                QDateTime oldest; // [audit M1(c)]
                 QStringList text;
                 QString age;
                 int snr = 0;
@@ -894,6 +934,8 @@ void UI_Constructor::displayBandActivity() {
                     snrSuspect = item.snrSuspect;
                     age = since(item.utcTimestamp);
                     timestamp = item.utcTimestamp;
+                    if (!oldest.isValid() || item.utcTimestamp < oldest)
+                        oldest = item.utcTimestamp;
                     tdrift = item.tdrift;
                     submode = item.submode;
                     offset = item.offset;
@@ -942,6 +984,7 @@ void UI_Constructor::displayBandActivity() {
                 addRow(call, offset, tdrift, age, timestamp, snr,
                        snrSuspect, submode, joined, groupData, tipData,
                        text.last(), selected);
+                noteOldest(oldest);
             }
         }
 

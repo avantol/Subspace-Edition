@@ -432,12 +432,20 @@ class UI_Constructor : public QMainWindow {
     void jttyTryDecode();
     void jttyDecodeDone();
     void processJttyUpdate(JTTY::MessageUpdate const &update, std::int64_t dial);
-    void writeJttyTxt(QStringView line);
+    // lineDial: the dial the line belongs to (a decode's own stamp);
+    // 0 = the operating dial now. A frequency line precedes it whenever
+    // that differs from the last one written (audit M12).
+    void writeJttyTxt(QStringView line, std::int64_t lineDial = 0);
     // The JTTY transmit queue for an outgoing text: one entry per JTTY
     // message (up to 80 characters, 1-16 frames, one waveform, one PTT
-    // cycle), split at word boundaries; the JS8 directed prefix
-    // "MYCALL: SELECTED " when a callsign is selected.
-    QList<QPair<QString, int>> buildJttyFrames(QString const &text);
+    // cycle), split at word boundaries; no limit on the total. In JS8
+    // mode the text is what the JS8 builder would put on the air at
+    // any other speed, rendered as a JS8 receiver shows it (addressing,
+    // identification, checksum dropped); in JTTY mode it goes as typed.
+    // forceData / pDisableTypeahead: the JS8 builder's typeahead rules.
+    QList<QPair<QString, int>> buildJttyFrames(QString const &text,
+                                               bool forceData = false,
+                                               bool *pDisableTypeahead = nullptr);
     // A complete JTTY message in the JS8 directed form ("K9AVT: WM8Q
     // SNR?") becomes a CommandDetail on m_rxCommandQueue, exactly as a
     // decoded JS8 directed frame does; processCommandActivity answers.
@@ -447,13 +455,10 @@ class UI_Constructor : public QMainWindow {
                           std::int64_t dial, QDateTime const &now);
     // [operator 2026-10-12] On a JTTY frequency the Reply/SNR/Info/
     // Status buttons APPEND their payload (space-separated) when the
-    // box already starts with "<CALL> DE <MYCALL>", else REPLACE the
+    // box already starts with "<CALL> <MYCALL>", else REPLACE the
     // box with the bare payload (the operator may skip the address).
     // Returns false off a JTTY frequency so the JS8 path runs.
     bool jttyPlaceMacro(QString const &payload);
-    // Newest JTTY row naming the call (JTTY stations are not in the
-    // call list until step 3). True and *snr when found.
-    bool jttySnrFor(QString const &call, int *snr) const;
 #endif
 
     void updateCQButtonDisplay();
@@ -886,6 +891,11 @@ class UI_Constructor : public QMainWindow {
     // authority: a JTTY frequency, or the Mode menu's "JTTY" item
     // checked. False in a build without JTTY.
     bool jttyMode() const;
+    // [orphan15, operator ruling 2026-09-07; audit D1 2026-10-14] A
+    // message that names no sender is given one only from a station
+    // heard within this many seconds of it -- JS8's nearest-station
+    // fallback and JTTY's same-line continuation alike.
+    static constexpr qint64 kOrphanSenderMaxAgeSecs = 15 * 60;
     // The callsign list the right pane shows: the JTTY stations' list
     // in JTTY mode, the JS8 list otherwise. Read-only; writers name
     // their map.
@@ -920,6 +930,7 @@ class UI_Constructor : public QMainWindow {
 
     /** Sabotage transmission if frequency would result in WSPR band. */
     void refuseToSendIn30mWSPRBand();
+    bool inWsprGuardBand() const; // [audit L1] one authority for the band
 
     void prepareSending(qint64 nowMS);
 
@@ -1437,6 +1448,12 @@ class UI_Constructor : public QMainWindow {
     quint64 m_bandActivitySignature = 0;
     quint64 bandActivitySignature() const;
     void refreshBandActivityAgeOnly();
+    // [audit M1(b), operator 2026-10-14] A selection change decides
+    // which rows are exempt from aging, so both panes are redrawn --
+    // but one double-click interval LATER, once: a redraw between the
+    // two presses of a double-click is exactly what #298 removed.
+    void scheduleSelectionRedraw();
+    bool m_selectionRedrawPending = false;
     // Counter bumped in logCallActivity on every insert/update. The
     // once-per-second tick compares against m_callActivityRenderedVersion
     // and only does a full displayCallActivity rebuild when they differ —
@@ -2114,6 +2131,7 @@ class UI_Constructor : public QMainWindow {
     bool m_jttySessionOpen = false;
     std::int64_t m_jttySession = 0;               // touched only while not decoding, or by the worker
     QDate m_lastJttyTxtHeaderDate;
+    Radio::Frequency m_lastJttyTxtHeaderDial = 0; // [audit M12]
     // [JTTY] received JTTY messages by offset. Kept OUT of m_bandActivity:
     // that map's readers (idle activity, message buffers, dedup, the API)
     // all assume JS8 rows, and a JTTY message is not a submode. Only
@@ -2131,7 +2149,10 @@ class UI_Constructor : public QMainWindow {
     // cached per entry and persisted in its own group, rendered in
     // place of the JS8 list while in JTTY mode. NEVER merged into
     // m_callActivity, so auto-route, relay, HEARING, HB acks and the
-    // API call activity reply never see a JTTY station.
+    // API call activity reply never see a JTTY-MODE station.
+    // [operator 2026-10-14] In JS8 mode JTTY is only a SPEED: a JS8
+    // station heard at it belongs in m_callActivity like any speed
+    // (saved apart in "JttySpeedCalls" for older builds).
     QMap<QString, CallDetail> m_jttyCallActivity;
     QMap<QString, QMap<QString, CallDetail>> m_jttyCallActivityBandCache;
     QMap<QString, QMap<int, QString>> m_jttyRowCallBandCache;
@@ -2142,18 +2163,25 @@ class UI_Constructor : public QMainWindow {
     // The sender of a JTTY line for OUR purposes (waterfall label, map,
     // pick): the WSJT-X sender rule above, else the JS8 directed form
     // "FROM: ..." (first word a callsign ending in ':'); empty when
-    // neither, or when it is ourselves. PSKReporter keeps the upstream
-    // rule alone.
+    // neither, or when it is ourselves.
     // *fromForm: the sender came from a FORM (CQ FROM, TO FROM, FROM:,
     // DE FROM), not from the bare "second callsign" rule -- the pick
-    // offers a menu for the latter (operator 2026-10-13).
+    // offers a menu for the latter (operator 2026-10-13), and only a
+    // form sender is spotted to PSKReporter (audit D1, 2026-10-14).
     QString jttyLineSender(QString const &text, bool *fromForm = nullptr) const;
     // Per-message attribution of a whole JTTY line, in order: a
     // message's own parsed sender, else the last parsed sender earlier
     // on the line, else the operator's pick for the offset. ONE
     // authority for the renderer, the arrival path and the band
     // activity double-click.
-    QStringList jttyLineSenders(QList<ActivityDetail> const &line) const;
+    // lineKey: the line's key in m_jttyActivity, under which the
+    // operator's pick is filed; it covers EVERY message on the line
+    // (audit M6). -1 = a line rebuilt from history: no live pick.
+    // The station's own SNR: its newest credited message (complete or
+    // partial), else the JTTY call list (audit T5, DK6LF).
+    bool jttyStationSnr(QString const &call, int *snr) const;
+    QStringList jttyLineSenders(QList<ActivityDetail> const &line,
+                                int lineKey = -1) const;
     // [operator 2026-10-13] The sender rule's counterpart: whom a JTTY
     // message addresses. JS8 form "FROM: TO ..." = the word after the
     // colon (a call or a group); "CQ ..." and "DE FROM ..." = nobody;
@@ -2170,12 +2198,6 @@ class UI_Constructor : public QMainWindow {
     void jttyBackfillMonitor(class StationMonitorWindow *w) const;
     // My station as any word of the line: notification + convo window.
     bool jttyLineNamesMe(QString const &text) const;
-    // [operator 2026-10-12] The characters the send path will PREPEND to
-    // the outgoing box at JTTY speed ("MYCALL: " plus the selected call
-    // and a space in JS8 mode; nothing in JTTY mode or when the box
-    // already starts with "MYCALL:"), so the 80-character limit can be
-    // enforced in the box itself, address included.
-    int jttyAddressLength(QString const &boxText);
     // Waterfall label + Spots Map on-air records for a JTTY station we
     // heard (parsed sender, or the operator's pick). Grid may be empty.
     // addressedToMe: the line named my station ("WM8Q N4NM EM64",
@@ -2188,7 +2210,8 @@ class UI_Constructor : public QMainWindow {
     // (operator 2026-10-13).
     void jttyNoteStation(QString const &call, QString const &grid, int offset,
                          int snr, std::int64_t dial, bool addressedToMe = false,
-                         int theirSnrOfMe = -99, bool label = true);
+                         int theirSnrOfMe = -99, bool label = true,
+                         bool js8Station = false);
     // Callsign-shaped words of a JTTY row (grids excluded): the spot-rule
     // sender first, then those after "DE", then the rest. *obvious is
     // set when exactly one call came from those two forms.
@@ -2228,6 +2251,16 @@ class UI_Constructor : public QMainWindow {
     // [JTTY] The speed the operator had before JTTY mode forced JTTY;
     // -1 = not forced. Persisted in place of JTTY while forced.
     int m_jttyFreqPrevSubmode = -1;
+    // [audit M2, operator 2026-10-14] ...and whether JTTY MODE (not only
+    // JTTY speed) was the operator's choice before the JTTY frequency
+    // forced it: the speed alone cannot tell the two Mode-menu entries
+    // apart. Restored on leaving, and what the settings save remembers
+    // while the frequency is forcing.
+    bool m_jttyFreqPrevModeItem = false;
+    // [audit M3] a frequency-driven speed switch was refused (TX busy);
+    // the once-per-second update retries applyJttyModeTransition when a
+    // speed change is allowed again
+    bool m_jttyTransitionPending = false;
 #endif
     QTimer m_l2DecodeTimer;                     // fires every 750ms
     QFutureWatcher<void> m_l2DecodeWatcher;     // monitors async decode
@@ -2292,6 +2325,7 @@ class UI_Constructor : public QMainWindow {
     void borrowSubspaceDecodeForArq();          // unsolicited-traffic path
     void serviceSubspaceDecodeBorrow();         // 1 Hz predicate check
     void noteSuperSpotterSeen();                // detector latch (persists)
+    void applyMagnetJttyVisibility();           // JTTY speed hidden on MAGNET
     void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }
     void updateModeStatusLabel();               // mode + RX-off truth
