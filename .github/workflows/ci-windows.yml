@@ -42,13 +42,16 @@ jobs:
           toolchain:p
           cmake:p
           ninja:p
-          libusb:p
           boost:p
           fftw:p
           qt6-base:p
           qt6-serialport:p
           qt6-tools:p
 
+    # [2026-10-15] libusb:p removed: MSYS2 no longer builds libusb for
+    # mingw64 (ucrt64/clang64 only; "target not found" failed run
+    # 38824655859 twice). Nothing here links it -- the libusb-1.0.dll we
+    # ship comes from the Hamlib zip (Package step).
     # Build 135: dropped jurplel/install-qt-action — aqt's metadata
     # consistently lagged Qt's new per-toolchain Updates.xml layout for
     # 6.11.x, and aqt 3.3/3.4 didn't recognize the qt6_6110_mingw
