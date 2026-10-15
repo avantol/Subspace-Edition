@@ -14335,23 +14335,24 @@ void UI_Constructor::jttyDecodeDone() { m_jttyDecoding = false; }
 static constexpr int kJttyLineMergeHz = 10;
 template <typename Map>
 static QList<int> jttyJoinLines(Map &map, int offset) {
-    QList<int> near;
+    // (never name it "near": <windows.h> defines near as a macro)
+    QList<int> joining;
     for (auto it = map.constBegin(); it != map.constEnd(); ++it)
         if (it.key() != offset && qAbs(it.key() - offset) <= kJttyLineMergeHz)
-            near.append(it.key());
-    std::sort(near.begin(), near.end(), [offset](int a, int b) {
+            joining.append(it.key());
+    std::sort(joining.begin(), joining.end(), [offset](int a, int b) {
         return qAbs(a - offset) < qAbs(b - offset);
     });
-    for (int const prev : near)
+    for (int const prev : joining)
         map[offset].append(map.take(prev));
-    if (!near.isEmpty()) {
+    if (!joining.isEmpty()) {
         auto &items = map[offset];
         std::stable_sort(items.begin(), items.end(),
                          [](auto const &a, auto const &b) {
                              return a.utcTimestamp < b.utcTimestamp;
                          });
     }
-    return near;
+    return joining;
 }
 
 static QString jttyBareWord(QString w); // defined with the sender rules below
@@ -14447,10 +14448,10 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // line but a line never joined a line. Nearest first, so its
     // callsign assignment and armed pick are the ones that survive.
     {
-        QList<int> const near = jttyJoinLines(m_jttyActivity, offset);
-        for (int const prev : near) {
+        QList<int> const joined = jttyJoinLines(m_jttyActivity, offset);
+        for (int const prev : joined) {
             qCWarning(mainwindow_js8) << "[JTTY] line" << prev << "->" << offset
-                                      << "joined=" << near.size();
+                                      << "joined=" << joined.size();
             if (m_jttyRowCall.contains(prev)) {
                 if (!m_jttyRowCall.contains(offset))
                     m_jttyRowCall[offset] = m_jttyRowCall.value(prev);
@@ -15041,7 +15042,7 @@ QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line,
         QString const s = jttyLineSender(it.text, &form);
         own.append(form ? s : QString());
     }
-    auto const near = [](ActivityDetail const &a, ActivityDetail const &b) {
+    auto const withinLimit = [](ActivityDetail const &a, ActivityDetail const &b) {
         return qAbs(a.utcTimestamp.secsTo(b.utcTimestamp)) <=
                kOrphanSenderMaxAgeSecs;
     };
@@ -15052,7 +15053,7 @@ QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line,
         if (!own.at(i).isEmpty()) {
             lastIdx = i;
             out.append(own.at(i));
-        } else if (lastIdx >= 0 && near(line.at(lastIdx), line.at(i))) {
+        } else if (lastIdx >= 0 && withinLimit(line.at(lastIdx), line.at(i))) {
             out.append(own.at(lastIdx));
         } else {
             out.append(QString());
@@ -15076,7 +15077,7 @@ QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line,
     for (int i = line.size() - 1; i >= 0; --i) {
         if (!own.at(i).isEmpty()) { nextIdx = i; continue; }
         if (out.at(i).isEmpty() && nextIdx >= 0 &&
-            near(line.at(i), line.at(nextIdx)))
+            withinLimit(line.at(i), line.at(nextIdx)))
             out[i] = own.at(nextIdx);
     }
     return out;
