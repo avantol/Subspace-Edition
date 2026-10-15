@@ -14402,7 +14402,13 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         bool const inWsjtxBand = offset >= 1200 && offset <= 1800;
         bool const inMyWindow =
             std::abs(offset - freq()) <= m_wideGraph->jttyFtol();
-        if (oneFrame && u.snr <= -16 && !inWsjtxBand && !inMyWindow) {
+        // [operator 2026-10-15, "build it"] A decode REPORTED AT THE
+        // FLOOR is hidden everywhere, any length: the floor is the
+        // reference's own "weaker than the weakest sometimes-decodable
+        // signal", and the census found 69 of 70 such decodes false (the
+        // one real, IK7IMO, had decoded at -13 and -15 already).
+        bool const atFloor = u.snr <= static_cast<int>(JTTY::SNR_FLOOR_DB);
+        if (atFloor || (oneFrame && u.snr <= -16 && !inWsjtxBand && !inMyWindow)) {
             qCWarning(mainwindow_js8) << "[JTTY] floor decode hidden:" << offset
                                       << "Hz" << u.snr << "dB text=" << text;
             return;

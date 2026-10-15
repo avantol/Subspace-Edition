@@ -19,6 +19,12 @@
 
 namespace JTTY {
 
+// The reference's SNR floor (jtty_mdecode.f90 SNR_FLOOR_DB): every decode
+// at or below it is REPORTED at it. "Weaker than the weakest sometimes-
+// decodable JTTY signal" -- a message reported here is a false decode
+// (census 2026-10-15: 69 of 70).
+constexpr float SNR_FLOOR_DB = -17.0f;
+
 enum UpdateTerminal : int {
     UPDATE_GROWING = 0,
     UPDATE_COMPLETE = 1,

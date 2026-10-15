@@ -50,7 +50,6 @@ constexpr float FRAME_HISTORY_TIME_TOLERANCE = 0.05f;
 constexpr float FRAME_HISTORY_FREQ_TOLERANCE = 3.0f;
 constexpr float NEAR_SIMULTANEOUS_FREQ_TOLERANCE = 12.0f;
 constexpr float CONTINUATION_TIME_TOLERANCE = 0.1f;
-constexpr float SNR_FLOOR_DB = -17.0f;   // weaker than the weakest sometimes-decodable JTTY signal
 constexpr int MAX_SUBTRACTED = 16;
 constexpr int MAXCAND = 100;
 constexpr int NSYNC_SYM = SYNC_SYMBOLS;      // 13
