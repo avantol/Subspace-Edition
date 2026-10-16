@@ -6937,9 +6937,13 @@ bool UI_Constructor::ensureCreateMessageReady(const QString &text) {
     }
 
 #ifdef JS8_ENABLE_JTTY
-    // [operator 2026-10-15] a MSG at JTTY speed must fit one JTTY message
+    // [operator 2026-10-15] a MSG at JTTY speed must fit one JTTY message.
+    // Refused before anything is queued, so only the Send button is
+    // released -- signal-blocked, because its "unchecked" handler runs
+    // resetMessage(), which would erase the text the operator is to edit.
     if (!ensureFitsJttySpeed(text)) {
-        stopTxMechanical();
+        QSignalBlocker const block(ui->startTxButton);
+        ui->startTxButton->setChecked(false);
         return false;
     }
 #endif
@@ -7853,9 +7857,12 @@ void UI_Constructor::on_logQSOButton_clicked() // Log QSO button
     if (call.startsWith("@")) {
         call = "";
     }
+    // [operator 2026-10-16] the list SHOWN (in JTTY mode the JTTY
+    // stations' own list), as every other call-list consumer reads
+    auto const &shown = shownCallActivity();
     QString grid = "";
-    if (m_callActivity.contains(call)) {
-        grid = m_callActivity[call].grid;
+    if (shown.contains(call)) {
+        grid = shown[call].grid;
     }
     QString opCall = m_opCall;
     if (opCall.isEmpty()) {
@@ -7872,14 +7879,22 @@ void UI_Constructor::on_logQSOButton_clicked() // Log QSO button
     }
 
     // kj4ctd - hackish but I don't see anywhere else that we set rptSent
-    if (m_callActivity.contains(call)) {
-        auto cd = m_callActivity[call];
+    if (shown.contains(call)) {
+        auto cd = shown[call];
         if (cd.snr > -50) {
             m_rptSent = Varicode::formatSNR(cd.snr);
         }
     }
 
-    m_logDlg->initLogQSO(call.trimmed(), grid.trimmed(), "JS8", m_rptSent,
+    // [operator 2026-10-16] A QSO in JTTY MODE is logged as mode JTTY --
+    // what WSJT-X 3.3 writes (ADIF MODE=JTTY, no SUBMODE). JS8 mode at
+    // JTTY speed stays JS8 (MFSK/JS8 in ADIF), as every JS8 speed.
+    QString const logMode =
+#ifdef JS8_ENABLE_JTTY
+        jttyMode() ? QStringLiteral("JTTY") :
+#endif
+        QStringLiteral("JS8");
+    m_logDlg->initLogQSO(call.trimmed(), grid.trimmed(), logMode, m_rptSent,
                          m_rptRcvd, m_dateTimeQSOOn, dateTimeQSOOff,
                          m_freqNominal + freq(), m_config.my_callsign(),
                          m_config.my_grid(), opCall, comments);
@@ -7950,7 +7965,7 @@ void UI_Constructor::acceptQSO(
                                "<fldGridR>%4</fldGridR>"
                                "<fldBand>%5</fldBand>"
                                "<fldFrequency>%6</fldFrequency>"
-                               "<fldMode>JS8</fldMode>"
+                               "<fldMode>%13</fldMode>"
                                "<fldOperator>%7</fldOperator>"
                                "<fldNameR>%8</fldNameR>"
                                "<fldComments>%9</fldComments>"
@@ -7991,6 +8006,9 @@ void UI_Constructor::acceptQSO(
             }
         }
         data = data.arg(additional.join(""));
+        // [operator 2026-10-16] the logged mode, never a fixed "JS8": the
+        // ADIF pair MFSK/JS8 is "JS8" to N3FJP, JTTY is "JTTY"
+        data = data.arg(submode.isEmpty() ? mode : submode);
 
         auto host = m_config.n3fjp_server_name();
         auto port = m_config.n3fjp_server_port();
