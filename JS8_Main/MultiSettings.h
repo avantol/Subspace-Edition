@@ -89,6 +89,14 @@ class MultiSettings : public QObject {
 
     // switch to this configuration if it exists
     Q_SLOT void select_configuration(QString const &name);
+
+    // [operator 2026-10-16, WSJT-X import] Create a new configuration as a
+    // copy of the CURRENT one with some values replaced (keys as the
+    // application's settings() sees them, e.g. "Configuration/Rig",
+    // "Common/DialFreq"). The requested name is made unique ("Name (2)").
+    // Returns the name used; select_configuration() then switches to it.
+    QString create_from_current(QString const &name,
+                                QVariantMap const &overrides);
     QString configuration_name() const;
 
     // Access to the QSettings object instance.

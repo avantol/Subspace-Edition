@@ -20,6 +20,7 @@
 #include "JS8_Main/ArqMonitor.h"
 #include "JS8_UI/ArqMonitorWindow.h"
 #include "JS8_UI/StationMonitorWindow.h" // [stamon]
+#include "JS8_UI/WsjtxImport.h"          // [operator 2026-10-16]
 #include "JS8_Widgets/BandActivityMessageDelegate.h"
 #include "JS8_Widgets/ScreenRescue.h" // [#246]
 
@@ -769,8 +770,10 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 switch (trySeedOutgoingGreeting(call)) {
                 case GreetingSeedResult::Seeded:
                     m_spotMapWindow->showToast(
-                        tr("Standard greeting to %1 placed in the "
-                           "outgoing message box")
+                        (jttyMode() ? tr("Reply to %1 placed in the "
+                                         "outgoing message box")
+                                    : tr("Standard greeting to %1 placed in the "
+                                         "outgoing message box"))
                             .arg(call.trimmed()));
                     break;
                 case GreetingSeedResult::DraftBlocked:
@@ -1136,6 +1139,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 }
             });
     m_multi_settings->create_menu_actions(this, ui->menuConfig);
+    // [operator 2026-10-16] File > Import radio setup from WSJT-X, any time
+    {
+        auto *wsjtxImport =
+            new QAction(tr("Import radio setup from WSJT-X..."), this);
+        ui->menuFile->insertAction(ui->actionSettings, wsjtxImport);
+        connect(wsjtxImport, &QAction::triggered, this,
+                &UI_Constructor::importFromWsjtx);
+    }
     m_configurations_button = m_rigErrorMessageBox.addButton(
         tr("Configurations..."), QMessageBox::ActionRole);
     connect(ui->extFreeTextMsgEdit, &QTextEdit::textChanged,
@@ -3272,6 +3283,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                                            true);
                 return; // one balloon per startup
             }
+
         };
         // [#227] Same delay as before: the main window must be shown
         // and anchors must have real global positions before any

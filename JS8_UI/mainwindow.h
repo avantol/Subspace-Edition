@@ -2334,6 +2334,8 @@ class UI_Constructor : public QMainWindow {
     void serviceSubspaceDecodeBorrow();         // 1 Hz predicate check
     void noteSuperSpotterSeen();                // detector latch (persists)
     void applyMagnetJttyVisibility();           // JTTY speed hidden on MAGNET
+    bool importFromWsjtx();                     // File > Import radio setup from WSJT-X
+    bool offerWsjtxImport();                    // first start, before Settings opens
     // [operator 2026-10-15, frequency-kind truth table] What a station
     // may SEE. JS8 decodes (every speed) are hidden on a JTTY-only
     // frequency; JTTY decodes are hidden on a MAGNET station, and on a

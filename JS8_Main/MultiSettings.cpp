@@ -169,6 +169,10 @@ class MultiSettings::impl final : public QObject {
     // switch to this configuration
     void select_configuration(QString const &target_name);
 
+    // create a configuration from the current one with values replaced
+    QString create_from_current(QString const &name,
+                                QVariantMap const &overrides);
+
   private:
     using Dictionary = QVariantMap;
 
@@ -616,6 +620,47 @@ void MultiSettings::impl::clone_configuration(QMenu *parent_menu,
     create_sub_menu(parent_menu, new_name, configurations_group_);
     if (current_group.size())
         settings_.beginGroup(current_group);
+}
+
+// [operator 2026-10-16, WSJT-X import] The Clone of the current
+// configuration, with values replaced and a caller-chosen name. Same
+// snapshot (get_settings) and writer (load_from) as Clone.
+QString MultiSettings::impl::create_from_current(QString const &name,
+                                                 QVariantMap const &overrides) {
+    auto const &current_group = settings_.group();
+    if (current_group.size())
+        settings_.endGroup();
+    Dictionary source = get_settings();
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it)
+        source[it.key()] = it.value();
+
+    // a group name cannot carry '/' or '\', and '&' is the menu's
+    // mnemonic marker
+    QString root = name.trimmed();
+    root.remove(QLatin1Char('/'));
+    root.remove(QLatin1Char('\\'));
+    root.replace(QLatin1Char('&'), QStringLiteral("and"));
+    if (root.isEmpty())
+        root = QStringLiteral("Imported");
+    QString new_name{root};
+    {
+        SettingsGroup alternatives{&settings_, multi_settings_root_group};
+        unsigned index{1};
+        while (settings_.childGroups().contains(new_name) ||
+               new_name == current_)
+            new_name = root + QStringLiteral(" (") + QString::number(++index) +
+                       QLatin1Char(')');
+        SettingsGroup new_group{&settings_, new_name};
+        load_from(source);
+    }
+    if (current_group.size())
+        settings_.beginGroup(current_group);
+    return new_name;
+}
+
+QString MultiSettings::create_from_current(QString const &name,
+                                           QVariantMap const &overrides) {
+    return m_->create_from_current(name, overrides);
 }
 
 void MultiSettings::impl::clone_into_configuration(QMenu const *menu) {

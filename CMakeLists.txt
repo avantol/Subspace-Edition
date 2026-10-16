@@ -328,6 +328,8 @@ target_sources(
   JS8_UI/MessagePanel.cpp
   JS8_UI/SpeechBalloon.cpp
   JS8_UI/WideGraph.cpp
+  JS8_UI/WsjtxImport.cpp
+  JS8_UI/WsjtxImport.h
   JS8_Widgets/BandActivityMessageDelegate.cpp
   JS8_Widgets/CheckableItemComboBox.cpp
   JS8_Widgets/LazyFillComboBox.cpp

@@ -19,6 +19,7 @@
 #include "JS8_Main/ArqMonitor.h"
 #include "JS8_UI/ArqMonitorWindow.h"
 #include "JS8_UI/StationMonitorWindow.h" // [stamon]
+#include "JS8_UI/WsjtxImport.h"          // [operator 2026-10-16]
 #include "JS8_Main/NativeBinary.h"
 #include "JS8_Include/SettingsGroup.h"
 
@@ -197,7 +198,54 @@ void UI_Constructor::ensureMessageDock()
 
 void UI_Constructor::checkStartupWarnings() {
     checkVersion(false);  // Always check for updates at startup
+    // [operator 2026-10-16] The WSJT-X import is offered FIRST, before
+    // the callsign check opens Settings: an import that is accepted
+    // brings the radio (and the call sign and grid if ours are empty)
+    // and switches configuration, which restarts this window.
+    if (offerWsjtxImport())
+        return;
     ensureCallsignSet(false);
+}
+
+// [operator 2026-10-16] First start, once per station: a WSJT-X
+// configuration with a radio is on this computer and none of ours has a
+// radio set. Once one of ours has a radio the offer is retired unseen.
+// Returns true when an import created a configuration (it is being
+// switched to).
+bool UI_Constructor::offerWsjtxImport() {
+    if (m_settings->value("SsWsjtxImportOffered", false).toBool())
+        return false;
+    auto const hasRig = [](QString const &rig) {
+        return !rig.isEmpty() && rig != QStringLiteral("None");
+    };
+    bool oursHasRig = hasRig(m_config.rig_name());
+    if (!oursHasRig) {
+        m_settings->beginGroup(QStringLiteral("MultiSettings"));
+        for (auto const &name : m_settings->childGroups())
+            if (hasRig(m_settings->value(name + QStringLiteral("/Configuration/Rig"))
+                           .toString()))
+                oursHasRig = true;
+        m_settings->endGroup();
+    }
+    if (oursHasRig) {
+        m_settings->setValue("SsWsjtxImportOffered", true);
+        return false;
+    }
+    bool theirsHasRig = false;
+    for (auto const &s : WsjtxImport::findConfigurations())
+        if (s.hasRig) theirsHasRig = true;
+    if (!theirsHasRig)
+        return false; // asked again at a later start, should WSJT-X appear
+    m_settings->setValue("SsWsjtxImportOffered", true);
+    if (JS8MessageBox::query_message(
+            this, tr("Import radio setup from WSJT-X"),
+            tr("WSJT-X is set up on this computer.\n\n"
+               "Do you want to copy a radio setup into a new "
+               "configuration here?\n\n"
+               "(Also available any time at File > Import radio setup "
+               "from WSJT-X.)")) != JS8MessageBox::Yes)
+        return false;
+    return importFromWsjtx();
 }
 
 void initializeDummyData(); // JS8_Mainwindow/initializeDummyData.cpp
@@ -8059,6 +8107,54 @@ void UI_Constructor::acceptQSO(
     m_dateTimeQSOOn = QDateTime{};
 }
 
+// [operator 2026-10-16] File > Import radio setup from WSJT-X (and the
+// first-start offer). A new configuration is CLONED from the one in use
+// with WSJT-X's radio, transmit, audio and calibration values copied in
+// unchanged (same keys, same value format); call sign and grid only
+// where ours are empty; for JTTY the new configuration starts on 14.090
+// (a JTTY frequency, so JTTY mode). Then it is switched to.
+bool UI_Constructor::importFromWsjtx() {
+    auto const sources = WsjtxImport::findConfigurations();
+    bool jttyAvailable = false;
+#ifdef JS8_ENABLE_JTTY
+    jttyAvailable = !m_superSpotterSeen; // a MAGNET station never uses JTTY
+#endif
+    WsjtxImport::Dialog dialog(sources, jttyAvailable, this);
+    if (dialog.exec() != QDialog::Accepted) return false;
+    auto const src = dialog.source();
+    if (src.file.isEmpty()) return false;
+
+    QVariantMap overrides;
+    QStringList copied;
+    for (auto it = src.values.constBegin(); it != src.values.constEnd(); ++it) {
+        if (it.key() == QStringLiteral("MyCall") &&
+            !m_config.my_callsign().trimmed().isEmpty())
+            continue;
+        if (it.key() == QStringLiteral("MyGrid") &&
+            !m_config.my_grid().trimmed().isEmpty())
+            continue;
+        overrides.insert(QStringLiteral("Configuration/") + it.key(), it.value());
+        copied << it.key();
+    }
+    QString use = QStringLiteral("JS8");
+#ifdef JS8_ENABLE_JTTY
+    if (dialog.forJtty()) {
+        overrides.insert(QStringLiteral("Common/DialFreq"),
+                         QVariant::fromValue(Radio::Frequency{14090000}));
+        use = QStringLiteral("JTTY, 14.090");
+    }
+#endif
+    // the clone is taken from the settings file: bring it up to date first
+    writeSettings();
+    QString const name =
+        m_multi_settings->create_from_current(dialog.name(), overrides);
+    qWarning() << "[WSJTX-IMPORT] new configuration" << name << "from"
+               << src.file << "config" << src.config << "use" << use
+               << "copied:" << copied.join(QLatin1Char(','));
+    m_multi_settings->select_configuration(name);
+    return true;
+}
+
 void UI_Constructor::on_actionModeJS8HB_toggled(bool) {
     // prep hb mode
 
@@ -9043,13 +9139,26 @@ UI_Constructor::trySeedOutgoingGreeting(QString const &call,
         qWarning() << "[SEED-GREETING] suppressed, ARQ box lock active";
         return GreetingSeedResult::DraftBlocked;
     }
+    // [operator 2026-10-16] In JTTY MODE the seed is the JTTY address and
+    // the default reply: "<CALL> <MYCALL> <reply>" (the Reply button's
+    // text), never the JS8 standard greeting.
+    bool jtty = false;
+#ifdef JS8_ENABLE_JTTY
+    jtty = jttyMode();
+#endif
+    QString const mycall = m_config.my_callsign().trimmed();
     QString const greeting =
-        replaceMacros(m_config.standard_greeting(), buildMacroValues(),
-                      true).trimmed();
+        replaceMacros(jtty ? m_config.reply_message()
+                           : m_config.standard_greeting(),
+                      buildMacroValues(), true).trimmed();
     QString probe = ui->extFreeTextMsgEdit->toPlainText().trimmed();
     if (!greeting.isEmpty() && probe.endsWith(greeting)) {
         probe = probe.chopped(greeting.size()).trimmed();
     }
+    // the JTTY seed carries our call after theirs: an earlier seed is
+    // still this feature's own text, overwritable
+    if (jtty && probe.endsWith(QLatin1Char(' ') + mycall, Qt::CaseInsensitive))
+        probe = probe.chopped(mycall.size() + 1).trimmed();
     bool probeCompound = false;
     if (!force && !probe.isEmpty() &&
         !Varicode::isValidCallsign(probe, &probeCompound)) {
@@ -9059,6 +9168,7 @@ UI_Constructor::trySeedOutgoingGreeting(QString const &call,
     }
     clearSelection();
     QString seeded = call.trimmed();
+    if (jtty) seeded += QLatin1Char(' ') + mycall;
     if (!greeting.isEmpty()) {
         seeded += QLatin1Char(' ') + greeting;
     }
