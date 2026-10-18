@@ -79,19 +79,63 @@ void UI_Constructor::networkMessage(Message const &message) {
     // client no progressive RX.ACTIVITY -- a clear refusal beats a form
     // that silently arrives broken. The REASON stays "jtty_mode": a new
     // value in a known field is what the API rule forbids.
+    // [operator 2026-10-17, "good design! build 1 - 4"] ...replaced by a
+    // mode STATEMENT. A client that knows about JTTY says so in the
+    // request -- "MODE":"JTTY", or at JTTY speed in JS8 mode
+    // "SPEED":"JTTY" -- and only then may it transmit, or move the
+    // station INTO JTTY (MODE.SET_SPEED 32, RIG.SET_FREQ to a JTTY
+    // dial), or change speed/frequency while in JTTY. A client that does
+    // not say so is refused with REASON "mode_mismatch", so an old client
+    // behaves exactly as before (refused) and nobody lands in JTTY by
+    // accident. Reads and local settings are open to every client; every
+    // reply says which mode the station is in (sendNetworkMessage).
+    // ARQ, chunked sends and reaching do not exist in JTTY: "jtty_mode".
     {
         static QSet<QString> refusedLogged;
+        auto const params = message.params();
+        auto const isJttyWord = [](QVariant const &v) {
+            return v.toString().trimmed().compare(QStringLiteral("JTTY"),
+                                                  Qt::CaseInsensitive) == 0;
+        };
+        bool const stated =
+            isJttyWord(params.value("MODE")) || isJttyWord(params.value("SPEED"));
         bool const jttyNow = jttyMode() || m_nSubMode == Varicode::JS8CallJTTY;
-        if (jttyNow && type != "RIG.TX_HALT") {
-            if (!refusedLogged.contains(type)) {
-                refusedLogged.insert(type);
-                qWarning() << "[API] refused in JTTY mode or at JTTY speed:" << type;
+        QString reason;
+        if (jttyNow && (type == "TX.SEND_CHUNKED" || type == "TX.REACH" ||
+                        type == "MODE.SET_ARQ")) {
+            reason = QStringLiteral("jtty_mode");
+        } else if (type == "MODE.SET_SPEED") {
+            bool ok = false;
+            int const speed = params.value("SPEED").toInt(&ok);
+            bool const toJtty = ok && speed == Varicode::JS8CallJTTY;
+            if (toJtty && m_superSpotterSeen)
+                reason = QStringLiteral("jtty_mode"); // MAGNET: no JTTY at all
+            else if ((toJtty || jttyNow) && !stated)
+                reason = QStringLiteral("mode_mismatch");
+        } else if (type == "RIG.SET_FREQ") {
+            bool ok = false;
+            auto const dial = params.value("DIAL").toLongLong(&ok);
+            bool const toJtty = ok && isJttyFrequency(dial);
+            bool const moves = params.contains("DIAL") || params.contains("OFFSET");
+            if ((toJtty || (jttyNow && moves)) && !stated)
+                reason = QStringLiteral("mode_mismatch");
+        } else if (jttyNow && (type == "TX.SEND_MESSAGE" ||
+                               type == "TX.SEND_DIRECTED" ||
+                               type == "RIG.SET_TUNE") && !stated) {
+            reason = QStringLiteral("mode_mismatch");
+        }
+        if (!reason.isEmpty()) {
+            if (!refusedLogged.contains(type + reason)) {
+                refusedLogged.insert(type + reason);
+                qWarning() << "[API] refused" << type << reason
+                           << (reason == QStringLiteral("jtty_mode")
+                                   ? "(not available in JTTY)"
+                                   : "(JTTY: the request must state MODE or SPEED JTTY)");
             }
             sendNetworkMessage(type, "",
-                               {{"_ID", message.params().value(
-                                            "_ID", QVariant(-1))},
+                               {{"_ID", params.value("_ID", QVariant(-1))},
                                 {"REFUSED", true},
-                                {"REASON", QStringLiteral("jtty_mode")}});
+                                {"REASON", reason}});
             return;
         }
         if (!jttyNow)
@@ -699,9 +743,30 @@ if(type == "STATION.SET_SPOT") {
                                  QStringLiteral("auto_route_active")}});
             return;
         }
-        // [JTTY] In JTTY mode this request never reaches here: the gate
-        // at the top of networkMessage refuses every request (audit D3).
+        // [JTTY] Here only with the mode stated (gate at the top).
         auto text = message.value();
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-17] A JTTY message holds 80 characters. At
+        // JTTY speed in JS8 mode a MSG / MSG TO: is stored only from the
+        // message carrying the command, so a longer one is REFUSED
+        // ("too_long", the operator's "Message is too long for JTTY
+        // speed."). Anything else longer is split, and the reply says
+        // into how many JTTY messages.
+        int jttyMessages = 0;
+        if (!text.isEmpty() && m_nSubMode == Varicode::JS8CallJTTY) {
+            if (jttyMsgTooLong(text, &jttyMessages)) {
+                qWarning() << "[API] TX.SEND_MESSAGE refused: a MSG needs"
+                           << jttyMessages << "JTTY messages";
+                sendNetworkMessage("TX.SEND_MESSAGE", "",
+                                   {{"_ID", id},
+                                    {"REFUSED", true},
+                                    {"REASON", QStringLiteral("too_long")},
+                                    {"JTTY_MESSAGES", jttyMessages}});
+                return;
+            }
+            if (!jttyMessages) jttyMessages = jttyMessagesFor(text);
+        }
+#endif
 #ifdef JS8_ENABLE_FT2
         // [ss701] Same second signature as TX.SET_TEXT above -- the
         // Expect auto-reply path sends the form text through HERE
@@ -717,6 +782,13 @@ if(type == "STATION.SET_SPOT") {
                     : PriorityHigh;
             enqueueMessage(pri, text, -1, nullptr);
             processTxQueue();
+#ifdef JS8_ENABLE_JTTY
+            if (jttyMessages > 1)
+                sendNetworkMessage("TX.SEND_MESSAGE", "",
+                                   {{"_ID", id},
+                                    {"SPLIT", true},
+                                    {"JTTY_MESSAGES", jttyMessages}});
+#endif
             return;
         }
     }
@@ -781,14 +853,29 @@ if(type == "STATION.SET_SPOT") {
         } else {
             built = QString("%1: %2 %3").arg(m_config.my_callsign())
                         .arg(to.toUpper()).arg(cmd);
+#ifdef JS8_ENABLE_JTTY
+            // [operator 2026-10-17] JTTY mode: the WSJT-X order,
+            // "<TO> <MYCALL> <CMD>", the form a JTTY station reads.
+            if (jttyMode())
+                built = QString("%1 %2 %3").arg(to.toUpper())
+                            .arg(m_config.my_callsign()).arg(cmd);
+#endif
             if (!extra.isEmpty()) built += " " + extra;
             built = built.trimmed();
 
             int pri = (priStr == "LOW") ? PriorityLow
                     : (priStr == "NORMAL") ? PriorityNormal
                     : PriorityHigh;
-            enqueueMessage(pri, built, -1, nullptr);
-            processTxQueue();
+#ifdef JS8_ENABLE_JTTY
+            // Same one-JTTY-message rule as TX.SEND_MESSAGE.
+            if (jttyMsgTooLong(built))
+                err = QStringLiteral("too_long");
+            else
+#endif
+            {
+                enqueueMessage(pri, built, -1, nullptr);
+                processTxQueue();
+            }
         }
 
         sendNetworkMessage("TX.SEND_DIRECTED", built,

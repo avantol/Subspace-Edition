@@ -20,10 +20,10 @@ on:
         type: string
         default: 'Release'
       enable-jtty:
-        description: 'Build with ENABLE_JTTY (jtty branch installers)'
+        description: 'Build with ENABLE_JTTY (a push always builds it ON)'
         required: false
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build_windows:
@@ -92,7 +92,7 @@ jobs:
         cmake -B build \
           -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/local/hamlib;${MSYSTEM_PREFIX}" \
           -DCMAKE_BUILD_TYPE=${{ inputs.build-type || 'Release' }} \
-          -DENABLE_JTTY=${{ inputs.enable-jtty && 'ON' || 'OFF' }} \
+          -DENABLE_JTTY=${{ (github.event_name != 'workflow_dispatch' || inputs.enable-jtty) && 'ON' || 'OFF' }} \
           -DFFTW3F_LIBRARY=/mingw64/lib/libfftw3f.a
 
     - name: Build

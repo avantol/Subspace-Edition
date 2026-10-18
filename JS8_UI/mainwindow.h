@@ -454,6 +454,8 @@ class UI_Constructor : public QMainWindow {
     // must fit ONE JTTY message: the receiver stores only the message
     // that carries the command. Says so and returns false otherwise.
     bool ensureFitsJttySpeed(QString const &text);
+    int jttyMessagesFor(QString const &text, QString *pDirCmd = nullptr);
+    bool jttyMsgTooLong(QString const &text, int *pieces = nullptr);
     // A complete JTTY message in the JS8 directed form ("K9AVT: WM8Q
     // SNR?") becomes a CommandDetail on m_rxCommandQueue, exactly as a
     // decoded JS8 directed frame does; processCommandActivity answers.
@@ -893,6 +895,7 @@ class UI_Constructor : public QMainWindow {
     // conventions read jttyMode() instead. False in a build without
     // JTTY.
     bool onJttyFrequency() const;
+    bool isJttyFrequency(Radio::Frequency dial) const; // any dial (API targets)
     // [JTTY, operator 2026-10-12] JTTY MODE = we behave as a JTTY
     // station (template CQ, "CALL MYCALL " address, no "FROM:", the
     // append rule, no Send chevron, "TU 73", speed buttons off). ONE
@@ -2269,6 +2272,7 @@ class UI_Constructor : public QMainWindow {
     // the once-per-second update retries applyJttyModeTransition when a
     // speed change is allowed again
     bool m_jttyTransitionPending = false;
+    bool m_jttyModeShown = false; // #303: the mode refreshJttyModeIndicators last showed
 #endif
     QTimer m_l2DecodeTimer;                     // fires every 750ms
     QFutureWatcher<void> m_l2DecodeWatcher;     // monitors async decode

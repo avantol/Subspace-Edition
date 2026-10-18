@@ -5860,6 +5860,10 @@ void UI_Constructor::applyEntryTransition(QString const &entryKey,
         cacheActivity(m_lastEntryKey);
     if (!startup || m_config.reset_activity())
         clearActivity(/*keepOutgoingBox=*/!bandChanged);
+    // [TODO #303, operator 2026-10-17] A new frequency deselects the
+    // call: the station was picked from the activity of the old one.
+    if (!startup && !m_selectedCallsign.isEmpty())
+        clearCallsignSelected();
     m_lastEntryKey = entryKey;
     if (!entryKey.isEmpty())
         restoreActivity(entryKey);
@@ -5957,6 +5961,14 @@ void UI_Constructor::applyJttyModeTransition() {
 //   - the status button says "JTTY" in JTTY mode (updateModeButtonText).
 void UI_Constructor::refreshJttyModeIndicators() {
     bool const jtty = jttyMode();
+    // [TODO #303, operator 2026-10-17] A mode change deselects the call,
+    // as a frequency change does. This function also runs on every speed
+    // change (setupJS8), so the mode it last showed is remembered to
+    // tell a mode change from those.
+    if (jtty != m_jttyModeShown) {
+        m_jttyModeShown = jtty;
+        if (!m_selectedCallsign.isEmpty()) clearCallsignSelected();
+    }
     if (m_spotMapWindow)
         m_spotMapWindow->setModeContext(jtty ? QStringLiteral("JTTY")
                                              : QStringLiteral("JS8"));
@@ -6316,6 +6328,15 @@ int UI_Constructor::writeMessageTextToUI(QDateTime date, QString text, int freq,
     ui->textEditRX->ensureCursorVisible();
     ui->textEditRX->verticalScrollBar()->setValue(
         ui->textEditRX->verticalScrollBar()->maximum());
+
+    // [operator 2026-10-17, "MY LAST TX DID NOT GO TO CONVO WINDOW"] Where
+    // each sent line lands: a TX at 1996 Hz left no line anywhere, and
+    // nothing recorded where it went.
+    if (isTx)
+        qWarning() << "[RXPANE] tx line" << freq << "Hz block" << block
+                   << "->" << c.blockNumber() << "of"
+                   << c.document()->blockCount()
+                   << (found ? "joined" : "new") << "text=" << text.left(40);
 
     return c.blockNumber();
 }
@@ -14156,7 +14177,18 @@ void UI_Constructor::sendNetworkMessage(QString const &type,
         qWarning() << "[TCP-TX]" << type << "msg=" << message.left(60);
 #endif
 
-    auto m = Message(type, message, params);
+    QVariantMap sent = params;
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-17, API point 2] Every REPLY (a request's _ID,
+    // not -1) says which mode the station is in, so a client learns
+    // JTTY from any answer. A new key only: no existing field changes.
+    if (sent.contains("_ID") && sent.value("_ID").toLongLong() != -1 &&
+        !sent.contains("MODE"))
+        sent.insert("MODE", jttyMode() ? QStringLiteral("JTTY")
+                                       : QStringLiteral("JS8"));
+#endif
+
+    auto m = Message(type, message, sent);
 
     if (m_config.udpEnabled()) {
         m_messageClient->send(m);
@@ -14687,6 +14719,39 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     }
     displayBandActivity();
 
+    // [operator 2026-10-17, API point 3] Every JTTY message the operator
+    // sees goes to API clients under types of its own -- never a JS8
+    // type an old client would act on. RX.JTTY.ACTIVITY always, and
+    // RX.JTTY.DIRECTED as well when the message names my station. FROM
+    // follows the display's rule: a sender the message names by a form;
+    // in JTTY mode also the line's sender or the operator's pick (the JS8
+    // mode never borrows one). A guessed sender is not sent.
+    if (canSendNetworkMessage()) {
+        bool ownForm = false;
+        QString from = jttyLineSender(text, &ownForm);
+        if (!ownForm) from.clear();
+        auto const &line = m_jttyActivity.value(offset);
+        if (from.isEmpty() && jttyMode() && !line.isEmpty())
+            from = jttyLineSenders(line, offset).last();
+        QString const to = line.isEmpty() ? QString() : jttyLineAddressees(line).last();
+        QVariantMap const params = {
+            {"_ID", QVariant(-1)},
+            {"FREQ", QVariant(static_cast<quint64>(dial) + offset)},
+            {"DIAL", QVariant(static_cast<quint64>(dial))},
+            {"OFFSET", QVariant(offset)},
+            {"SNR", QVariant(u.snr)},
+            {"UTC", QVariant(now.toMSecsSinceEpoch())},
+            {"COMPLETE", QVariant(u.terminal == JTTY::UPDATE_COMPLETE)},
+            {"FROM", from},
+            {"TO", to},
+            {"MODE", jttyMode() ? QStringLiteral("JTTY") : QStringLiteral("JS8")},
+            {"SPEED", QVariant(static_cast<int>(Varicode::JS8CallJTTY))},
+        };
+        sendNetworkMessage(QStringLiteral("RX.JTTY.ACTIVITY"), text, params);
+        if (jttyLineNamesMe(text))
+            sendNetworkMessage(QStringLiteral("RX.JTTY.DIRECTED"), text, params);
+    }
+
     // [operator 2026-10-12] the line's speed indicator "J" says JTTY;
     // the text carries no pseudo-callsign prefix.
     // [operator 2026-10-13] The JS8 rule for the conversation window: a
@@ -15078,17 +15143,32 @@ QList<QPair<QString, int>> UI_Constructor::buildJttyFrames(QString const &text,
 // a MSG / MSG TO: is a command, and the receiver acts on -- and stores --
 // only the message that carries it (the rest arrive as plain text, and our
 // own ACK went out on top of them). So the whole line must fit one.
-bool UI_Constructor::ensureFitsJttySpeed(QString const &text) {
-    if (m_nSubMode != Varicode::JS8CallJTTY || jttyMode()) return true;
+// ONE dry run of the JTTY builder: how many JTTY messages the text needs,
+// and (JS8 mode) the directed command it carries. The operator's send
+// check below and the API (TX.SEND_MESSAGE) both read it.
+int UI_Constructor::jttyMessagesFor(QString const &text, QString *pDirCmd) {
+    return buildJttyFrames(replaceMacros(text, buildMacroValues(), false),
+                           false, nullptr, pDirCmd, /*quiet=*/true)
+        .size();
+}
+
+// A MSG / MSG TO: at JTTY speed in JS8 mode that needs more than one JTTY
+// message (the receiver stores only the message carrying the command).
+bool UI_Constructor::jttyMsgTooLong(QString const &text, int *pieces) {
+    if (m_nSubMode != Varicode::JS8CallJTTY || jttyMode()) return false;
     QString cmd;
-    auto const pieces = buildJttyFrames(
-        replaceMacros(text, buildMacroValues(), false), false, nullptr, &cmd,
-        /*quiet=*/true);
+    int const n = jttyMessagesFor(text, &cmd);
+    if (pieces) *pieces = n;
     bool const msgCmd = cmd == QStringLiteral(" MSG") ||
                         cmd == QStringLiteral(" MSG TO:");
-    if (!msgCmd || pieces.size() <= 1) return true;
-    qWarning() << "[JTTY-TX] refused: a" << cmd.trimmed() << "needs"
-               << pieces.size() << "JTTY messages, one is the limit";
+    return msgCmd && n > 1;
+}
+
+bool UI_Constructor::ensureFitsJttySpeed(QString const &text) {
+    int pieces = 0;
+    if (!jttyMsgTooLong(text, &pieces)) return true;
+    qWarning() << "[JTTY-TX] refused: a MSG needs" << pieces
+               << "JTTY messages, one is the limit";
     JS8MessageBox::warning_message(this, tr("JTTY speed"),
                                    tr("Message is too long for JTTY speed."));
     return false;
@@ -15660,14 +15740,21 @@ void UI_Constructor::jttyNoteStation(QString const &call, QString const &grid,
 #endif // JS8_ENABLE_JTTY
 
 bool UI_Constructor::onJttyFrequency() const {
+    return isJttyFrequency(const_cast<UI_Constructor *>(this)->operatingDial());
+}
+
+// ONE authority for "this dial is a JTTY frequency": our own dial
+// (onJttyFrequency) and an API client's target dial (RIG.SET_FREQ).
+bool UI_Constructor::isJttyFrequency(Radio::Frequency dial) const {
 #ifdef JS8_ENABLE_JTTY
     // [operator 2026-10-15, truth table row 4] A MAGNET station overrides
     // the frequency table's JTTY marking: every frequency is JS8 to it.
     if (m_superSpotterSeen) return false;
-    auto const dial = const_cast<UI_Constructor *>(this)->operatingDial();
     for (auto const &it : m_config.frequencies()->frequency_list())
         if (it.frequency_ == dial && it.mode_ == Modes::JTTY)
             return true;
+#else
+    Q_UNUSED(dial);
 #endif
     return false;
 }

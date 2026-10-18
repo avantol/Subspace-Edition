@@ -86,7 +86,11 @@ void Modulator::start(double const frequency, int const submode,
     // [JTTY] Backstop: a JTTY cycle with nothing staged must never fall
     // into the JS8 tone branch (stale itone[] at JTTY symbol timing).
     // Play silence and report the waveform done at once.
+    // [operator 2026-10-17] The staged JTTY waveform replaces m_ft2Wave
+    // only in the override block below, so it counts as staged here: the
+    // Subspace buffer alone made every JTTY start log this false alarm.
     if (submode == 32 /* Varicode::JS8CallJTTY */ && !m_tuning &&
+        !stagedWaveform &&
         !(m_ft2Mode && m_ft2Wave && m_ft2WaveLen > 0)) {
         // [audit L4] the cycle actually ends on the stop path's safety
         // cap: with no waveform the audio-end poll never fires

@@ -397,7 +397,8 @@ endif()
 # The Fortran reference stays under lib/jtty, never compiled.
 #------------------------------------------------------------------------------#
 
-option(ENABLE_JTTY "Enable JTTY receive/transmit support (C++ port, experimental)" OFF)
+# [Build 502, operator 2026-10-18] ON: JTTY ships on every platform.
+option(ENABLE_JTTY "Enable JTTY receive/transmit support (C++ port, experimental)" ON)
 
 if(ENABLE_JTTY AND NOT ENABLE_FT2)
   message(FATAL_ERROR "ENABLE_JTTY requires ENABLE_FT2: the JTTY receiver reads the Subspace L2 audio ring")
