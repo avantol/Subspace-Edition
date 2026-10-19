@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QLineEdit>
+#include <QPointer>
 #include <QScopedPointer>
 #include <QString>
 #include <QtGui>
@@ -37,6 +38,9 @@ class LogQSO : public QDialog {
     void accept();
     bool acceptText(QString text);
     QString currentCall();
+    // [operator 2026-10-19] the window whose monitor this dialog opens on
+    // (it has no parent to follow); applied after the saved position loads
+    void setScreenAnchor(QWidget *anchor) { m_screenAnchor = anchor; }
 
   signals:
     void acceptQSO(QDateTime const &QSO_date_off, QString const &call,
@@ -66,6 +70,7 @@ class LogQSO : public QDialog {
     QScopedPointer<Ui::LogQSO> ui;
     QSettings *m_settings;
     Configuration const *m_config;
+    QPointer<QWidget> m_screenAnchor;
     QString m_comments;
     Radio::Frequency m_dialFreq;
     QString m_myCall;

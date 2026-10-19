@@ -1893,6 +1893,11 @@ class UI_Constructor : public QMainWindow {
     struct CachedDirectedType {
         bool isAllcall;
         QDateTime date;
+        // [operator 2026-10-19, JTTY mode] the station the message came
+        // from and its exact offset: only THAT row turns red. offset -1 =
+        // a JS8 mark, which keeps the 10 Hz neighbourhood rule.
+        QString call;
+        int offset = -1;
     };
 
     struct DecodeParams {
@@ -2524,9 +2529,13 @@ class UI_Constructor : public QMainWindow {
     QString callsignSelected(bool useInputText = false);
     bool isRecentOffset(int submode, int offset);
     void markOffsetRecent(int offset);
-    bool isDirectedOffset(int offset, bool *pIsAllCall);
-    void markOffsetDirected(int offset, bool isAllCall);
-    void clearOffsetDirected(int offset);
+    bool isDirectedOffset(int offset, bool *pIsAllCall,
+                          CachedDirectedType const **pMark = nullptr);
+    void markOffsetDirected(int offset, bool isAllCall,
+                            QString const *station = nullptr);
+    bool rowDirectedToMe(QString const &rowCall, int rowOffset,
+                         bool *pStation = nullptr);
+    void clearOffsetDirected(int offset, char const *why);
     void processActivity(bool force = false);
     void processRxActivity();
     void processIdleActivity();

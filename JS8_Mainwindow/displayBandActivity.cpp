@@ -567,11 +567,26 @@ void UI_Constructor::displayBandActivity() {
             // next hop ("W5TTA: W0IFM> WM8Q F!701C ..."), a *DE* tail, a
             // free-text mention. Legacy (stock 2.2.0 identical). Meaning
             // is not position: a mention is not an address.
-            bool isDirectedAllCall = false;
-            bool const directedTint =
-                isDirectedOffset(offset, &isDirectedAllCall) &&
-                !isDirectedAllCall;
+            // [operator 2026-10-19] one rule (rowDirectedToMe), shared with
+            // the age pass. A JTTY-mode mark colours only its sender's row,
+            // and that red wins over the CQ and highlight-word colours
+            // below (the selection still covers it). JS8: as before.
+            bool stationMark = false;
+            bool const directedTint = rowDirectedToMe(call, offset, &stationMark);
             if (directedTint) {
+                // [DIRMARK] once per row and mark (redraws repeat it)
+                {
+                    static QSet<QString> logged;
+                    auto const *m = m_rxDirectedCache[offset / 10 * 10];
+                    QString const key = QStringLiteral("%1|%2|%3")
+                        .arg(call).arg(offset / 10 * 10)
+                        .arg(m ? m->date.toMSecsSinceEpoch() : 0);
+                    if (!logged.contains(key)) {
+                        logged.insert(key);
+                        qWarning() << "[DIRMARK] paint row" << call << "offset"
+                                   << offset << "selected=" << selected;
+                    }
+                }
                 for (int i = 0; i < ui->tableWidgetRXAll->columnCount();
                      i++) {
                     ui->tableWidgetRXAll->item(row, i)->setBackground(
@@ -581,7 +596,7 @@ void UI_Constructor::displayBandActivity() {
             // [#298] the age pass asks for a rebuild when this expires
             ageItem->setData(Qt::UserRole + 1, directedTint);
 
-            if (!joined.isEmpty()) {
+            if (!joined.isEmpty() && !(directedTint && stationMark)) {
                 auto const list = joined.split(QRegularExpression("[:> ]"),
                                                Qt::SkipEmptyParts);
                 QSet<QString> words(list.begin(), list.end());

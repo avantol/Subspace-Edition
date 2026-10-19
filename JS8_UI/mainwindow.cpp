@@ -6005,6 +6005,8 @@ void UI_Constructor::clearActivity(bool keepOutgoingBox) {
     m_rxCallCache.clear();
     m_rxCallQueue.clear();
     m_rxRecentCache.clear();
+    if (!m_rxDirectedCache.isEmpty())
+        qWarning() << "[DIRMARK] cleared all by clearActivity";
     m_rxDirectedCache.clear();
     m_rxCommandQueue.clear();
     m_lastTxMessage.clear();
@@ -7949,7 +7951,9 @@ void UI_Constructor::on_logQSOButton_clicked() // Log QSO button
     QString comments = ui->textEditRX->textCursor().selectedText();
 
     // [operator 2026-10-19] the log dialog opens on the main window's
-    // monitor (it has no parent window to follow)
+    // monitor (it has no parent window to follow). This covers the
+    // re-show below; a new QSO places it after its saved position loads
+    // (LogQSO::loadSettings, anchor set at construction).
     JS8::keepOnScreenOf(m_logDlg.data(), this);
 
     // don't reset the log window if the call hasn't changed.
@@ -13204,7 +13208,8 @@ void UI_Constructor::markOffsetRecent(int offset) {
         new QDateTime(DriftingDateTime::currentDateTimeUtc()), 10);
 }
 
-bool UI_Constructor::isDirectedOffset(int offset, bool *pIsAllCall) {
+bool UI_Constructor::isDirectedOffset(int offset, bool *pIsAllCall,
+                                      CachedDirectedType const **pMark) {
     bool isDirected = (m_rxDirectedCache.contains(offset / 10 * 10) &&
                        m_rxDirectedCache[offset / 10 * 10]->date.secsTo(
                            DriftingDateTime::currentDateTimeUtc()) < 120);
@@ -13212,20 +13217,55 @@ bool UI_Constructor::isDirectedOffset(int offset, bool *pIsAllCall) {
     if (isDirected && pIsAllCall) {
         *pIsAllCall = m_rxDirectedCache[offset / 10 * 10]->isAllcall;
     }
+    if (pMark)
+        *pMark = isDirected ? m_rxDirectedCache[offset / 10 * 10] : nullptr;
 
     return isDirected;
 }
 
-void UI_Constructor::markOffsetDirected(int offset, bool isAllCall) {
-    CachedDirectedType *d1 = new CachedDirectedType{
-        isAllCall, DriftingDateTime::currentDateTimeUtc()};
-    CachedDirectedType *d2 = new CachedDirectedType{
-        isAllCall, DriftingDateTime::currentDateTimeUtc()};
-    m_rxDirectedCache.insert(offset / 10 * 10, d1, 10);
-    m_rxDirectedCache.insert(offset / 10 * 10 + 10, d2, 10);
+// [operator 2026-10-19] ONE rule for "this band-activity row is red": the
+// row builder and the once-a-second age pass both ask here. A JS8 mark
+// colours its 10 Hz neighbourhood (as ever); a JTTY mark carries the
+// station and offset it came from and colours only that station's row
+// (list by call) or that line (list by offset) -- a neighbour 5 Hz away
+// is not addressing me. *pStation: a JTTY mark (the red then wins over
+// the CQ and highlight-word colours; the selection still covers it).
+bool UI_Constructor::rowDirectedToMe(QString const &rowCall, int rowOffset,
+                                     bool *pStation) {
+    bool allCall = false;
+    CachedDirectedType const *mark = nullptr;
+    if (pStation) *pStation = false;
+    if (!isDirectedOffset(rowOffset, &allCall, &mark) || allCall || !mark)
+        return false;
+    if (mark->offset < 0) return true; // JS8: the neighbourhood rule
+    // JTTY: the sender's row; a row or a mark without a call, its line
+    bool const match = (!rowCall.isEmpty() && !mark->call.isEmpty())
+                           ? rowCall == mark->call
+                           : rowOffset == mark->offset;
+    if (match && pStation) *pStation = true;
+    return match;
 }
 
-void UI_Constructor::clearOffsetDirected(int offset) {
+void UI_Constructor::markOffsetDirected(int offset, bool isAllCall,
+                                        QString const *station) {
+    QDateTime const now = DriftingDateTime::currentDateTimeUtc();
+    // a station given (JTTY, possibly an empty call) = exact; none = JS8
+    QString const call = station ? *station : QString();
+    int const exact = station ? offset : -1;
+    m_rxDirectedCache.insert(offset / 10 * 10,
+                             new CachedDirectedType{isAllCall, now, call, exact}, 10);
+    m_rxDirectedCache.insert(offset / 10 * 10 + 10,
+                             new CachedDirectedType{isAllCall, now, call, exact}, 10);
+    // [operator 2026-10-19] the "my call" red: when it is set, painted
+    // ([DIRMARK] paint, displayBandActivity) and cleared, and by whom
+    qWarning() << "[DIRMARK] set" << offset / 10 * 10 << "allcall=" << isAllCall
+               << "station=" << call << "offset" << offset;
+}
+
+void UI_Constructor::clearOffsetDirected(int offset, char const *why) {
+    if (m_rxDirectedCache.contains(offset / 10 * 10) ||
+        m_rxDirectedCache.contains(offset / 10 * 10 + 10))
+        qWarning() << "[DIRMARK] cleared" << offset / 10 * 10 << "by" << why;
     m_rxDirectedCache.remove(offset / 10 * 10);
     m_rxDirectedCache.remove(offset / 10 * 10 + 10);
 }
@@ -14112,10 +14152,10 @@ void UI_Constructor::refreshBandActivityAgeOnly() {
             !ageItem->data(Qt::UserRole + 4).toBool())
             m_rxDisplayDirty = true;
         if (auto *offsetItem = table->item(r, BAOffset)) {
-            bool allCall = false;
-            bool const tintNow =
-                isDirectedOffset(offsetItem->data(Qt::UserRole).toInt(), &allCall) &&
-                !allCall;
+            auto *callItem = table->item(r, BACallsign);
+            bool const tintNow = rowDirectedToMe(
+                callItem ? callItem->data(Qt::UserRole).toString() : QString(),
+                offsetItem->data(Qt::UserRole).toInt());
             if (tintNow != ageItem->data(Qt::UserRole + 1).toBool())
                 m_rxDisplayDirty = true;
         }
@@ -14763,8 +14803,19 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         bool const js8FormLine = text.simplified()
                                      .section(QLatin1Char(' '), 0, 0)
                                      .endsWith(QLatin1Char(':'));
-        if (jttyLineNamesMe(text) && !(jttyMode() && js8FormLine))
-            markOffsetDirected(offset, /*isAllCall=*/false);
+        if (jttyLineNamesMe(text) && !(jttyMode() && js8FormLine)) {
+            // [operator 2026-10-19, JTTY mode only for now] the mark names
+            // the sender -- by the band activity's own attribution, the
+            // one authority -- so only that station's row turns red
+            if (jttyMode()) {
+                auto const &line = m_jttyActivity.value(offset);
+                QString const sender =
+                    line.isEmpty() ? QString() : jttyLineSenders(line, offset).last();
+                markOffsetDirected(offset, /*isAllCall=*/false, &sender);
+            } else {
+                markOffsetDirected(offset, /*isAllCall=*/false);
+            }
+        }
     }
     displayBandActivity();
 

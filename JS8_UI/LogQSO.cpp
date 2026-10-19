@@ -166,6 +166,9 @@ void LogQSO::loadSettings() {
     restoreGeometry(
         m_settings->value("geometry", saveGeometry()).toByteArray());
     JS8::rescueOffScreen(this); // [#246]
+    // [operator 2026-10-19] ...and on the main window's monitor: AFTER
+    // the restore, which used to undo a move made before initLogQSO
+    JS8::keepOnScreenOf(this, m_screenAnchor);
     ui->cbComments->setChecked(
         m_settings->value("SaveComments", false).toBool());
     m_comments = m_settings->value("LogComments", "").toString();

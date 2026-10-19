@@ -576,6 +576,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     connect(m_logDlg.data(), &LogQSO::acceptQSO, this,
             &UI_Constructor::acceptQSO);
     connect(this, &UI_Constructor::finished, m_logDlg.data(), &LogQSO::close);
+    m_logDlg->setScreenAnchor(this); // [operator 2026-10-19] our monitor
 
     // "Spots Map": close with the app, sync the menu checkbox when the
     // operator closes the window directly, and seed the station so the

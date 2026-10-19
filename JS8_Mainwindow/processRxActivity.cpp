@@ -180,7 +180,7 @@ void UI_Constructor::processRxActivity() {
         }
 
         if (isLast) {
-            clearOffsetDirected(d.offset);
+            clearOffsetDirected(d.offset, "a JS8 message ending at this offset");
         }
 
         if (isLast && !d.isBuffered) {
