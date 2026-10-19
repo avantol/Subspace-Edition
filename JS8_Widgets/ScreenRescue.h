@@ -50,4 +50,29 @@ inline void rescueOffScreen(QWidget *widget) {
                  available.y() + (available.height() - size.height()) / 2);
 }
 
+// [operator 2026-10-19] A DIALOG opens on the monitor the main window is
+// on. Its saved position is kept while that position is on the same
+// monitor; otherwise it is centred over the main window there (size
+// kept unless it cannot fit). Independent windows (Spots Map, monitors,
+// waterfall) are NOT passed here: the operator parks those deliberately.
+inline void keepOnScreenOf(QWidget *widget, QWidget const *anchor) {
+    if (!widget || !anchor)
+        return;
+    QScreen *const target = anchor->screen();
+    if (!target)
+        return;
+    if (QGuiApplication::screenAt(widget->frameGeometry().center()) == target)
+        return;
+    QRect const available = target->availableGeometry();
+    QSize const size = widget->size().boundedTo(available.size());
+    if (size != widget->size())
+        widget->resize(size);
+    QPoint const c = anchor->frameGeometry().center();
+    int const x = qBound(available.left(), c.x() - size.width() / 2,
+                         available.right() - size.width() + 1);
+    int const y = qBound(available.top(), c.y() - size.height() / 2,
+                         available.bottom() - size.height() + 1);
+    widget->move(x, y);
+}
+
 } // namespace JS8

@@ -161,7 +161,11 @@ SpotMapWindow::SpotMapWindow(QSettings *settings,
         restoreGeometry(
             m_settings->value("geometry", saveGeometry()).toByteArray());
         JS8::rescueOffScreen(this); // [#246]
-        m_restoreVisible = m_settings->value("WindowVisible", false).toBool();
+        // [TODO #305, operator 2026-10-18: "too many people missing it"]
+        // Open by default: a new install (or a profile that never saved
+        // the key) starts with the map open; an operator who closes it
+        // saves false and it stays closed.
+        m_restoreVisible = m_settings->value("WindowVisible", true).toBool();
         m_showCallsigns = m_settings->value("ShowCallsigns", false).toBool();
         // [persistui 2026-08-15] Connections overlay, map type, and
         // PSKR toggle persist across sessions AND across hide/show.

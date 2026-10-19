@@ -3296,6 +3296,7 @@ int Configuration::impl::exec() {
     rig_changed_ = false;
 
     initialize_models();
+    JS8::keepOnScreenOf(this, parentWidget()); // [operator 2026-10-19]
     return QDialog::exec();
 }
 

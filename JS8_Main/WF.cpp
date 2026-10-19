@@ -305,8 +305,8 @@ QVector<QColor> Palette::interpolate() const {
 }
 
 // invoke the palette designer
-bool Palette::design() {
-    if (auto designer = Designer{colours_};
+bool Palette::design(QWidget *parent) {
+    if (auto designer = Designer{colours_, parent};
         designer.exec() == QDialog::Accepted) {
         colours_ = designer.colours();
         return true;

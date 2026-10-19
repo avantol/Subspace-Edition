@@ -789,7 +789,7 @@ void WideGraph::on_cbFlatten_toggled(bool const flatten) {
 
 void WideGraph::on_adjust_palette_push_button_clicked(bool) {
     try {
-        if (m_userPalette.design()) {
+        if (m_userPalette.design(this)) { // [operator 2026-10-19] its window's monitor
             m_waterfallPalette = user_defined;
             ui->paletteComboBox->setCurrentText(m_waterfallPalette);
             readPalette();

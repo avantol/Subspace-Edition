@@ -1936,6 +1936,13 @@ void UI_Constructor::auto_tx_mode(bool state) {
         // now, even though that may waste a few CPU cycles through double work
         // that will be done soon anyway:
         prepareSending(DriftingDateTime::currentMSecsSinceEpoch());
+        // [TODO #304, operator 2026-10-19] The edge latch guiUpdate makes
+        // after ITS prepareSending call, made after this one too: without
+        // it the next tick saw the same 0->1 key-up edge again and staged
+        // the waveform, logged the JTTY.TXT line and called transmit() a
+        // second time ~35 ms later (refused/skipped, but logged twice).
+        m_iptt0 = m_iptt;
+        m_btxok0 = m_btxok;
     } else {
         // This function is called recursively from stopTxMechanical()!
         // (m_auto is false by the time we call back, so it terminates.)
@@ -2275,9 +2282,10 @@ void UI_Constructor::displayDialFrequency() {
     ui->currentFreq->setDigitCount(sFreq.length());
     ui->currentFreq->display(sFreq);
 
-    if (m_splitMode && m_transmitting) {
-        audio_frequency += m_XIT;
-    }
+    // [TODO #309, operator 2026-10-19] The offset shown is where the
+    // signal is ON THE AIR, transmitting or not: split's audio shift
+    // (+m_XIT, e.g. 1219 -> 1719) is matched by the transmit dial moving
+    // down, which the dial display above already shows (#256).
 #ifdef JS8_ENABLE_JTTY
     // [operator 2026-10-12] the mode we are in, beside the offset
     ui->labDialFreqOffset->setText(QString("%1 Hz, %2").arg(audio_frequency)
@@ -7940,6 +7948,10 @@ void UI_Constructor::on_logQSOButton_clicked() // Log QSO button
 
     QString comments = ui->textEditRX->textCursor().selectedText();
 
+    // [operator 2026-10-19] the log dialog opens on the main window's
+    // monitor (it has no parent window to follow)
+    JS8::keepOnScreenOf(m_logDlg.data(), this);
+
     // don't reset the log window if the call hasn't changed.
     if (!m_logDlg->currentCall().isEmpty() &&
         call.trimmed() == m_logDlg->currentCall()) {
@@ -11217,12 +11229,18 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
         QString activityText;
         bool isLast = false;
         int activitySubmode = rowSubmode;
+        // [TODO #307, operator 2026-10-18] Only the station's LATEST
+        // message, on its own line at its own time: a message that ended
+        // (Last) is dropped when another one begins. The whole history
+        // used to print as one line stamped with its first message's time.
+        bool newMessage = true;
         foreach (auto d, mine) {
             if (activityAging &&
                 d.utcTimestamp.secsTo(now) / 60 >= activityAging) {
                 continue;
             }
-            if (activityText.isEmpty()) {
+            if (newMessage) {
+                activityText.clear();
                 firstActivity = d.utcTimestamp;
             }
             activityText.append(d.text);
@@ -11235,6 +11253,7 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
                                    .arg(Varicode::rstrip(activityText))
                                    .arg(m_config.eot());
             }
+            newMessage = isLast;
         }
 
         qWarning() << "[UI] dblclick band activity (call mode): call="
@@ -11275,6 +11294,7 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
     bool isLast = false;
     int activitySubmode = rowSubmode;
     int included = 0, excluded = 0;
+    bool newMessage = true; // [TODO #307] latest message only, as above
     foreach (auto d, source) {
         // Only include entries matching the clicked row's mode
         if (!rowIsJtty && (d.submode == Varicode::JS8CallFT2) != rowIsFT2) {
@@ -11285,7 +11305,8 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
         if (activityAging && d.utcTimestamp.secsTo(now) / 60 >= activityAging) {
             continue;
         }
-        if (activityText.isEmpty()) {
+        if (newMessage) {
+            activityText.clear();
             firstActivity = d.utcTimestamp;
         }
         activityText.append(d.text);
@@ -11297,6 +11318,7 @@ void UI_Constructor::bandActivityDoubleClick(int row, int col) {
                                .arg(Varicode::rstrip(activityText))
                                .arg(m_config.eot());
         }
+        newMessage = isLast;
     }
 
     qWarning() << "[UI] dblclick result: included=" << included
@@ -12322,8 +12344,7 @@ void UI_Constructor::updateButtonDisplay() {
     if (jttyMode()) {
         if (ui->typingMacroButton->text() != QStringLiteral("TU 73")) {
             ui->typingMacroButton->setText(QStringLiteral("TU 73"));
-            ui->typingMacroButton->setToolTip(
-                tr("Send TU 73 to the selected station (JTTY)"));
+            ui->typingMacroButton->setToolTip(tr("Send TU 73"));
         }
         setDisabledIfChanged(ui->typingMacroButton,
                              isTransmitting || emptyCallsign);
@@ -12335,6 +12356,26 @@ void UI_Constructor::updateButtonDisplay() {
                    "when callsign deselected but still on callsign "
                    "frequency."));
         }
+    }
+    // [operator 2026-10-19] JTTY-mode tooltips; JS8 mode keeps the .ui's
+    // own (captured once, before anything here changes them).
+    {
+        static QString const js8QueryTip = ui->queryButton->toolTip();
+        static QString const js8SnrTip = ui->snrMacroButton->toolTip();
+        static QString const js8JTip = ui->modeBtnJTTY->toolTip();
+        bool const jm = jttyMode();
+        QString const call = callsignSelected();
+        auto const tip = [](QWidget *w, QString const &t) {
+            if (w && w->toolTip() != t) w->setToolTip(t);
+        };
+        tip(ui->queryButton,
+            jm ? tr("Add a directed prefix (to and from) to your message")
+               : js8QueryTip);
+        tip(ui->snrMacroButton,
+            !jm ? js8SnrTip
+                : call.isEmpty() ? tr("Send a signal report")
+                                 : tr("Send a signal report to %1").arg(call));
+        tip(ui->modeBtnJTTY, jm ? tr("JTTY speed") : js8JTip);
     }
     if (!jttyMode())
 #endif
@@ -12522,6 +12563,9 @@ void UI_Constructor::updateHBButtonDisplay() {
         }
     }
     ui->hbMacroButton->setToolTip(
+#ifdef JS8_ENABLE_JTTY
+        jttyMode() ? QStringLiteral("JS8 mode only") : // [operator 2026-10-19]
+#endif
         m_nSubMode == Varicode::JS8CallFT2
         ? "Send hailing message (1 or 2 frames, configurable, no reply)"
         : "Send heartbeat with grid square");
@@ -12640,7 +12684,12 @@ void UI_Constructor::updateTextDisplay() {
     // isn't ready. Cheap string compare avoids needless repaint.
     {
         bool const haveCall = !callsignSelected().trimmed().isEmpty();
-        QString const tip = haveCall
+        QString const tip =
+#ifdef JS8_ENABLE_JTTY
+            // [operator 2026-10-19] no ARQ or file send in JTTY mode
+            jttyMode() ? QStringLiteral("Start transmitting") :
+#endif
+            haveCall
             ? QStringLiteral("Start transmitting. Arrow: send using "
                              "ARQ, send a file")
             : QStringLiteral("Start transmitting. Arrow: send using "
@@ -15494,6 +15543,7 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
     };
     BandActivity lines; // the 10 Hz lines, built as the live map builds them
     QString const mycall = m_config.my_callsign();
+    QString lastTxStamp, lastTxOffset, lastTxText; // #306
     while (!f.atEnd()) {
         QString const line = QString::fromUtf8(f.readLine()).trimmed();
         {
@@ -15524,6 +15574,16 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
             QString const text = m.captured(3);
             if (!utc.isValid() || utc < cutoff || !onThisDial() || js8Form(text))
                 continue;
+            // [TODO #306, operator 2026-10-18] JTTY.TXT written before #304
+            // carries each transmission twice in the same second: the same
+            // second, offset and text is one transmission. (A deliberate
+            // repeat is a later second.)
+            if (line.section(QLatin1Char(' '), 0, 1) == lastTxStamp &&
+                m.captured(2) == lastTxOffset && text == lastTxText)
+                continue;
+            lastTxStamp = line.section(QLatin1Char(' '), 0, 1);
+            lastTxOffset = m.captured(2);
+            lastTxText = text;
             out.append({utc, mycall, jttyLineAddressee(text), text,
                         m.captured(2).toInt(), Varicode::JS8CallJTTY});
         }
@@ -15827,7 +15887,8 @@ void UI_Constructor::logTransmitEntry() {
         writeJttyTxt(QStringLiteral("%1  Transmitting %2  %3")
                          .arg(DriftingDateTime::currentDateTimeUtc().toString(
                              QStringLiteral("yyyy-MM-dd hh:mm:ss")))
-                         .arg(static_cast<int>(freq() + m_XIT), 5)
+                         // [#309] the on-air offset, not the split audio tone
+                         .arg(static_cast<int>(freq()), 5)
                          .arg(m_currentMessage.trimmed()));
         return;
     }

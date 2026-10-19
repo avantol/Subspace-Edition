@@ -203,14 +203,14 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v5
       with:
-        name: "Subspace-Edition_${{ steps.version.outputs.APP_VERSION }}_win64"
+        name: "Subspace-Edition-Files_${{ steps.version.outputs.APP_VERSION }}_win64"
         path: ./build/JS8Call/
 
     - name: Upload Installer
       uses: actions/upload-artifact@v5
       with:
-        name: "Subspace-Edition-Setup_${{ steps.version.outputs.APP_VERSION }}_win64"
-        path: ./installer/Output/Subspace-Edition-Setup_${{ steps.version.outputs.APP_VERSION }}_win64.exe
+        name: "Subspace-Edition_${{ steps.version.outputs.APP_VERSION }}_win64"
+        path: ./installer/Output/Subspace-Edition_${{ steps.version.outputs.APP_VERSION }}_win64.exe
 
     - name: Upload Debug Symbols
       uses: actions/upload-artifact@v5

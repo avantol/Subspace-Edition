@@ -9,6 +9,8 @@
 #include <QMetaType>
 #include <QVector>
 
+class QWidget;
+
 class QString;
 
 namespace WF {
@@ -86,8 +88,9 @@ class Palette {
     // interpolate a gradient over 256 steps
     QVector<QColor> interpolate() const;
 
-    // returns true if colours have been modified
-    bool design();
+    // returns true if colours have been modified; the designer opens
+    // over `parent` (its monitor), not wherever a parentless window lands
+    bool design(QWidget *parent);
 
   private:
     Colours colours_;

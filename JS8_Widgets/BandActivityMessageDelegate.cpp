@@ -96,9 +96,13 @@ QString BandActivityMessageDelegate::rowTooltipHtml(
     const QVariantList &groups, const QString &joined, bool bareSender) {
     if (groups.isEmpty())
         return boldCallsignsHtml(joined, QString());
+    // [TODO #308, operator 2026-10-18] The LAST 10 entries of the line
+    // only, JS8 and JTTY alike (a JTTY line keeps up to 100 messages).
+    // 10 is the operator's number.
+    constexpr int kTipEntries = 10;
     QStringList lines;
-    for (auto const &g : groups) {
-        auto const map = g.toMap();
+    for (int i = qMax(0, int(groups.size()) - kTipEntries); i < groups.size(); ++i) {
+        auto const map = groups.at(i).toMap();
         lines << boldSenderBody(map[QStringLiteral("text")].toString(),
                                 map[QStringLiteral("call")].toString(),
                                 bareSender);

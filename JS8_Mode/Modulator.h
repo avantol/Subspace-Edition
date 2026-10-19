@@ -151,10 +151,10 @@ class Modulator final : public AudioDevice {
     // ensure Modulator is Idle when calling (no mid-stream swap).
     void setFullFrameBoltWaveform(QVector<float> waveform) {
         // [JTTY 499.5] Enforced here, not trusted to the caller: the
-        // tone-generation block in prepareSending runs TWICE per key-up
+        // tone-generation block in prepareSending ran TWICE per key-up
         // (auto_tx_mode's direct call, then guiUpdate's, before m_iptt0
-        // catches up), so a second staging arrives ~70 ms after the
-        // first. If start() has already consumed the first, m_ft2Wave
+        // caught up -- latched since #304), so a second staging arrived
+        // ~70 ms after the first. If start() has already consumed the first, m_ft2Wave
         // points INTO m_boltWaveform and replacing it frees the buffer
         // the audio thread is reading. Before start() the replacement
         // is harmless (same content), so only a playing state refuses.
