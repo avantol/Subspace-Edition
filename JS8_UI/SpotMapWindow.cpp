@@ -2668,8 +2668,22 @@ void SpotMapWindow::redraw() {
             auto v = verdictMemo.constFind(call);
             if (v != verdictMemo.constEnd())
                 return *v;
+            // [onesighting, operator 2026-10-20] The station's
+            // frequencies are taken from the VIEW WINDOW only -- the same
+            // window its age and its lines are judged in. It used a fixed
+            // 60 minutes (JS8_FREQ_STALE_SECS), so a dot could be "on this
+            // dial" on one old sighting and "recent" on another from a
+            // different dial: KG6MTM on 7.115 in a 15-min view at 04:50,
+            // on AL1Q's 04:26 spot (7.116971) plus a 04:45 sighting with
+            // no frequency, while every line of his was correctly
+            // dropped. Now a dot is In only when a sighting inside the
+            // window is on this dial -- the rule a line already obeys --
+            // so no dot stands without the line of the sighting that
+            // placed it. No in-window frequency = Unknown = the tether
+            // rule (drawn only if a live line ties it here), unchanged.
+            // Other passbandVerdict callers (relay, routing) keep 60 min.
             auto const r = passbandVerdict(m_currentBand, call,
-                                           JS8_FREQ_STALE_SECS,
+                                           m_viewWindowSecs,
                                            /*includeRx=*/true,
                                            /*pskrAllowed=*/m_showPskr);
             verdictMemo.insert(call, r);

@@ -702,6 +702,9 @@ void WideGraph::setSubMode(int const n) { ui->widePlot->setSubMode(n); }
 void WideGraph::setJttyMode(bool const on) {
     m_jttyMode = on;
     ui->widePlot->setJttyMode(on);
+    // [operator 2026-10-20] JTTY mode: the Timing tab (JS8 time drift)
+    // is disabled; its settings are untouched for JS8 mode
+    ui->tabWidget->setTabEnabled(ui->tabWidget->indexOf(ui->timingTab), !on);
 }
 
 void WideGraph::on_spec2dComboBox_currentIndexChanged(int const index) {

@@ -578,6 +578,15 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     connect(this, &UI_Constructor::finished, m_logDlg.data(), &LogQSO::close);
     m_logDlg->setScreenAnchor(this); // [operator 2026-10-19] our monitor
 
+    // [operator 2026-10-20] The "message to me" marks: Qt's default
+    // capacity (cost 100) held FIVE marks (each is two entries of cost
+    // 10), so a pile-up evicted the earliest before their rows were
+    // painted -- 12 answers to one @MAGNET SNR? at 01:51:30, the first
+    // four never went red (diag [DIRMARK]: set, no paint). 300 marks is a
+    // CHOSEN size, far past any pile-up; each mark is a few bytes and
+    // expires after two minutes anyway.
+    m_rxDirectedCache.setMaxCost(300 * 2 * 10);
+
     // "Spots Map": close with the app, sync the menu checkbox when the
     // operator closes the window directly, and seed the station so the
     // MQTT client begins accumulating spot history at launch.

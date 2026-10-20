@@ -78,8 +78,16 @@ timing dependent, so even the reference's own sync surface is not
 bit-reproducible; the port uses FFTW_ESTIMATE and is deterministic.
 
 Neither this project's build nor its CI touches Fortran. Regeneration is a
-manual step, only needed if the reference under `lib/jtty` is re-synced to a
-newer upstream tag.
+manual step, only needed if the port is re-synced to a newer upstream tag.
+
+**2026-10-19: the generators (`gen_vectors*.f90`, `fftw3mod.f90`) and the
+Fortran reference (`lib/`) were removed from this repository** -- the
+project carries no Fortran. The vector files above are unchanged and remain
+the authority the tests read. To regenerate, restore the generators and the
+reference from git history (any commit up to `12cb238e`, Build 504), e.g.
+`git show 12cb238e:tests_jtty/vectors/gen_vectors.f90 > gen_vectors.f90` and
+`git archive 12cb238e lib | tar -x -C <scratch>`, or fetch `lib/jtty` from
+WSJT-X at the tag. The commands below describe that layout.
 
 ## Regenerating
 

@@ -1,11 +1,21 @@
 # JTTY upstream reference — provenance and churn
 
-This directory is a **read-only reference copy** of WSJT-X's `lib/jtty`, kept
-for diffing and for porting to C++. **Nothing here is compiled.** The build
+> **2026-10-19: the Fortran is no longer in this repository.** `lib/jtty`,
+> `lib/jtty_deps`, `lib/ft2` and `lib/ft2_deps` were removed so the project
+> carries no Fortran at all. What stays, here in `docs/jtty-reference/`, is
+> the non-Fortran material that came with them: this file, the
+> specification (`jtty_source_encoding.txt`, `jtty_design.md`), the
+> upstream test material (`decodes.txt`, `jtty_msgs.txt`), the TX manual
+> checks, and `DEPS.md`. To diff or re-sync, fetch `lib/jtty` from
+> `github.com/WSJTX/wsjtx` at the tag below (or a newer one); the copy this
+> project ported from is also in git history -- any commit up to
+> `12cb238e` (Build 504) has it under `lib/`. Paths below that say
+> `lib/...` describe that former layout.
+
+This directory WAS a **read-only reference copy** of WSJT-X's `lib/jtty`, kept
+for diffing and for porting to C++. **Nothing here was compiled.** The build
 stays `LANGUAGES C CXX` (`CMakeLists.txt:61`) and no gfortran is added to any
-CI workflow. This mirrors how `lib/ft2/` and `lib/ft2_deps/` are kept: the
-Fortran that the C++ in `JS8_Mode/` was ported from, retained as the
-authority to diff against, never built.
+CI workflow.
 
 Do not edit these files. Fixes belong in the C++ port.
 

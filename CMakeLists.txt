@@ -392,9 +392,10 @@ if(ENABLE_FT2)
 endif()
 
 #------------------------------------------------------------------------------#
-# JTTY (WSJT-X 3.2 keyboard mode) — C++ port of lib/jtty, experimental.
-# OFF by default: no sources, no definitions, no change to the build.
-# The Fortran reference stays under lib/jtty, never compiled.
+# JTTY (WSJT-X 3.2 keyboard mode) — C++ port of WSJT-X lib/jtty, experimental.
+# ON since Build 502. The Fortran reference is no longer vendored (removed
+# 2026-10-19); upstream's tags hold it, and docs/jtty-reference/ keeps the
+# specification, test material and the upstream diff notes.
 #------------------------------------------------------------------------------#
 
 # [Build 502, operator 2026-10-18] ON: JTTY ships on every platform.

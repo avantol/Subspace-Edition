@@ -343,6 +343,10 @@ class UI_Constructor : public QMainWindow {
     // [#248] erase the RX-pane line stamped with this offset bucket and
     // timestamp (the message's own live line); false if none exists
     bool eraseRxLineForMessage(int offset, QDateTime const &date);
+#ifdef JS8_ENABLE_JTTY
+    bool rewriteRxLineText(int offset, QDateTime const &date, QString text,
+                           int submode);
+#endif
     void writeNoticeTextToUI(QDateTime date, QString text);
     int writeMessageTextToUI(QDateTime date, QString text, int freq, bool isTx,
                              int submode = -1, int block = -1);
@@ -1430,6 +1434,11 @@ class UI_Constructor : public QMainWindow {
         // pass and read by the per-message tooltip and bolding. Empty
         // for JS8 frames, whose sender rides the "CALL: " prefix.
         QString sender;
+        // [jttycont, operator 2026-10-20] When a JTTY message STARTED (its
+        // first frame), utcTimestamp being when it completed: the gap from
+        // the previous message's end decides whether a sender-less message
+        // continues that station (kJttyContinuationSecs). Invalid for JS8.
+        QDateTime startUtc;
     };
 
     struct MessageBuffer {
@@ -2196,8 +2205,17 @@ class UI_Constructor : public QMainWindow {
     // The station's own SNR: its newest credited message (complete or
     // partial), else the JTTY call list (audit T5, DK6LF).
     bool jttyStationSnr(QString const &call, int *snr) const;
+    // continuation: true = [jttycont] a sender-less message continues the
+    // message before it only when it STARTED within kJttyContinuationSecs
+    // of that one's end (else it stays unattributed, or takes the pick).
     QStringList jttyLineSenders(QList<ActivityDetail> const &line,
-                                int lineKey = -1) const;
+                                int lineKey = -1,
+                                bool continuation = false) const;
+    // [jttycont, operator 2026-10-20] 5 s is CHOSEN from JTTY.TXT: of 119
+    // long messages followed by more text on their line, 60 next pieces
+    // started within 3 s (almost all 0.0-0.7 s), then 3 within 3-10 s,
+    // and the rest 10 s to hours later (new transmissions).
+    static constexpr qint64 kJttyContinuationSecs = 5;
     // [operator 2026-10-13] The sender rule's counterpart: whom a JTTY
     // message addresses. JS8 form "FROM: TO ..." = the word after the
     // colon (a call or a group); "CQ ..." and "DE FROM ..." = nobody;
@@ -2278,6 +2296,20 @@ class UI_Constructor : public QMainWindow {
     // speed change is allowed again
     bool m_jttyTransitionPending = false;
     bool m_jttyModeShown = false; // #303: the mode refreshJttyModeIndicators last showed
+    // [jttyprogress, operator 2026-10-20] A JTTY message being printed
+    // as it grows (from its second frame): its receiver id -> the identity
+    // of its conversation-window line (offset, time first printed). The
+    // final update rewrites that line in place, or erases it when the
+    // final message is hidden or handled elsewhere.
+    struct JttyProvisionalLine { int offset; QDateTime date; };
+    QHash<qint64, JttyProvisionalLine> m_jttyProvisional;
+    // [jttyband, operator 2026-10-20: "do it the js8 way"] A JTTY message
+    // growing in the band activity: its receiver id -> when its one item
+    // (First, no Last) was placed in m_jttyActivity (the item's own
+    // timestamp, how it is found again after a line migrates), and whether
+    // the waterfall label went on at the second frame.
+    struct JttyGrowing { QDateTime placed; bool labeled = false; };
+    QHash<qint64, JttyGrowing> m_jttyGrowing;
 #endif
     QTimer m_l2DecodeTimer;                     // fires every 750ms
     QFutureWatcher<void> m_l2DecodeWatcher;     // monitors async decode

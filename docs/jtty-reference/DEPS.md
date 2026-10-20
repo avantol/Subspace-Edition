@@ -1,7 +1,12 @@
 # JTTY reference dependencies outside lib/jtty
 
+> **2026-10-19:** formerly `lib/jtty_deps/README.md`. The Fortran files it
+> describes were removed from this repository (see `UPSTREAM_DIFF.md`);
+> they are upstream at the tag named, and in this project's git history
+> up to commit `12cb238e` (Build 504).
+
 Read-only reference, never compiled by this project — same rule as
-`lib/jtty/` (see `lib/jtty/UPSTREAM_DIFF.md`).
+`lib/jtty/` (see `UPSTREAM_DIFF.md`).
 
 - `twkfreq.f90` — WSJT-X `lib/twkfreq.f90` at tag `v3.3.0-beta1`, called by
   `jtty_peakup.f90` and the decode drivers to shift a candidate to baseband.

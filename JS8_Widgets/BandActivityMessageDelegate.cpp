@@ -218,10 +218,15 @@ void BandActivityMessageDelegate::paint(QPainter *painter,
                     stripLineBreaks(map[QStringLiteral("text")].toString());
                 int const at = mText.isEmpty() ? -1 : text.indexOf(mText, cursor);
                 if (at < 0) continue;
-                auto const m = bareSenderMatch(
-                    mText, map[QStringLiteral("call")].toString());
-                if (m.hasMatch())
-                    spans.append({at + m.capturedStart(), at + m.capturedEnd()});
+                // [2026-10-20] JS8 entries are in this list too now (the
+                // tooltip): they only advance the cursor -- a JS8 message
+                // is bolded by its "CALL:" prefix above, as before
+                if (map.value(QStringLiteral("jtty")).toBool()) {
+                    auto const m = bareSenderMatch(
+                        mText, map[QStringLiteral("call")].toString());
+                    if (m.hasMatch())
+                        spans.append({at + m.capturedStart(), at + m.capturedEnd()});
+                }
                 cursor = at + mText.length();
             }
             // earliest first; of two at one start, the longer (the
@@ -379,7 +384,13 @@ bool BandActivityMessageDelegate::helpEvent(QHelpEvent *event,
     // regions (UserRole) are untouched -- a line of fifty messages
     // must not become fifty regions.
     auto const perMessage = index.data(Qt::UserRole + 1).toList();
-    if (!perMessage.isEmpty()) {
+    // [operator 2026-10-20] A JS8 row split among several stations keeps
+    // its hover-on-one-station tooltip (below); the per-message list is for
+    // a JTTY line and for a JS8 row of one station.
+    bool anyJtty = false;
+    for (auto const &e : perMessage)
+        if (e.toMap().value(QStringLiteral("jtty")).toBool()) { anyJtty = true; break; }
+    if (!perMessage.isEmpty() && (anyJtty || groups.size() <= 1)) {
         QToolTip::showText(
             event->globalPos(),
             rowTooltipHtml(perMessage, index.data(Qt::DisplayRole).toString(),

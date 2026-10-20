@@ -174,8 +174,9 @@ void UI_Constructor::displayBandActivity() {
                 // [operator 2026-10-13] the JTTY items of this key are
                 // m_jttyActivity.value(key) appended in order (above);
                 // their attribution comes from the ONE authority
+                // [jttycont] listed by callsign: the 5 s continuation rule
                 QStringList const jttySenders =
-                    jttyLineSenders(m_jttyActivity.value(key), key);
+                    jttyLineSenders(m_jttyActivity.value(key), key, listByCall);
                 int jttyIdx = 0;
 #endif
                 for (auto const &it : items) {
@@ -544,7 +545,9 @@ void UI_Constructor::displayBandActivity() {
                 auto const fullTip =
                     BandActivityMessageDelegate::rowTooltipHtml(
                         tipData.isEmpty() ? groupData : tipData, joined,
-                        /*bareSender=*/!tipData.isEmpty()); // JTTY only
+                        // one line per message, JS8 and JTTY (2026-10-20);
+                        // a JS8 entry bolds its "CALL:" prefix as before
+                        /*bareSender=*/!tipData.isEmpty());
                 callItem->setToolTip(fullTip);
                 offsetItem->setToolTip(fullTip);
                 tdriftItem->setToolTip(fullTip);
@@ -744,6 +747,7 @@ void UI_Constructor::displayBandActivity() {
                     // of a JTTY line (UserRole + 1): one entry per
                     // complete message with its attributed sender
                     QVariantList tipData;
+                    bool js8TipOpen = false; // a JS8 message still collecting frames
 
                     foreach (ActivityDetail item, items) {
                         if (!item.shouldDisplay) {
@@ -761,17 +765,40 @@ void UI_Constructor::displayBandActivity() {
                                             .arg(m_config.eot());
                         }
 
+                        // Extract "from" callsign via the shared parse
+                        QString frameCall = frameFromCall(item.text, item.bits);
+
 #ifdef JS8_ENABLE_JTTY
                         if (item.submode == Varicode::JS8CallJTTY) {
                             QVariantMap m;
                             m["call"] = item.sender;
                             m["text"] = Varicode::rstrip(item.text);
+                            m["jtty"] = true; // the delegate tells them apart
                             tipData.append(m);
-                        }
+                            js8TipOpen = false;
+                        } else
 #endif
-
-                        // Extract "from" callsign via the shared parse
-                        QString frameCall = frameFromCall(item.text, item.bits);
+                        {
+                            // [operator 2026-10-20] JS8 like JTTY: one
+                            // tooltip entry per MESSAGE. A frame after a Last
+                            // starts a new entry; its sender is the message's
+                            // own "CALL:" (continuation frames carry none).
+                            if (!js8TipOpen) {
+                                QVariantMap m;
+                                m["call"] = frameCall;
+                                m["text"] = QString();
+                                tipData.append(m);
+                                js8TipOpen = true;
+                            }
+                            QVariantMap m = tipData.last().toMap();
+                            if (m["call"].toString().isEmpty() && !frameCall.isEmpty())
+                                m["call"] = frameCall;
+                            m["text"] = m["text"].toString() + item.text;
+                            tipData.last() = m;
+                            if ((item.bits & Varicode::JS8CallLast) ==
+                                Varicode::JS8CallLast)
+                                js8TipOpen = false;
+                        }
 
                         // Assign frame to callsign group — consolidate by callsign
                         int maxGroups = m_config.message_subdivisions();
@@ -925,9 +952,11 @@ void UI_Constructor::displayBandActivity() {
                 // station for a known row); the row's JS8 frames, if
                 // any, stay one entry as today. Empty for a JS8-only
                 // row, which keeps its single-group tooltip.
-                struct Tip { QString call; QString text; bool jtty; };
+                // [operator 2026-10-20] ...and JS8 the same: one entry per
+                // JS8 MESSAGE (a new entry after each frame carrying Last),
+                // in every row -- the whole row used to be one entry.
+                struct Tip { QString call; QString text; bool jtty; bool closed; };
                 QList<Tip> tips;
-                bool anyJtty = false;
 
                 foreach (ActivityDetail item, rowItems(rowSrc)) {
                     if (item.isLowConfidence) {
@@ -944,14 +973,17 @@ void UI_Constructor::displayBandActivity() {
 #ifdef JS8_ENABLE_JTTY
                     if (item.submode == Varicode::JS8CallJTTY) {
                         tips.append({item.sender.isEmpty() ? call : item.sender,
-                                     item.text, true});
-                        anyJtty = true;
+                                     item.text, true, true});
                     } else
 #endif
-                    if (tips.isEmpty() || tips.last().jtty)
-                        tips.append({call, item.text, false});
-                    else
-                        tips.last().text += item.text;
+                    {
+                        if (tips.isEmpty() || tips.last().jtty || tips.last().closed)
+                            tips.append({call, item.text, false, false});
+                        else
+                            tips.last().text += item.text;
+                        tips.last().closed = (item.bits & Varicode::JS8CallLast) ==
+                                             Varicode::JS8CallLast;
+                    }
 
                     text.append(item.text);
                     snr = item.snr;
@@ -986,13 +1018,12 @@ void UI_Constructor::displayBandActivity() {
                     groupData.append(m);
                 }
                 QVariantList tipData;
-                if (anyJtty) {
-                    for (auto const &t : tips) {
-                        QVariantMap m;
-                        m["call"] = t.call;
-                        m["text"] = Varicode::rstrip(t.text);
-                        tipData.append(m);
-                    }
+                for (auto const &t : tips) {
+                    QVariantMap m;
+                    m["call"] = t.call;
+                    m["text"] = Varicode::rstrip(t.text);
+                    if (t.jtty) m["jtty"] = true; // the delegate tells them apart
+                    tipData.append(m);
                 }
 
                 // Selection identity: callsign for station rows; the

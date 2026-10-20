@@ -8,8 +8,8 @@
 // JTTY forward error correction: the tail-biting rate-1/2 convolutional code
 // with a 12-bit outer check, as shipped in WSJT-X lib/jtty (tag
 // v3.3.0-beta1). Direct C++ port of jtty_tbcc_code_profile.f90, tbcc.f90,
-// jtty_tbcc_list_decoder.f90 and jtty_tbcc_decoder.f90; the Fortran stays
-// vendored under lib/jtty as the read-only reference and is never built.
+// jtty_tbcc_list_decoder.f90 and jtty_tbcc_decoder.f90 (upstream's; no
+// Fortran is kept in this repository -- see docs/jtty-reference/).
 //
 // Frame: 34 payload bits (32 source + reserved-zero bit 33 + EOM bit 34),
 // CRC-12 appended -> 46 information bits -> rate-1/2 TBCC -> 92 coded bits

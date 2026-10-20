@@ -174,8 +174,11 @@ class SpotMapWindow final : public QWidget {
     // in the passband; Out if there are fresh admissible entries but
     // none do; Unknown if there are none. The three parameters differ
     // by caller and nothing else does:
-    //   staleSecs    freshness window. Map: JS8_FREQ_STALE_SECS
-    //                (60 min, display retention). Relay first hop:
+    //   staleSecs    freshness window. Map dots: the VIEW window
+    //                (15/30/60 min, [onesighting] 2026-10-20 -- the
+    //                same window as the dot's age and its lines; the
+    //                store keeps JS8_FREQ_STALE_SECS = 60 min, the
+    //                longest view). Relay first hop:
     //                JS8_FREQ_STALE_ROUTE_SECS (15 min, the bar for
     //                EXCLUDING a live candidate). Never a third window
     //                hardcoded at a call site.
