@@ -2389,6 +2389,20 @@ class UI_Constructor : public QMainWindow {
     void setJttyDecodeShown(bool on, QString const &reason);
     bool m_jttyDecodeShown = true;              // SsJttyDecodeShown, per config
     QAction *m_actionJttyDecode = nullptr;      // Mode menu switch
+    // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button
+    // LATCHES (its checked state is the latch, the one authority). The box
+    // carries "<CALL> <MYCALL> " exactly while latched AND a call is
+    // selected -- put there on latching, after each send, moved to a newly
+    // selected call, taken out on a deselect (the button stays latched,
+    // disabled) and on unlatching. Unlatched by a click, a mode change or
+    // a frequency change.
+    QString m_jttyLatchCall;                    // call the box's address names
+    bool m_jttyLatchRefill = false;             // box emptied by a send
+    Radio::Frequency m_jttyLatchDial = 0;       // dial it was latched on
+    void jttyDirectedLatchToggled(bool on);
+    void jttyLatchPutAddress(QString const &call);
+    void jttyLatchTakeAddress(QString const &call);
+    void serviceJttyDirectedLatch();            // from updateButtonDisplay
 #endif
     void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }

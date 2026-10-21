@@ -7049,6 +7049,10 @@ void UI_Constructor::resetMessageUI() {
     // match if the operator types the same text by coincidence later.
     m_lastQueueInjectedText.clear();
     m_lastQueueInjectedAutoReply = false;
+#ifdef JS8_ENABLE_JTTY
+    // [TODO #314] a latched "Directed to" puts the address back
+    if (ui->queryButton->isChecked()) m_jttyLatchRefill = true;
+#endif
 
     update_dynamic_property(ui->extFreeTextMsgEdit, "transmitting", false);
 
@@ -10965,6 +10969,121 @@ static bool jttyStartsWithAddress(QString const &box, QString const &address) {
     return text.compare(address, Qt::CaseInsensitive) == 0 ||
            text.startsWith(address + QLatin1Char(' '), Qt::CaseInsensitive);
 }
+
+// [TODO #314] The address of `call` placed at the front of the box (what
+// the one-shot button did: an empty box gets it, typed text keeps its
+// place behind it), and taken out again. Nothing while a send is queued.
+void UI_Constructor::jttyLatchPutAddress(QString const &call) {
+    if (call.isEmpty() || isMessageQueuedForTransmit()) return;
+    // "<CALL> <MYCALL> ": the FT8-world "to from" form WSJT-X's own
+    // spot rule reads (second word = sender); "<CALL> DE <MYCALL>"
+    // is never spotted by it (JttyReceiveResultController.cpp).
+    QString const address = QStringLiteral("%1 %2").arg(call, m_config.my_callsign());
+    QString const current = ui->extFreeTextMsgEdit->toPlainText().simplified();
+    if (current.isEmpty()) {
+        addMessageText(address + QLatin1Char(' '), true);
+        return;
+    }
+    // [TODO #301, operator 2026-10-14] Text already typed keeps its
+    // place: the address is PREPENDED unless the text already starts
+    // with it. The highlight is cleared first -- a highlighted
+    // selection is what the next keystroke or insert replaces.
+    if (jttyStartsWithAddress(current, address)) return;
+    QTextCursor c = ui->extFreeTextMsgEdit->textCursor();
+    c.clearSelection();
+    ui->extFreeTextMsgEdit->setTextCursor(c);
+    QTextCursor head(ui->extFreeTextMsgEdit->document());
+    head.movePosition(QTextCursor::Start);
+    head.insertText(address + QLatin1Char(' '));
+    ui->extFreeTextMsgEdit->setFocus();
+}
+
+void UI_Constructor::jttyLatchTakeAddress(QString const &call) {
+    if (call.isEmpty() || isMessageQueuedForTransmit()) return;
+    QString const address = QStringLiteral("%1 %2").arg(call, m_config.my_callsign());
+    QString const box = ui->extFreeTextMsgEdit->toPlainText();
+    int lead = 0;
+    while (lead < box.size() && box.at(lead).isSpace()) ++lead;
+    if (!box.mid(lead).startsWith(address, Qt::CaseInsensitive)) return;
+    int end = lead + address.size();
+    if (end < box.size() && !box.at(end).isSpace()) return; // "K1JT WM8QX"
+    while (end < box.size() && box.at(end) == QLatin1Char(' ')) ++end;
+    // the rest of the box is left exactly as it was
+    QTextCursor c(ui->extFreeTextMsgEdit->document());
+    c.setPosition(0);
+    c.setPosition(end, QTextCursor::KeepAnchor);
+    c.removeSelectedText();
+}
+
+// [TODO #314, operator 2026-10-21] Latching puts the address in the box;
+// unlatching, by any cause, takes it out.
+void UI_Constructor::jttyDirectedLatchToggled(bool on) {
+    m_jttyLatchRefill = false;
+    if (!on) {
+        QString const call = m_jttyLatchCall;
+        m_jttyLatchCall.clear();
+        jttyLatchTakeAddress(call);
+        return;
+    }
+    QString const selectedCall = callsignSelected();
+    if (!jttyMode() || selectedCall.isEmpty()) {
+        ui->queryButton->setChecked(false);
+        return;
+    }
+    m_jttyLatchCall = selectedCall;
+    m_jttyLatchDial = operatingDial();
+    jttyLatchPutAddress(selectedCall);
+}
+
+// [TODO #314] Kept current from updateButtonDisplay (every selection
+// change, every second). Unlatched outside JTTY mode and off the dial it
+// was latched on (mode and frequency changes). A deselect keeps the latch
+// (the button is disabled meanwhile) and takes the address out; a new
+// selection puts its own in. After a send has emptied the box, the
+// address goes back in once nothing is queued; a box the operator
+// empties stays empty.
+void UI_Constructor::serviceJttyDirectedLatch() {
+    // [operator 2026-10-21, crash 17:10:50Z] Writing the box fires
+    // textChanged -> updateButtonDisplay -> here again; the refill flag was
+    // cleared only after the write, so every nested pass refilled again
+    // until the stack overflowed. State is settled BEFORE the box is
+    // written, and a nested pass returns at once.
+    static bool busy = false;
+    if (busy) return;
+    busy = true;
+    auto const done = qScopeGuard([] { busy = false; });
+    auto *b = ui->queryButton;
+    bool const jm = jttyMode();
+    QString const call = callsignSelected();
+    if (b->isChecked() && (!jm || operatingDial() != m_jttyLatchDial))
+        b->setChecked(false);                // -> jttyDirectedLatchToggled(false)
+    if (b->isCheckable() != jm) b->setCheckable(jm);
+    if (!b->isChecked()) return;
+    if (isMessageQueuedForTransmit() || ui->extFreeTextMsgEdit->isReadOnly())
+        return;
+    QString const box = ui->extFreeTextMsgEdit->toPlainText();
+    bool const refill = m_jttyLatchRefill && box.trimmed().isEmpty();
+    m_jttyLatchRefill = false;
+    if (call != m_jttyLatchCall) {
+        QString const old = m_jttyLatchCall;
+        m_jttyLatchCall = call;
+        jttyLatchTakeAddress(old);
+        jttyLatchPutAddress(call);
+        return;
+    }
+    // [operator 2026-10-21, 17:44-17:46Z: "W9NWR WM8Q" sent alone three
+    // times, and a newline before the address] The refill ran while the
+    // send was still finishing; the type-ahead (prepareNextMessageFrame)
+    // sends a box that is CHANGED and non-empty, and prepends a newline to
+    // it. The address goes back only once transmitting has stopped, and is
+    // marked as not-new text, so the type-ahead never sends it on its own.
+    if (refill && !m_transmitting && !ui->startTxButton->isChecked()) {
+        jttyLatchPutAddress(call);
+        ui->extFreeTextMsgEdit->setClean();
+    } else if (refill) {
+        m_jttyLatchRefill = true; // next pass
+    }
+}
 #endif
 
 void UI_Constructor::on_queryButton_pressed() {
@@ -10974,33 +11093,10 @@ void UI_Constructor::on_queryButton_pressed() {
     // in the rest. No menu (a menu left on the button from a JS8
     // frequency would pop by itself).
     if (jttyMode()) {
+        // [TODO #314] the button is a latch here: the press does nothing
+        // itself; the toggle that follows the click does the work
+        // (jttyDirectedLatchToggled).
         ui->queryButton->setMenu(nullptr);
-        QString const selectedCall = callsignSelected();
-        if (selectedCall.isEmpty()) return;
-        // "<CALL> <MYCALL> ": the FT8-world "to from" form WSJT-X's own
-        // spot rule reads (second word = sender); "<CALL> DE <MYCALL>"
-        // is never spotted by it (JttyReceiveResultController.cpp).
-        QString const address =
-            QStringLiteral("%1 %2").arg(selectedCall, m_config.my_callsign());
-        QString const current =
-            ui->extFreeTextMsgEdit->toPlainText().simplified();
-        if (current.isEmpty()) {
-            addMessageText(address + QLatin1Char(' '), true);
-            return;
-        }
-        // [TODO #301, operator 2026-10-14] Text already typed keeps its
-        // place: the address is PREPENDED unless the text already starts
-        // with it. The highlight is cleared first -- a highlighted
-        // selection is what the next keystroke or insert replaces.
-        if (isMessageQueuedForTransmit()) return;
-        if (jttyStartsWithAddress(current, address)) return;
-        QTextCursor c = ui->extFreeTextMsgEdit->textCursor();
-        c.clearSelection();
-        ui->extFreeTextMsgEdit->setTextCursor(c);
-        QTextCursor head(ui->extFreeTextMsgEdit->document());
-        head.movePosition(QTextCursor::Start);
-        head.insertText(address + QLatin1Char(' '));
-        ui->extFreeTextMsgEdit->setFocus();
         return;
     }
 #endif
@@ -12483,7 +12579,8 @@ void UI_Constructor::updateButtonDisplay() {
             if (w && w->toolTip() != t) w->setToolTip(t);
         };
         tip(ui->queryButton,
-            jm ? tr("Add a directed prefix (to and from) to your message")
+            jm ? tr("Keep a directed prefix (to and from) on every message "
+                    "except a CQ; click again to release")
                : js8QueryTip);
         tip(ui->snrMacroButton,
             !jm ? js8SnrTip
@@ -12534,6 +12631,9 @@ void UI_Constructor::updateButtonDisplay() {
 
     // [#148] Normal Qt sizing: the button sizes to its text; the
     // action row's stretch spacers absorb the change.
+#ifdef JS8_ENABLE_JTTY
+    serviceJttyDirectedLatch(); // [TODO #314]
+#endif
     auto directedText = emptyCallsign ? QString("Directed")
                       : QString("Directed to %1").arg(selectedCallsign);
     if (ui->queryButton->text() != directedText) {
@@ -15560,12 +15660,19 @@ bool UI_Constructor::jttyPlaceMacro(QString const &payload) {
                        : QStringLiteral("%1 %2").arg(call, m_config.my_callsign());
     QString const box = ui->extFreeTextMsgEdit->toPlainText();
     bool const present = jttyStartsWithAddress(box, address);
+    // [TODO #314, operator 2026-10-21] a CQ is never addressed
+    bool const cq = payload.simplified().section(QLatin1Char(' '), 0, 0)
+                        .compare(QStringLiteral("CQ"), Qt::CaseInsensitive) == 0;
     QString text;
-    if (present) {
+    if (present && !cq) {
         text = box;
         if (!text.isEmpty() && !text.endsWith(QLatin1Char(' ')))
             text += QLatin1Char(' ');
         text += payload;
+    } else if (ui->queryButton->isChecked() && !cq && !address.isEmpty() &&
+               !jttyStartsWithAddress(payload, address)) {
+        // [TODO #314] latched: the address even when the box was emptied
+        text = QStringLiteral("%1 %2").arg(address, payload);
     } else {
         // [operator 2026-10-12] the bare payload: the operator may want
         // to skip the address altogether.

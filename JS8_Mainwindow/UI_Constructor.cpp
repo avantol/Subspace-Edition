@@ -577,6 +577,11 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             &UI_Constructor::acceptQSO);
     connect(this, &UI_Constructor::finished, m_logDlg.data(), &LogQSO::close);
     m_logDlg->setScreenAnchor(this); // [operator 2026-10-19] our monitor
+#ifdef JS8_ENABLE_JTTY
+    // [TODO #314] JTTY mode: "Directed to" latches (checkable only there)
+    connect(ui->queryButton, &QAbstractButton::toggled, this,
+            &UI_Constructor::jttyDirectedLatchToggled);
+#endif
 
     // [operator 2026-10-20] The "message to me" marks: Qt's default
     // capacity (cost 100) held FIVE marks (each is two entries of cost
