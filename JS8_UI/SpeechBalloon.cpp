@@ -248,6 +248,18 @@ void SpeechBalloon::showAtTarget() {
 }
 
 void SpeechBalloon::updateShape() {
+    // [operator 2026-10-21, XFCE with compositing off] X11 without a
+    // compositor cannot show a see-through window: everything around the
+    // outline was painted BLACK. On X11 the window is clipped to the
+    // outline itself (a pixel wider for the stroke), so nothing outside it
+    // is drawn at all; the soft shadow outside it goes with it there.
+    if (QGuiApplication::platformName() == QLatin1String("xcb")) {
+        QPainterPathStroker stroker;
+        stroker.setWidth(3);
+        QPainterPath const path = balloonPath(nullptr);
+        QPainterPath const outline = path.united(stroker.createStroke(path));
+        setMask(QRegion(outline.toFillPolygon().toPolygon()));
+    }
     // Trigger a repaint; the path is recomputed inside paintEvent.
     update();
 }
@@ -262,6 +274,42 @@ void SpeechBalloon::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
+    QRectF body;
+    QPainterPath const path = balloonPath(&body);
+
+    p.setPen(QPen(balloonStroke(), 1.5));
+    p.setBrush(balloonFill());
+    p.drawPath(path);
+
+    p.setPen(balloonText());
+    QRect const textArea = body.toRect().adjusted(
+        m_paddingX, m_paddingY, -m_paddingX,
+        -m_paddingY - m_buttonRowH - m_linkH - m_footerH);
+    p.drawText(textArea, Qt::AlignLeft | Qt::TextWordWrap, m_text);
+
+    // [operator 2026-10-15] link line, then the footer, under the text
+    if (!m_linkText.isEmpty()) {
+        m_linkRect = QRect(textArea.left(), textArea.bottom() + 1,
+                           textArea.width(), m_linkH);
+        QFont linkFont = font();
+        linkFont.setUnderline(true);
+        p.setFont(linkFont);
+        p.setPen(QColor("#0645AD")); // link blue, readable on the cream fill
+        p.drawText(m_linkRect, Qt::AlignLeft | Qt::TextWordWrap, m_linkText);
+        if (!m_footer.isEmpty()) {
+            p.setFont(font());
+            p.setPen(balloonText());
+            p.drawText(QRect(textArea.left(), m_linkRect.bottom() + 1,
+                             textArea.width(), m_footerH),
+                       Qt::AlignLeft | Qt::TextWordWrap, m_footer);
+        }
+    }
+}
+
+// The balloon's outline: rounded-rect body united with the tail, the
+// body rectangle returned through bodyOut. One authority for the paint
+// and for the X11 window mask.
+QPainterPath SpeechBalloon::balloonPath(QRectF *bodyOut) const {
     // Compute the body rectangle and the tail triangle. The widget
     // size already includes room for the tail along the appropriate
     // edge, so the body inset is m_tailHeight on that side.
@@ -302,34 +350,8 @@ void SpeechBalloon::paintEvent(QPaintEvent *) {
     tailPath.addPolygon(tail);
     tailPath.closeSubpath();
     path = path.united(tailPath);
-
-    p.setPen(QPen(balloonStroke(), 1.5));
-    p.setBrush(balloonFill());
-    p.drawPath(path);
-
-    p.setPen(balloonText());
-    QRect const textArea = body.toRect().adjusted(
-        m_paddingX, m_paddingY, -m_paddingX,
-        -m_paddingY - m_buttonRowH - m_linkH - m_footerH);
-    p.drawText(textArea, Qt::AlignLeft | Qt::TextWordWrap, m_text);
-
-    // [operator 2026-10-15] link line, then the footer, under the text
-    if (!m_linkText.isEmpty()) {
-        m_linkRect = QRect(textArea.left(), textArea.bottom() + 1,
-                           textArea.width(), m_linkH);
-        QFont linkFont = font();
-        linkFont.setUnderline(true);
-        p.setFont(linkFont);
-        p.setPen(QColor("#0645AD")); // link blue, readable on the cream fill
-        p.drawText(m_linkRect, Qt::AlignLeft | Qt::TextWordWrap, m_linkText);
-        if (!m_footer.isEmpty()) {
-            p.setFont(font());
-            p.setPen(balloonText());
-            p.drawText(QRect(textArea.left(), m_linkRect.bottom() + 1,
-                             textArea.width(), m_footerH),
-                       Qt::AlignLeft | Qt::TextWordWrap, m_footer);
-        }
-    }
+    if (bodyOut) *bodyOut = body;
+    return path;
 }
 
 void SpeechBalloon::mousePressEvent(QMouseEvent *e) {

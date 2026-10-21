@@ -15,13 +15,9 @@ on:
       - '**.gif'
       - '**.md'
       - 'docs/**'
+  # [operator 2026-10-21] JTTY is always built: ENABLE_JTTY=OFF is no
+  # longer tested, so a manual run no longer offers it.
   workflow_dispatch:
-    inputs:
-      enable-jtty:
-        description: 'Build with ENABLE_JTTY (a push always builds it ON)'
-        required: false
-        type: boolean
-        default: true
 
 jobs:
   build_amd64:
@@ -51,7 +47,7 @@ jobs:
       run: |
         mkdir -p build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
-          -DENABLE_JTTY=${{ (github.event_name != 'workflow_dispatch' || inputs.enable-jtty) && 'ON' || 'OFF' }} ..
+          -DENABLE_JTTY=ON ..
         make -j$(nproc)
 
     - name: Package .deb

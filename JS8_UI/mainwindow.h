@@ -2403,6 +2403,12 @@ class UI_Constructor : public QMainWindow {
     void jttyLatchPutAddress(QString const &call);
     void jttyLatchTakeAddress(QString const &call);
     void serviceJttyDirectedLatch();            // from updateButtonDisplay
+    // [operator 2026-10-21] First-run hint, JTTY mode: a balloon on the
+    // first band-activity line that carries a callsign. Armed by the
+    // startup balloon chain (it is that startup's one balloon) and shown
+    // when such a line exists; flag HintJttyBandLineShown.
+    bool m_bandLineHintArmed = false;
+    void showBandLineHint();
 #endif
     void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }

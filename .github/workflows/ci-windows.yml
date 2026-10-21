@@ -19,11 +19,8 @@ on:
         required: false
         type: string
         default: 'Release'
-      enable-jtty:
-        description: 'Build with ENABLE_JTTY (a push always builds it ON)'
-        required: false
-        type: boolean
-        default: true
+      # [operator 2026-10-21] JTTY is always built: ENABLE_JTTY=OFF is no
+      # longer tested, so a manual run no longer offers it.
 
 jobs:
   build_windows:
@@ -92,7 +89,7 @@ jobs:
         cmake -B build \
           -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/local/hamlib;${MSYSTEM_PREFIX}" \
           -DCMAKE_BUILD_TYPE=${{ inputs.build-type || 'Release' }} \
-          -DENABLE_JTTY=${{ (github.event_name != 'workflow_dispatch' || inputs.enable-jtty) && 'ON' || 'OFF' }} \
+          -DENABLE_JTTY=ON \
           -DFFTW3F_LIBRARY=/mingw64/lib/libfftw3f.a
 
     - name: Build

@@ -1108,4 +1108,7 @@ void UI_Constructor::displayBandActivity() {
     // [#298] what the table now shows; displayActivity rebuilds only
     // when the content has moved away from it
     m_bandActivitySignature = bandActivitySignature();
+#ifdef JS8_ENABLE_JTTY
+    if (m_bandLineHintArmed) showBandLineHint(); // [operator 2026-10-21]
+#endif
 }

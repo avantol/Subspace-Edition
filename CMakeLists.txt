@@ -399,6 +399,8 @@ endif()
 #------------------------------------------------------------------------------#
 
 # [Build 502, operator 2026-10-18] ON: JTTY ships on every platform.
+# [operator 2026-10-21] JTTY is permanent: OFF is no longer compiled or
+# tested anywhere (CI always passes ON) and is unsupported.
 option(ENABLE_JTTY "Enable JTTY receive/transmit support (C++ port, experimental)" ON)
 
 if(ENABLE_JTTY AND NOT ENABLE_FT2)

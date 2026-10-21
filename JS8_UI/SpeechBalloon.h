@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPainterPath>
 #include <QPointer>
 #include <QRect>
 #include <QString>
@@ -100,6 +101,7 @@ class SpeechBalloon : public QWidget {
 
   private:
     void updateShape();
+    QPainterPath balloonPath(QRectF *bodyOut) const; // outline (paint + mask)
     void layoutButtons();
     void withdraw(); // [#227] close unseen and report
 

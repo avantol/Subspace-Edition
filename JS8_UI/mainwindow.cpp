@@ -11035,6 +11035,36 @@ void UI_Constructor::jttyDirectedLatchToggled(bool on) {
     jttyLatchPutAddress(selectedCall);
 }
 
+// [operator 2026-10-21] The first-run band-activity hint, JTTY mode: once
+// the first line with a callsign is on screen, a balloon points at it.
+// Shown once (HintJttyBandLineShown); until then it waits, armed, for the
+// mode and a line -- nothing else is skipped or consumed meanwhile.
+void UI_Constructor::showBandLineHint() {
+    if (!jttyMode() || !isVisible() || QApplication::activeModalWidget()) return;
+    auto *table = ui->tableWidgetRXAll;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        auto *ci = table->item(row, BACallsign);
+        if (!ci || ci->data(Qt::UserRole).toString().isEmpty()) continue;
+        // pointed at the line's text (the callsign column may be hidden)
+        auto *mi = table->item(row, BAMessage);
+        QRect const rect = table->visualItemRect(mi ? mi : ci);
+        if (!table->viewport()->rect().intersects(rect)) continue; // scrolled away
+        m_bandLineHintArmed = false;
+        m_settings->setValue("HintJttyBandLineShown", true);
+        auto *balloon = new SpeechBalloon(
+            tr("Click here to select this call sign.\n\n"
+               "Double-click to QSY to their offset.\n\n"
+               "Click on 'Directed to' button to use automatic 'to-from' "
+               "addressing.\n\n"
+               "Click here to dismiss."),
+            table->viewport());
+        balloon->setTargetRectOverride(rect);
+        balloon->setTailSide(SpeechBalloon::TailSide::Top);
+        balloon->showAtTarget();
+        return;
+    }
+}
+
 // [TODO #314] Kept current from updateButtonDisplay (every selection
 // change, every second). Unlatched outside JTTY mode and off the dial it
 // was latched on (mode and frequency changes). A deselect keeps the latch

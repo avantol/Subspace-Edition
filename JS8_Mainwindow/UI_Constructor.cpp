@@ -3299,6 +3299,20 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 return; // one balloon per startup
             }
 
+#ifdef JS8_ENABLE_JTTY
+            // (g) [operator 2026-10-21] JTTY mode: a balloon on the first
+            // band-activity line with a callsign (showBandLineHint). It is
+            // this startup's balloon: armed here, shown when such a line
+            // is on screen in JTTY mode. Not on a MAGNET station (JTTY is
+            // hidden there; the flag stays unset).
+            if (!self->m_superSpotterSeen &&
+                !self->m_settings->value("HintJttyBandLineShown", false)
+                     .toBool()) {
+                self->m_bandLineHintArmed = true;
+                self->showBandLineHint(); // a line may already be there
+                return; // one balloon per startup
+            }
+#endif
         };
         // [#227] Same delay as before: the main window must be shown
         // and anchors must have real global positions before any
