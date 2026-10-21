@@ -125,6 +125,16 @@ StationMonitorWindow::StationMonitorWindow(
                             [this, call]() {
                                 Q_EMIT openMonitorRequested(call);
                             });
+                    // [TODO #313, operator 2026-10-20] below it: the
+                    // same selection a single click on the call makes
+                    connect(menu->addAction(tr("Select %1").arg(call)),
+                            &QAction::triggered, this,
+                            [this, call]() { Q_EMIT callClicked(call); });
+                    // [operator 2026-10-21] and below that: the select +
+                    // QSY a double click on the call makes
+                    connect(menu->addAction(tr("Select %1 and QSY").arg(call)),
+                            &QAction::triggered, this,
+                            [this, call]() { Q_EMIT callDoubleClicked(call); });
                 }
                 menu->setAttribute(Qt::WA_DeleteOnClose);
                 menu->popup(

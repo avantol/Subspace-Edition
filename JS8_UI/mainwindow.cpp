@@ -6014,6 +6014,7 @@ void UI_Constructor::refreshJttyModeIndicators() {
         m_stationMonitorAction->setEnabled(true);
     displayDialFrequency();
     updateModeButtonText();
+    updateModeStatusLabel(); // [TODO #311] "Subspace RX off: JTTY frequency"
     // [audit M1(a), operator 2026-10-14] A mode change changes which
     // list is shown and how rows are labelled, and is not a new message:
     // both panes are redrawn. Deferred one event-loop turn -- this also
@@ -8390,6 +8391,8 @@ void UI_Constructor::updateModeStatusLabel() {
 #ifdef JS8_ENABLE_FT2
     if (!m_l2Enabled) {
         modeText += QStringLiteral(" (Subspace RX OFF)");
+    } else if (onJttyFrequency()) {
+        modeText += QStringLiteral(" (Subspace RX off: JTTY frequency)"); // #311
     } else if (m_ssDecodeBorrowed) {
         modeText += QStringLiteral(" (Subspace RX on for ARQ)");
     }
@@ -14856,7 +14859,7 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
     // its SECOND frame -- a one-frame ghost never reaches it, so nothing
     // false flickers in. The same gates as a complete message: this dial,
     // JTTY shown here, not at the -17 dB floor (the first frame's SNR,
-    // fixed), not a JS8-form line (those go to the command path whole),
+    // fixed), not a JS8-form line in JTTY mode (band activity only there),
     // and the conversation rule (near my offset, or names my station).
     // The line is rewritten in place on every frame; the final update
     // below finishes or removes it. Nothing else (band activity, map,
@@ -14902,7 +14905,11 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         }
 
         // The conversation window: the conversation rule on top.
-        if (!js8FormText &&
+        // [operator 2026-10-21: "that's exactly how js8 speeds work"] In
+        // JS8 mode a "CALL: ..." line grows too and is finished in place
+        // (a real command, handed to the command path, replaces it there);
+        // in JTTY mode it stays band activity only, as the final rule says.
+        if (!(js8FormText && jttyMode()) &&
             (std::abs(offset - freq()) <=
                  JS8::Submode::rxThreshold(Varicode::JS8CallJTTY) ||
              jttyLineNamesMe(text))) {
@@ -16571,7 +16578,13 @@ void UI_Constructor::l2TryDecode(char const *source) {
     // are normal operation and logged nothing tells us — Build 360
     // quieted them (166 lines/session of chatter). The wedge
     // detector this line exists for is preserved unchanged.
-    if (!m_l2Enabled || m_l2Decoding || m_transmitting) {
+    // [TODO #311, operator 2026-10-20] No Subspace decode on a frequency
+    // marked "JTTY" (JTTY-only; a MAGNET station has none). A "JS8+JTTY"
+    // frequency keeps decoding, even in JTTY mode -- a Subspace decode
+    // there hints the operator toward JS8 mode. The switch, its saved
+    // value and checkmark are untouched: leaving the frequency resumes
+    // decoding at the next tick. ARQ and routing are off there already.
+    if (!m_l2Enabled || m_l2Decoding || m_transmitting || onJttyFrequency()) {
         qint64 const now = QDateTime::currentMSecsSinceEpoch();
         if (m_l2Decoding && m_l2DecodeStartedMs > 0 &&
             now - m_l2DecodeStartedMs > 5000 &&
