@@ -63,6 +63,7 @@ button.pill { border: 0; font-size: 13px; }
 #outgoing { width: 100%; font-size: 16px; padding: 8px; background: var(--panel); color: var(--text);
   border: 1px solid #39424c; border-radius: 6px; text-transform: uppercase;
   height: 5.6em; resize: none; display: block; }
+#outgoing.locked { opacity: .55; }
 .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .buttons button { flex: 1 1 auto; min-width: 22%; padding: 12px 8px; font-size: 15px; border: 0;
   border-radius: 6px; background: #2c333b; color: var(--text); }

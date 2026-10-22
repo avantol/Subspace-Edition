@@ -91,9 +91,11 @@ function renderState(s) {
   $('dial').textContent = (s.DIAL ? (s.DIAL / 1e6).toFixed(3) : '--') + ' ▾';
   $('offset').textContent = `${s.OFFSET} Hz`;
   stationMode = s.MODE;
-  // [operator 2026-10-21] JTTY: an offset below 1200 or above 1675 Hz is
-  // shown yellow -- outside the window most WSJT-X JTTY stations decode
-  $('offset').classList.toggle('warn', s.MODE === 'JTTY' && (s.OFFSET < 1200 || s.OFFSET > 1675));
+  // [operator 2026-10-21/22] JTTY: an offset below 1200 or above 1800 Hz is
+  // shown yellow -- outside the window WSJT-X searches for a signal's lowest
+  // tone (its 1350/1650 +-150 Hz channels, jtty_receiver.cpp channelWindow;
+  // the offset IS the lowest tone, so 1800 itself still decodes)
+  $('offset').classList.toggle('warn', s.MODE === 'JTTY' && (s.OFFSET < 1200 || s.OFFSET > 1800));
   // in JS8 mode the speed is a tap target (the Mode menu's speeds)
   $('mode').textContent = s.MODE === 'JTTY' ? 'JTTY' : `JS8 ${s.SPEED || ''} ▾`;
   $('mode').classList.toggle('tappable', s.MODE !== 'JTTY');
@@ -119,6 +121,10 @@ function renderState(s) {
   $('groupBtn').classList.toggle('latched', !!(s.SELECTED && s.SELECTED.startsWith('@')));
   // the desktop's outgoing box, unless the phone is typing in its own
   const box = $('outgoing');
+  // [operator 2026-10-21] locked from Send until the message has gone out
+  // (no type-ahead or corrections from the phone yet)
+  box.readOnly = !!(s.TRANSMITTING || s.QUEUED);
+  box.classList.toggle('locked', box.readOnly);
   if (document.activeElement !== box && box.value !== (s.OUTGOING || '')) box.value = s.OUTGOING || '';
 }
 
@@ -192,6 +198,7 @@ async function pushText() {
   try { await api('TX.SET_TEXT', $('outgoing').value.toUpperCase()); } catch (e) { /* login shown */ }
 }
 $('outgoing').addEventListener('input', () => {
+  if ($('outgoing').readOnly) return;
   clearTimeout(typeTimer);
   typeTimer = setTimeout(pushText, 500);
 });
@@ -211,7 +218,13 @@ document.querySelectorAll('[data-action]').forEach((el) => el.addEventListener('
     const p = rep.params || {};
     if (p.OK === false) notice(refusals[p.REASON] || `Refused (${p.REASON}).`);
     if (p.OK && p.LOGGED) notice(`Logged ${p.LOGGED}.`);
-    if (action === 'send' && p.OK) $('outgoing').blur();
+    if (action === 'send' && p.OK) {
+      // lock at once; the station's state keeps it locked until sent
+      clearTimeout(typeTimer); typeTimer = null;
+      $('outgoing').readOnly = true;
+      $('outgoing').classList.add('locked');
+      $('outgoing').blur();
+    }
     await refresh();
   } catch (e) { /* login shown */ }
 }));
@@ -300,7 +313,7 @@ document.querySelectorAll('button.step').forEach((b) => b.addEventListener('clic
     else if (p.OK === false) notice('The offset cannot change while transmitting.');
     else if (p.OFFSET !== undefined) {
       $('offset').textContent = `${p.OFFSET} Hz`;
-      $('offset').classList.toggle('warn', stationMode === 'JTTY' && (p.OFFSET < 1200 || p.OFFSET > 1675));
+      $('offset').classList.toggle('warn', stationMode === 'JTTY' && (p.OFFSET < 1200 || p.OFFSET > 1800));
     }
   } catch (e) { /* login shown */ }
 }));

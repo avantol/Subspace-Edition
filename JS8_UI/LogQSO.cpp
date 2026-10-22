@@ -266,6 +266,13 @@ void LogQSO::accept() {
         mode = "MFSK";
         submode = "JS8";
     }
+    // [operator 2026-10-22, "follow them so logs match"] WSJT-X 3.3.0-beta4
+    // logs JTTY as an MFSK submode (ADIF 3.1.8: <mode>MFSK <submode>JTTY,
+    // AdifQso::base_mode, commit a4757441)
+    if (mode == "JTTY") {
+        mode = "MFSK";
+        submode = "JTTY";
+    }
     rptSent = ui->sent->text();
     rptRcvd = ui->rcvd->text();
     m_dateTimeOn = ui->start_date_time->dateTime();
@@ -314,7 +321,7 @@ void LogQSO::accept() {
             hisCall,
             hisGrid,
             strDialFreq,
-            (mode == "MFSK" ? "JS8" : mode),
+            (mode == "MFSK" && !submode.isEmpty() ? submode : mode), // JS8 / JTTY
             rptSent,
             rptRcvd,
             comments,

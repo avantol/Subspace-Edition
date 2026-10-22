@@ -8,11 +8,71 @@
 
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFontMetrics>
+#include <QRegularExpression>
+#include <QSaveFile>
 
 namespace {
 auto logFileName = "js8call_log.adi";
 auto countryFileName = "cty.dat";
+
+// [operator 2026-10-22, "repair the log file automatically ... one-time
+// operation"] WSJT-X 3.3.0-beta4 logs JTTY as MFSK/JTTY (ADIF 3.1.8); our
+// builds before 509.5 wrote <mode:4>JTTY with no submode. Each such record
+// becomes <mode:4>MFSK <submode:4>JTTY followed by one space (operator: "add
+// the space, it's helpful"); nothing else in the file changes.
+// Before writing, the original is copied to <log>.pre-mfsk-jtty.bak -- and
+// that backup's existence is what makes this run once. Written through
+// QSaveFile, so a failure leaves the log as it was.
+void repairJttyModeOnce(QString const &path) {
+    QString const backup = path + QStringLiteral(".pre-mfsk-jtty.bak");
+    if (QFile::exists(backup) || !QFile::exists(path)) return;
+    QFile in(path);
+    if (!in.open(QIODevice::ReadOnly)) return;
+    QByteArray const original = in.readAll();
+    in.close();
+
+    static QRegularExpression const eor(QStringLiteral("<eor>"),
+                                        QRegularExpression::CaseInsensitiveOption);
+    // takes any spaces after the tag too, so the rewrite leaves exactly one
+    static QRegularExpression const jttyMode(QStringLiteral("<mode:4>JTTY *"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    static QRegularExpression const hasSubmode(QStringLiteral("<submode:"),
+                                               QRegularExpression::CaseInsensitiveOption);
+    QString const text = QString::fromUtf8(original);
+    QString out;
+    out.reserve(text.size() + 1024);
+    int fixed = 0, from = 0;
+    auto it = eor.globalMatch(text);
+    // record by record: each piece runs up to and including its <eor>
+    auto const fixRecord = [&](QString rec) {
+        if (rec.contains(jttyMode) && !rec.contains(hasSubmode)) {
+            rec.replace(jttyMode, QStringLiteral("<mode:4>MFSK <submode:4>JTTY "));
+            ++fixed;
+        }
+        out += rec;
+    };
+    while (it.hasNext()) {
+        auto const m = it.next();
+        fixRecord(text.mid(from, m.capturedEnd() - from));
+        from = m.capturedEnd();
+    }
+    out += text.mid(from); // anything after the last <eor>, untouched
+    if (!fixed) return;    // nothing to repair: no backup, no write
+
+    if (!QFile::copy(path, backup)) {
+        qWarning() << "[LOG] JTTY mode repair skipped: cannot write backup" << backup;
+        return;
+    }
+    QSaveFile save(path);
+    if (!save.open(QIODevice::WriteOnly) || save.write(out.toUtf8()) < 0 || !save.commit()) {
+        qWarning() << "[LOG] JTTY mode repair FAILED, log unchanged:" << save.errorString();
+        return;
+    }
+    qWarning() << "[LOG] repaired" << fixed << "JTTY record(s) to MFSK/JTTY in" << path
+               << "(original kept as" << backup << ")";
+}
 } // namespace
 
 /**
@@ -35,6 +95,7 @@ void LogBook::init() {
 
     _worked.init(_countries.getCountryNames());
 
+    repairJttyModeOnce(dataPath.absoluteFilePath(logFileName)); // before it loads
     _log.init(dataPath.absoluteFilePath(logFileName));
     _log.load();
 

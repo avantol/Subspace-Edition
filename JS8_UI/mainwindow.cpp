@@ -1831,6 +1831,38 @@ QVariantList UI_Constructor::remoteBandTable() const {
         auto *i = t->item(r, c);
         return i ? i->text().trimmed() : QString();
     };
+    // [operator 2026-10-22] the phone shows a line's latest messages: up to
+    // 10, or 300 characters, whichever comes first -- cut between messages
+    // (the same per-message list the desktop tooltip reads). A single
+    // newest message longer than 300, or a line without that list, keeps
+    // its last 300 characters, from a word. "..." marks what was left off.
+    auto const phoneText = [t, &cell](int r) {
+        constexpr int kMessages = 10, kChars = 300;
+        auto const tail = [](QString s) {
+            if (s.size() <= kChars) return s;
+            s = s.right(kChars);
+            int const sp = s.indexOf(QLatin1Char(' '));
+            return QStringLiteral("… ") + (sp > 0 ? s.mid(sp + 1) : s);
+        };
+        QVariantList const msgs =
+            t->item(r, BAMessage) ? t->item(r, BAMessage)->data(Qt::UserRole + 1).toList()
+                                  : QVariantList();
+        QStringList kept;
+        int chars = 0, used = 0;
+        for (int i = msgs.size() - 1; i >= 0 && kept.size() < kMessages; --i, ++used) {
+            QString const s = msgs.at(i).toMap().value(QStringLiteral("text")).toString().trimmed();
+            if (s.isEmpty()) continue;
+            int const add = s.size() + (kept.isEmpty() ? 0 : 1);
+            if (!kept.isEmpty() && chars + add > kChars) break;
+            kept.prepend(s);
+            chars += add;
+        }
+        if (kept.size() == 1 && kept.first().size() > kChars) return tail(kept.first());
+        if (!kept.isEmpty())
+            return (used < msgs.size() ? QStringLiteral("… ") : QString()) +
+                   kept.join(QLatin1Char(' '));
+        return tail(cell(r, BAMessage));
+    };
     for (int r = 0; r < t->rowCount(); ++r) {
         auto *ci = t->item(r, BACallsign);
         auto *oi = t->item(r, BAOffset);
@@ -1841,7 +1873,7 @@ QVariantList UI_Constructor::remoteBandTable() const {
             {"AGE", cell(r, BAAge)},
             {"SNR", cell(r, BASnr)},
             {"SPEED", cell(r, BASpeed)},
-            {"TEXT", cell(r, BAMessage)},
+            {"TEXT", phoneText(r)},
             {"TOME", ai && ai->data(Qt::UserRole + 1).toBool()},
             {"SELECTED", ci && ci->isSelected()},
         });
@@ -15095,9 +15127,26 @@ static QList<int> jttyJoinLines(Map &map, int offset) {
 
 static QString jttyBareWord(QString w); // defined with the sender rules below
 
+// [operator 2026-10-22] WSJT-X's rule for its live-entry filler in received
+// JTTY text (Jtty::stripJttyFillerText, ported to lib/jtty/jtty_filler.f90 in
+// 3.3.0-beta4): each run of one or more "<<<<<" blocks, with the blanks
+// before, between and after them, becomes one space; then the text is
+// trimmed and every inner run of whitespace becomes one space (Qt's
+// simplified(), as theirs). A sender typing live transmits the filler while
+// it waits for keystrokes; it is never message text.
+static QString jttyStripFiller(QString const &text) {
+    static QRegularExpression const filler(
+        QStringLiteral(R"([\t\n\v\f\r ]*(?:<<<<<[\t\n\v\f\r ]*)+)"));
+    QString s = text;
+    s.replace(filler, QStringLiteral(" "));
+    return s.simplified();
+}
+
 void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
                                        std::int64_t dial) {
-    QString const text = QString::fromStdString(u.text).trimmed();
+    // [operator 2026-10-22] WSJT-X's live-entry filler "<<<<<" removed, as
+    // its own receivers do (94 such messages in JTTY.TXT, shown raw before)
+    QString const text = jttyStripFiller(QString::fromStdString(u.text));
     QDateTime const now = DriftingDateTime::currentDateTimeUtc();
     int const offset = static_cast<int>(std::lround(u.frequency));
     char const *word = u.terminal == JTTY::UPDATE_COMPLETE          ? "complete"
@@ -16247,10 +16296,14 @@ void UI_Constructor::jttyBackfillMonitor(StationMonitorWindow *w) const {
                 js8Form(m.captured(5)))
                 continue;
             int const offset = m.captured(3).toInt();
+            // [operator 2026-10-22] older lines were logged with WSJT-X's
+            // filler still in; a line that was only filler is skipped
+            QString const clean = jttyStripFiller(m.captured(5));
+            if (clean.isEmpty()) continue;
             ActivityDetail d = {};
             d.bits = Varicode::JS8CallFirst | Varicode::JS8CallLast;
             d.offset = offset;
-            d.text = m.captured(5) + QLatin1Char(' ');
+            d.text = clean + QLatin1Char(' ');
             d.utcTimestamp = utc;
             // [jttycont] JTTY.TXT keeps no frame count: the start is
             // ESTIMATED from the text at five characters per frame (TEXT5;

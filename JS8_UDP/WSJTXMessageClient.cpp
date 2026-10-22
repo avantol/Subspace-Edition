@@ -702,7 +702,9 @@ void WSJTXMessageClient::logged_ADIF(QByteArray const &ADIF_record) {
         // Format ADIF with header like WSJT-X does
         // Use WSJT-X as programid for compatibility with clients expecting
         // WSJT-X format
-        QByteArray ADIF{"\n<adif_ver:5>3.1.0\n<programid:6>WSJT-X\n<EOH>\n" +
+        // [operator 2026-10-22] ADIF 3.1.8, as WSJT-X 3.3.0-beta4 declares
+        // (it carries the MFSK/JTTY submode)
+        QByteArray ADIF{"\n<adif_ver:5>3.1.8\n<programid:6>WSJT-X\n<EOH>\n" +
                         ADIF_record + " <EOR>"};
         out << ADIF;
         qCDebug(wsjtx_js8) << "WSJT-X: Sending LoggedADIF message"

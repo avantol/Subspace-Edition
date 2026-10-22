@@ -447,8 +447,11 @@ bool ADIF::addQSOToFile(QByteArray const &ADIF_record) {
         return false;
     else {
         QTextStream out(&f2);
+        // [operator 2026-10-22] a new file declares ADIF 3.1.8 (MFSK/JTTY
+        // submode), as WSJT-X 3.3.0-beta4's log does; existing files keep
+        // their header
         if (f2.size() == 0)
-            out << "Subspace Edition ADIF Export<eoh>" << Qt::endl; // new file
+            out << "Subspace Edition ADIF Export <adif_ver:5>3.1.8<eoh>" << Qt::endl;
 
         out << ADIF_record << " <eor>" << Qt::endl;
         out.flush();
