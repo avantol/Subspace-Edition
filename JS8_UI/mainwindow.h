@@ -27,6 +27,7 @@
 #include "JS8_Main/JS8MessageBox.h"
 #include "JS8_Main/MessageClient.h"
 #include "JS8_Main/MessageServer.h"
+#include "JS8_Network/RemoteServer.h"
 #include "JS8_Main/Modes.h"
 #include "JS8_Main/MultiSettings.h"
 #include "JS8_Main/ProcessThread.h"
@@ -758,6 +759,9 @@ class UI_Constructor : public QMainWindow {
     void emitTones();
     void udpNetworkMessage(Message const &message);
     void tcpNetworkMessage(Message const &message);
+    // [phone remote] a request from the phone: operator activity (the
+    // idle watchdog), then the same dispatcher as every API client
+    void remoteNetworkMessage(Message const &message);
     void networkMessage(Message const &message);
     // [TODO #112] ARQ transfer in flight (either direction), and a short
     // reason string, for the API busy status.
@@ -2489,6 +2493,20 @@ class UI_Constructor : public QMainWindow {
     Frequency m_lastMonitoredFrequency = 0;
     MessageClient *m_messageClient;
     MessageServer *m_messageServer;
+    // [phone remote, operator 2026-10-21] the app's own web server for a
+    // phone browser (File > Phone remote...); per profile, group SsRemote
+    RemoteServer *m_remoteServer{nullptr};
+    bool m_remoteEnabled{false};
+    void applyRemoteSettings();                 // SsRemote -> the server
+    // [phone remote] what the phone shows, read from the desktop widgets
+    QVariantList remoteConversationTail() const;
+    QVariantList remoteBandTable() const;
+    QVariantMap remoteUiState();
+    QAbstractButton *remoteButton(QString const &name) const; // UI.ACTION
+    void jttyAutoLatchDirected(); // JTTY: a selection latches Directed to
+    void remotePushChanged();                   // push whatever changed
+    QTimer *m_remotePushTimer{nullptr};
+    QVariant m_remoteLastText, m_remoteLastBand, m_remoteLastState;
     ChunkedArq::Manager *m_chunkedArq{nullptr};
     WSJTXMessageClient *m_wsjtxMessageClient;
     WSJTXMessageMapper *m_wsjtxMessageMapper;

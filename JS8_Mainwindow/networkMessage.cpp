@@ -10,6 +10,7 @@
 #include "JS8_UI/SpotMapWindow.h"
 
 #include "JS8_Main/ChunkedArq.h"
+#include "JS8_Main/Modes.h" // [phone remote] UI.GET_FREQ_LIST
 
 /**
  * @brief Processes an incoming API network message
@@ -1217,6 +1218,442 @@ if(type == "STATION.SET_SPOT") {
      * foreground.
      * NOTE: Some OSes block this from happening
      */
+    /** @brief UI.GET_SNAPSHOT: [phone remote, operator 2026-10-21] what
+     * the screen shows now -- LINES (the conversation window's last
+     * lines, TEXT + TX), ROWS (the band activity rows as displayed:
+     * CALL, OFFSET, AGE, SNR, SPEED, TEXT, TOME, SELECTED) and STATE
+     * (MODE, SPEED, DIAL, OFFSET, SELECTED, TX_ENABLED, TRANSMITTING,
+     * DIRECTED_LATCH, BAND_BY_CALL, OUTGOING). Afterwards each changed
+     * part is pushed as RX.TEXT.TAIL / RX.BAND.TABLE / UI.STATE.
+     */
+    /** @brief UI.ACTION: [phone remote, operator 2026-10-21] press a desktop
+     * button: value send, halt, txenable, cq, snr, reply, info, status,
+     * directed, deselect. The button's own click -- the desktop behaviour
+     * and every check behind it (TX enable, the watchdog, the send path);
+     * a button the desktop shows disabled is refused (REFUSED, REASON
+     * disabled). "directed" in JTTY mode only (in JS8 mode it opens a menu
+     * on the station's screen).
+     */
+    if (type == "UI.ACTION") {
+        QString const action = message.value().trimmed().toLower();
+        // [operator 2026-10-21] two that are not desktop buttons:
+        // "repeat" = the box's "Restore previous message"; "agn" = the
+        // Directed-to menu's "<CALL> AGN?" (JS8), the JTTY macro in JTTY
+        // mode. Enabled exactly when remoteUiState says so.
+        if (action == QLatin1String("agn") || action == QLatin1String("repeat") ||
+            action == QLatin1String("snrq")) {
+            bool const ok = remoteUiState().value("BUTTONS").toMap().value(action).toBool();
+            qWarning() << "[REMOTE] action" << action << (ok ? "pressed" : "disabled");
+            if (ok && action == QLatin1String("repeat")) {
+                restoreMessage();
+            } else if (ok && action == QLatin1String("snrq")) {
+                // [operator 2026-10-21] the Directed-to menu's "<CALL> SNR?"
+                addMessageText(QString("%1 SNR?").arg(callsignSelected()), true);
+                autoSendIfDirectedCmd();
+            } else if (ok) {
+#ifdef JS8_ENABLE_JTTY
+                if (!jttyPlaceMacro(QStringLiteral("AGN?")))
+#endif
+                {
+                    addMessageText(QString("%1 AGN?").arg(callsignSelected()), true);
+                    autoSendIfDirectedCmd();
+                }
+            }
+            sendNetworkMessage("UI.ACTION", action,
+                               {{"_ID", message.params().value("_ID")},
+                                {"OK", ok},
+                                {"REASON", ok ? QString() : QStringLiteral("disabled")}});
+            remotePushChanged();
+            return;
+        }
+        QAbstractButton *b = remoteButton(action);
+        QString reason;
+        if (!b)
+            reason = QStringLiteral("unknown");
+        else if (!b->isVisible() || !b->isEnabled())
+            reason = QStringLiteral("disabled");
+        else if (action == QLatin1String("directed") && !jttyMode())
+            reason = QStringLiteral("js8_menu");
+        QString logged;
+        if (reason.isEmpty() && action == QLatin1String("log") &&
+            callsignSelected().isEmpty())
+            reason = QStringLiteral("no_call");
+        // [operator 2026-10-21, log 00:45:03-05] CQ had already queued its
+        // message (Send down, waiting for the slot); the phone's Send then
+        // CLICKED Send again, which on the desktop means cancel, and the CQ
+        // never went out. From the phone, Send only ever sends: a message
+        // already queued stays queued; HALT is the way to cancel.
+        if (reason.isEmpty() && action == QLatin1String("send") &&
+            ui->startTxButton->isChecked())
+            reason = QStringLiteral("queued");
+        // [operator 2026-10-21] JTTY: a box holding only the address
+        // "<TO> <MYCALL>" has nothing to say -- not sent
+        if (reason.isEmpty() && action == QLatin1String("send") && jttyMode()) {
+            QStringList const w = ui->extFreeTextMsgEdit->toPlainText().simplified()
+                                      .split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (w.size() == 2 &&
+                w.at(1).compare(m_config.my_callsign().trimmed(), Qt::CaseInsensitive) == 0 &&
+                Varicode::isValidCallsign(w.at(0), nullptr))
+                reason = QStringLiteral("no_payload");
+        }
+        // [operator 2026-10-21] the phone's state says which are off with a
+        // group selected (CQ, Reply, SNR); refused here too
+        if (reason.isEmpty() &&
+            !remoteUiState().value("BUTTONS").toMap().value(action, true).toBool())
+            reason = QStringLiteral("disabled");
+        qWarning() << "[REMOTE] action" << action
+                   << (reason.isEmpty() ? QStringLiteral("pressed") : reason);
+        if (reason.isEmpty() && action == QLatin1String("log")) {
+            // [operator 2026-10-21: "one tap, no form"] the desktop's Log
+            // QSO, filled exactly as the button fills it, and its OK
+            // pressed: the same log files, ADIF and forwarding. Nobody is
+            // at the station to answer an open dialog.
+            logged = callsignSelected();
+            on_logQSOButton_clicked();
+            if (m_logDlg->isVisible()) m_logDlg->accept();
+        } else if (reason.isEmpty()) {
+            b->click();
+        }
+        sendNetworkMessage("UI.ACTION", action,
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason},
+                            {"LOGGED", logged}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.BAND_CLICK: [phone remote] a click (DOUBLE true: a
+     * double-click) on the band-activity row of CALL (at OFFSET), through
+     * the table's own click handlers. Rows without a callsign are refused:
+     * their station pick is a menu on the station's screen.
+     */
+    if (type == "UI.BAND_CLICK") {
+        QString const call = message.params().value("CALL").toString().trimmed();
+        int const offset = message.params().value("OFFSET").toInt();
+        bool const dbl = message.params().value("DOUBLE").toBool();
+        auto *t = ui->tableWidgetRXAll;
+        int row = -1;
+        for (int r = 0; r < t->rowCount() && !call.isEmpty(); ++r) {
+            auto *ci = t->item(r, BACallsign);
+            auto *oi = t->item(r, BAOffset);
+            if (!ci || ci->data(Qt::UserRole).toString() != call) continue;
+            if (row < 0) row = r; // the call's row, even if it moved
+            if (oi && oi->data(Qt::UserRole).toInt() == offset) {
+                row = r;
+                break;
+            }
+        }
+        QString reason = call.isEmpty() ? QStringLiteral("no_call")
+                         : row < 0      ? QStringLiteral("gone")
+                                        : QString();
+        qWarning() << "[REMOTE] band" << (dbl ? "double-click" : "click") << call
+                   << offset << (reason.isEmpty() ? QStringLiteral("row %1").arg(row) : reason);
+        if (reason.isEmpty()) {
+            if (dbl)
+                bandActivityDoubleClick(row, BAMessage);
+            else
+                on_tableWidgetRXAll_cellClicked(row, BAMessage);
+        }
+        // [operator 2026-10-21] the double-click selects but does not QSY
+        // into the heartbeat zone (qsyOffsetAllowed); say so on the phone
+        bool const noQsy = reason.isEmpty() && dbl && !qsyOffsetAllowed(offset);
+        sendNetworkMessage("UI.BAND_CLICK", call,
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason},
+                            {"NO_QSY", noQsy ? QStringLiteral("hb_zone") : QString()}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.GET_FREQ_LIST: [phone remote, operator 2026-10-21] the
+     * station's own frequency list, as the Frequency menu shows it
+     * (sorted by frequency): ITEMS of FREQ (Hz), MHZ, BAND, MODE (the
+     * entry's kind: JS8, JTTY, JS8+JTTY, ...), DESC, CURRENT.
+     */
+    if (type == "UI.GET_FREQ_LIST") {
+        auto list = m_config.frequencies()->frequency_list();
+        std::sort(list.begin(), list.end(), [](auto const &a, auto const &b) {
+            return a.frequency_ < b.frequency_;
+        });
+        Radio::Frequency const dial = operatingDial();
+        QVariantList items;
+        for (auto const &f : list)
+            items.append(QVariantMap{
+                {"FREQ", static_cast<quint64>(f.frequency_)},
+                {"MHZ", Radio::pretty_frequency_MHz_string(f.frequency_)},
+                {"BAND", m_config.bands()->find(f.frequency_)},
+                {"MODE", QString::fromLatin1(Modes::name(f.mode_))},
+                {"DESC", f.description_},
+                {"CURRENT", f.frequency_ == dial},
+#ifdef JS8_ENABLE_JTTY
+                // a JS8+JTTY entry: the mode is the operator's choice
+                {"SHARED", f.mode_ == Modes::JS8_JTTY && !m_superSpotterSeen},
+#endif
+            });
+        sendNetworkMessage("UI.FREQ_LIST", QString(),
+                           {{"_ID", message.params().value("_ID")}, {"ITEMS", items}});
+        return;
+    }
+
+    /** @brief UI.SET_FREQ_ENTRY: [phone remote] go to the list entry at FREQ
+     * (Hz) -- the Frequency menu's own action (setRig), so the entry's
+     * kind (JTTY / JS8) takes effect exactly as on the desktop. Only a
+     * frequency in the list; refused while a message is going out.
+     */
+    if (type == "UI.SET_FREQ_ENTRY") {
+        auto const want = message.params().value("FREQ").toULongLong();
+        QString reason;
+        bool listed = false;
+        for (auto const &f : m_config.frequencies()->frequency_list())
+            if (static_cast<quint64>(f.frequency_) == want) listed = true;
+        if (!listed)
+            reason = QStringLiteral("not_listed");
+        else if (isMessageQueuedForTransmit())
+            reason = QStringLiteral("transmitting");
+        QString const mode = message.params().value("MODE").toString().toUpper();
+        qWarning() << "[REMOTE] frequency entry" << want << mode
+                   << (reason.isEmpty() ? QStringLiteral("set") : reason);
+        // [operator 2026-10-21] the current entry too: setRig re-sends it
+        if (reason.isEmpty()) setRig(static_cast<Radio::Frequency>(want));
+#ifdef JS8_ENABLE_JTTY
+        // [operator 2026-10-21] a JS8+JTTY entry with the mode chosen on the
+        // phone: the Mode menu's own entries once the dial has ARRIVED
+        // (arriving can itself switch mode, e.g. leaving a JTTY-only
+        // frequency restores the earlier speed). JTTY = the "JTTY" entry;
+        // JS8 = keep the JS8 speed, or Normal when coming from JTTY mode.
+        // Gives up after 10 s (CHOSEN) if the rig never gets there.
+        if (reason.isEmpty() && (mode == QLatin1String("JTTY") || mode == QLatin1String("JS8"))) {
+            auto const tries = std::make_shared<int>(0);
+            auto const apply = std::make_shared<std::function<void()>>();
+            *apply = [this, want, mode, tries, apply]() {
+                if (static_cast<quint64>(operatingDial()) != want) {
+                    if (++*tries < 40) QTimer::singleShot(250, this, *apply);
+                    else qWarning() << "[REMOTE] mode choice dropped: dial never reached" << want;
+                    return;
+                }
+                if (!onSharedJttyFrequency()) return; // not a JS8+JTTY dial after all
+                bool const wantJtty = mode == QLatin1String("JTTY");
+                if (wantJtty && !ui->actionModeJTTY->isChecked() && ui->actionModeJTTY->isEnabled())
+                    ui->actionModeJTTY->trigger();
+                else if (!wantJtty && ui->actionModeJTTY->isChecked() &&
+                         ui->actionModeJS8Normal->isEnabled())
+                    ui->actionModeJS8Normal->trigger();
+                qWarning() << "[REMOTE] mode on" << want << "->" << (jttyMode() ? "JTTY" : "JS8");
+                remotePushChanged();
+            };
+            QTimer::singleShot(250, this, *apply);
+        }
+#endif
+        sendNetworkMessage("UI.SET_FREQ_ENTRY", QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.OFFSET_STEP: [phone remote, operator 2026-10-21] move the
+     * offset one step up (STEP > 0) or down (STEP < 0) -- 100 Hz in JS8
+     * mode, 25 Hz in JTTY mode, rounded onto that grid -- through the
+     * desktop's own changeFreq, refused there while a message is going
+     * out unless "QSY while transmitting" is allowed.
+     */
+    if (type == "UI.OFFSET_STEP") {
+        // [operator 2026-10-21] a step is one grid in the direction of STEP's
+        // sign, landing ON the grid: 100 Hz in JS8 mode, 25 Hz in JTTY mode
+        // (1237 Hz, JS8, + -> 1300; - -> 1200)
+        int const dir = message.params().value("STEP").toInt() < 0 ? -1 : 1;
+        int const grid = jttyMode() ? 25 : 100;
+        int const before = freq();
+        int const below = before / grid * grid; // grid at or below
+        int const target = dir > 0 ? below + grid
+                                   : (below == before ? below - grid : below);
+        int const step = target - before;
+        // [operator 2026-10-21] the desktop's QSY rule (qsyOffsetAllowed):
+        // in JS8 not into the heartbeat zone at or below 1000 Hz
+        bool const hbZone = !qsyOffsetAllowed(target);
+        if (!hbZone) setFreqOffsetForRestore(target, false);
+        qWarning() << "[REMOTE] offset step" << step << before << "->" << freq()
+                   << (hbZone ? "refused: HB zone" : "");
+        sendNetworkMessage("UI.OFFSET_STEP", QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", freq() != before},
+                            {"REASON", hbZone ? QStringLiteral("hb_zone") : QString()},
+                            {"OFFSET", freq()}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.GET_SPEEDS / UI.SET_SPEED: [phone remote, operator
+     * 2026-10-21] the Mode menu's speed entries (Slow, Normal, Fast,
+     * Turbo, Subspace, JTTY speed) as the menu shows them -- its own
+     * wording, only the visible ones -- and choosing one by triggering
+     * that menu entry. ITEMS: ID, TEXT, CHECKED, ENABLED. Not in JTTY
+     * mode (its speed is fixed); a disabled entry is refused.
+     */
+    if (type == "UI.GET_SPEEDS" || type == "UI.SET_SPEED") {
+        QList<QPair<QString, QAction *>> const speeds = {
+            {QStringLiteral("slow"), ui->actionModeJS8Slow},
+            {QStringLiteral("normal"), ui->actionModeJS8Normal},
+            {QStringLiteral("fast"), ui->actionModeJS8Fast},
+            {QStringLiteral("turbo"), ui->actionModeJS8Turbo},
+            {QStringLiteral("subspace"), ui->actionModeFT2},
+            {QStringLiteral("jtty"), ui->actionModeJS8JTTY},
+        };
+        if (type == "UI.GET_SPEEDS") {
+            QVariantList items;
+            for (auto const &[id, a] : speeds)
+                if (a && a->isVisible())
+                    items.append(QVariantMap{
+                        {"ID", id},
+                        {"TEXT", a->text().remove(QLatin1Char('&'))},
+                        {"CHECKED", a->isChecked()},
+                        {"ENABLED", a->isEnabled() && !jttyMode()},
+                    });
+            sendNetworkMessage("UI.SPEEDS", QString(),
+                               {{"_ID", message.params().value("_ID")}, {"ITEMS", items}});
+            return;
+        }
+        QString const want = message.value().trimmed().toLower();
+        QAction *chosen = nullptr;
+        for (auto const &[id, a] : speeds)
+            if (id == want) chosen = a;
+        QString const reason = !chosen                                      ? QStringLiteral("unknown")
+                               : jttyMode()                                 ? QStringLiteral("jtty_mode")
+                               : !chosen->isVisible() || !chosen->isEnabled() ? QStringLiteral("disabled")
+                                                                              : QString();
+        qWarning() << "[REMOTE] speed" << want << (reason.isEmpty() ? QStringLiteral("set") : reason);
+        if (reason.isEmpty() && !chosen->isChecked()) chosen->trigger();
+        sendNetworkMessage("UI.SET_SPEED", want,
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.GET_GROUPS / UI.SELECT_GROUP: [phone remote, operator
+     * 2026-10-21] the groups the call list shows (@ALLCALL unless avoided,
+     * then My Groups, sorted) -- ITEMS: NAME, SELECTED -- and selecting one
+     * as a click on it there does (selectCallsign). JS8 mode only.
+     */
+    if (type == "UI.GET_GROUPS" || type == "UI.SELECT_GROUP") {
+        QStringList groups;
+        if (!m_config.avoid_allcall()) groups << QStringLiteral("@ALLCALL");
+        auto mine = m_config.my_groups().values();
+        std::sort(mine.begin(), mine.end());
+        groups << mine;
+        if (type == "UI.GET_GROUPS") {
+            QVariantList items;
+            for (auto const &g : groups)
+                items.append(QVariantMap{{"NAME", g}, {"SELECTED", g == callsignSelected()}});
+            sendNetworkMessage("UI.GROUPS", QString(),
+                               {{"_ID", message.params().value("_ID")}, {"ITEMS", items}});
+            return;
+        }
+        QString const want = message.value().trimmed().toUpper();
+        QString const reason = jttyMode()               ? QStringLiteral("jtty_mode")
+                               : !groups.contains(want) ? QStringLiteral("unknown")
+                                                        : QString();
+        qWarning() << "[REMOTE] group" << want << (reason.isEmpty() ? QStringLiteral("selected") : reason);
+        if (reason.isEmpty()) selectCallsign(want);
+        sendNetworkMessage("UI.SELECT_GROUP", want,
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason}});
+        remotePushChanged();
+        return;
+    }
+
+    /** @brief UI.CONVO_CLICK: [phone remote, operator 2026-10-21] a tap on a
+     * conversation line (value = the line's text): select the FIRST call
+     * sign written with a trailing colon ("WD4KAV: ..."); DOUBLE true also
+     * moves to the line's offset "(NNNN)", under the QSY rule
+     * (qsyOffsetAllowed: not into the heartbeat zone in JS8).
+     */
+    if (type == "UI.CONVO_CLICK") {
+        QString const line = message.value();
+        bool const dbl = message.params().value("DOUBLE").toBool();
+        QString call;
+        QString const mycall = m_config.my_callsign().trimmed();
+        // [operator 2026-10-21] never my own call -- the IDENTICAL call only
+        // ("WM8Q/P" is another station's form and may be chosen)
+        auto const isMe = [&](QString const &c) {
+            return c.compare(mycall, Qt::CaseInsensitive) == 0;
+        };
+        // the message itself, without the window's "J - 12:34:56 - (1500) - "
+        static QRegularExpression const headRe(
+            QStringLiteral(R"(^\S+\s+-\s+\d{1,2}:\d{2}:\d{2}\s+-\s+\(\d+\)\s+-\s+)"));
+        QString body = line;
+        if (auto const h = headRe.match(line); h.hasMatch()) body = line.mid(h.capturedEnd());
+#ifdef JS8_ENABLE_JTTY
+        if (jttyMode()) {
+            // [operator 2026-10-21] JTTY: the desktop's own sender rule --
+            // "<TO> <FROM>", "<TO> DE <FROM>", "CQ <FROM>", "FROM:" -- only a
+            // sender FORM, never the bare second-word guess
+            bool form = false;
+            QString const s = jttyLineSender(body, &form);
+            if (form && !s.isEmpty() && !isMe(s)) call = s.toUpper();
+        } else
+#endif
+        {
+            // JS8: the first "CALL:" (the JS8 "FROM:" form). [operator
+            // 2026-10-21] On my own line ("WM8Q: WD4KAV ...") the station
+            // after the colon, as the desktop's double-click does.
+            QStringList const words = body.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            for (int i = 0; i < words.size(); ++i) {
+                QString w = words.at(i);
+                if (!w.endsWith(QLatin1Char(':')) || w.size() < 2) continue;
+                w.chop(1);
+                if (!Varicode::isValidCallsign(w, nullptr) && !w.startsWith(QLatin1Char('@')))
+                    continue;
+                if (isMe(w)) {
+                    QString const to = i + 1 < words.size() ? words.at(i + 1) : QString();
+                    if ((Varicode::isValidCallsign(to, nullptr) || to.startsWith(QLatin1Char('@'))) &&
+                        !isMe(to))
+                        call = to.toUpper();
+                } else {
+                    call = w.toUpper();
+                }
+                break;
+            }
+        }
+        int offset = -1;
+        static QRegularExpression const offRe(QStringLiteral(R"(\((\d{2,4})\))"));
+        if (auto const m = offRe.match(line); m.hasMatch()) offset = m.captured(1).toInt();
+        QString reason = call.isEmpty() ? QStringLiteral("no_call") : QString();
+        QString noQsy;
+        if (reason.isEmpty()) {
+            selectCallsign(call);
+            if (dbl && offset > 0) {
+                if (qsyOffsetAllowed(offset)) setFreqOffsetForRestore(offset, false);
+                else noQsy = QStringLiteral("hb_zone");
+            }
+        }
+        qWarning() << "[REMOTE] convo" << (dbl ? "double-click" : "click") << call << offset
+                   << (reason.isEmpty() ? noQsy : reason);
+        sendNetworkMessage("UI.CONVO_CLICK", call,
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason},
+                            {"CALL", call},
+                            {"OFFSET", offset},
+                            {"NO_QSY", noQsy}});
+        remotePushChanged();
+        return;
+    }
+
+    if (type == "UI.GET_SNAPSHOT") {
+        sendNetworkMessage("UI.SNAPSHOT", QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"LINES", remoteConversationTail()},
+                            {"ROWS", remoteBandTable()},
+                            {"STATE", remoteUiState()}});
+        return;
+    }
+
     if (type == "WINDOW.RAISE") {
         setWindowState(Qt::WindowActive);
         activateWindow();

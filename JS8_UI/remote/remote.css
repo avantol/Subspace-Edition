@@ -1,0 +1,105 @@
+:root {
+  --bg: #1b1f24; --panel: #242a31; --text: #e6e6e6; --muted: #9aa4ae;
+  --accent: #3d8bfd; --tome: #b3261e; --tx: #d4a017; --ok: #2e9d4f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 15px/1.35 -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* [operator 2026-10-21] never wider than the phone: a too-wide top bar
+     widened the whole page and cut off the right side */
+  max-width: 100vw; overflow-x: hidden; }
+.hidden { display: none !important; }
+.screen { height: 100%; display: flex; flex-direction: column; }
+
+#login { padding: 24px 16px; gap: 8px; }
+#login h1 { font-size: 22px; margin: 0 0 8px; }
+#loginForm { display: flex; gap: 8px; }
+#loginForm input { flex: 1; font-size: 20px; padding: 10px; letter-spacing: 2px;
+  background: var(--panel); color: var(--text); border: 1px solid #39424c; border-radius: 6px; }
+#loginForm button, #tabs button { font-size: 16px; padding: 10px 14px; border: 0;
+  border-radius: 6px; background: var(--accent); color: #fff; }
+.error { color: #ff6b6b; min-height: 1.4em; }
+
+#bar { padding: 8px 12px; background: var(--panel); border-bottom: 1px solid #333; }
+#bar .row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+#bar .small { font-size: 13px; color: var(--muted); margin-top: 4px; }
+#dial { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums;
+  cursor: pointer; text-decoration: underline dotted #6b7682; }
+#offset, #mode { color: var(--muted); }
+.offsetctl { display: inline-flex; align-items: center; gap: 2px; }
+.offsetctl #offset.warn { color: #f5d000; font-weight: 600; }
+.offsetctl #offset { min-width: 4.1em; text-align: center; font-variant-numeric: tabular-nums; }
+button.step { width: 34px; height: 30px; border: 0; border-radius: 6px; background: #2c333b;
+  color: var(--text); font-size: 20px; line-height: 1; padding: 0; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #666; margin-left: auto; }
+.dot.on { background: var(--ok); } .dot.off { background: #c0392b; }
+.pill { padding: 1px 8px; border-radius: 10px; background: #39424c; color: var(--text); }
+.pill.on { background: var(--ok); } #txing { background: var(--tx); color: #000; }
+#selected { color: var(--text); font-weight: 600; }
+
+#tabs { display: flex; gap: 6px; padding: 6px 8px; background: var(--bg); }
+/* [operator 2026-10-21] each tab as wide as its label plus an even share of
+   the rest: Band narrow, Conversation wide */
+#tabs button { flex: 1 1 auto; min-width: 0; background: #2c333b; padding: 8px 10px; }
+#tabs button.active { background: var(--accent); }
+main { flex: 1; overflow: hidden; }
+.tab { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+.brow { padding: 8px 12px; border-bottom: 1px solid #2c333b; }
+.brow .top { display: flex; gap: 10px; font-size: 13px; color: var(--muted); }
+.brow .call { color: var(--text); font-weight: 700; font-size: 15px; min-width: 6.5em; }
+.brow .msg { margin-top: 2px; word-break: break-word; }
+.brow.tome { background: var(--tome); }
+.brow.tome .top { color: #ffd9d6; }
+.brow.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.line { padding: 6px 12px; border-bottom: 1px solid #262c33; word-break: break-word; }
+.line.tx { color: var(--tx); }
+
+button.pill { border: 0; font-size: 13px; }
+#halt { margin-left: auto; background: #c0392b; color: #fff; border: 0; border-radius: 6px;
+  font-weight: 700; padding: 6px 14px; font-size: 15px; }
+#compose { padding: 10px 12px; }
+#outgoing { width: 100%; font-size: 16px; padding: 8px; background: var(--panel); color: var(--text);
+  border: 1px solid #39424c; border-radius: 6px; text-transform: uppercase;
+  height: 5.6em; resize: none; display: block; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.buttons button { flex: 1 1 auto; min-width: 22%; padding: 12px 8px; font-size: 15px; border: 0;
+  border-radius: 6px; background: #2c333b; color: var(--text); }
+/* [operator 2026-10-21] the macro buttons: one even grid, all the same size */
+.buttons.grid4 { display: grid; grid-template-columns: repeat(3, 1fr); } /* 3x3 */
+.buttons.grid4 button { min-width: 0; }
+.buttons button.send { background: var(--ok); color: #fff; font-size: 18px; font-weight: 700; }
+/* [operator 2026-10-21] no green while transmitting (or unavailable) */
+.buttons button.send.busy, .buttons button.send:disabled { background: #2c333b; color: var(--muted); }
+.buttons button:disabled { opacity: .35; }
+#directed.latched, #groupBtn.latched { background: var(--accent); color: #fff; }
+/* [operator 2026-10-21] status/feedback as a toast over the page, not a
+   reserved line in the top bar */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: 8px;
+  background: rgba(20, 22, 26, .94); color: #fff; font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 10;
+  opacity: 0; pointer-events: none; transition: opacity .25s; }
+.toast.show { opacity: 1; }
+
+/* [operator 2026-10-21] tappable lines are buttons, not text: no Android
+   "Touch to Search" pop-up, no text selection, no long-press menu */
+.frow, .brow, .line, .choose, #dial, #mode {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent; cursor: pointer; }
+.frow { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px;
+  border-bottom: 1px solid #2c333b; }
+.frow .band { color: var(--muted); min-width: 3.2em; }
+.frow .mhz { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 6.5em; }
+.frow .kind { font-size: 12px; padding: 1px 6px; border-radius: 8px; background: #39424c; }
+.frow .desc { color: var(--muted); font-size: 13px; }
+.frow.current { background: #1f3a5f; }
+.frow.off { opacity: .4; }
+.choose { display: flex; gap: 8px; align-items: center; padding: 8px 12px 12px;
+  background: #222930; border-bottom: 1px solid #2c333b; color: var(--muted); }
+.choose button { flex: 1; padding: 10px; border: 0; border-radius: 6px;
+  background: #2c333b; color: var(--text); font-size: 15px; font-weight: 600; }
+.choose button.on { background: var(--accent); color: #fff; }
+#mode.tappable { cursor: pointer; text-decoration: underline dotted #6b7682; }
+.hint { color: var(--muted); font-size: 13px; }

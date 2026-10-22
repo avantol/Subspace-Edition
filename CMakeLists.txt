@@ -213,6 +213,7 @@ target_precompile_headers(
 target_sources(
   ${TARGET} PRIVATE
   vendor/sqlite3/sqlite3.c
+  vendor/qrcodegen/qrcodegen.cpp
   JS8_Audio/AudioDevice.cpp
   JS8_Audio/NotificationAudio.cpp
   JS8_Audio/SoundInput.cpp
@@ -299,6 +300,7 @@ target_sources(
   JS8_Network/PSKReporter.cpp
   JS8_Network/SpotClient.cpp
   JS8_Network/TCPClient.cpp
+  JS8_Network/RemoteServer.cpp
   JS8_Transceiver/DXLabSuiteCommanderTransceiver.cpp
   JS8_Transceiver/EmulateSplitTransceiver.cpp
   JS8_Transceiver/HamlibTransceiver.cpp
@@ -330,6 +332,8 @@ target_sources(
   JS8_UI/WideGraph.cpp
   JS8_UI/WsjtxImport.cpp
   JS8_UI/WsjtxImport.h
+  JS8_UI/RemoteDialog.cpp
+  JS8_UI/RemoteDialog.h
   JS8_Widgets/BandActivityMessageDelegate.cpp
   JS8_Widgets/CheckableItemComboBox.cpp
   JS8_Widgets/LazyFillComboBox.cpp
@@ -448,6 +452,26 @@ qt_add_resources(
 # ACL-locked, so the user cannot browse to it. Compiled in, the text
 # reaches the user in every packaging format (Store, Inno, .deb, Raspi).
 #------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+# [phone remote, operator 2026-10-21] The page the phone remote serves
+# (JS8_Network/RemoteServer): :/remote/index.html, remote.js, remote.css.
+#------------------------------------------------------------------------------#
+
+qt_add_resources(
+  ${TARGET} "remote"
+  PREFIX "/remote"
+  BASE JS8_UI/remote
+  FILES
+  JS8_UI/remote/index.html
+  JS8_UI/remote/remote.js
+  JS8_UI/remote/remote.css
+  JS8_UI/remote/manifest.webmanifest
+  JS8_UI/remote/favicon-32.png
+  JS8_UI/remote/icon-192.png
+  JS8_UI/remote/icon-512.png
+  JS8_UI/remote/apple-touch-icon.png
+)
 
 qt_add_resources(
   ${TARGET} "license"

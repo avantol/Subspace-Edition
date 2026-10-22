@@ -1264,6 +1264,9 @@ void UI_Constructor::on_actionSubspace_Guide_triggered() {
         {"How to use the JTTY conversational mode",
          "https://groups.io/g/Subspace/message/378"},
 #endif
+        // [operator 2026-10-21] the phone remote (File > Phone remote)
+        {"Operating Subspace from your phone, at home and away",
+         "https://groups.io/g/Subspace/message/404"},
         {"How to show one call sign per line in Band Activity",
          "https://groups.io/g/Subspace/message/352"},
         {"How to use Station Monitors",
@@ -1774,6 +1777,184 @@ void UI_Constructor::prepareApi() {
     // reason and in the same place: this runs at startup and on every
     // settings accept.
     prepareWsjtxApi();
+    applyRemoteSettings(); // [phone remote] same reason, same place
+}
+
+// [phone remote, operator 2026-10-21] The profile's SsRemote settings to
+// the server: listening only when enabled AND a pass code exists -- there
+// is no way to run it without one.
+void UI_Constructor::applyRemoteSettings() {
+    if (!m_remoteServer) return;
+    m_settings->beginGroup(QStringLiteral("SsRemote"));
+    bool const enabled = m_settings->value(QStringLiteral("Enabled"), false).toBool();
+    quint16 const port = static_cast<quint16>(
+        m_settings->value(QStringLiteral("Port"), RemoteServer::kDefaultPort).toUInt());
+    QString const passcode = m_settings->value(QStringLiteral("Passcode")).toString();
+    m_settings->endGroup();
+    m_remoteEnabled = enabled && !passcode.isEmpty();
+    m_remoteServer->configure(m_remoteEnabled, port, passcode);
+}
+
+void UI_Constructor::remoteNetworkMessage(Message const &message) {
+    if (!m_remoteEnabled) return;
+    // [phone remote] a phone operator is an operator: the idle watchdog
+    // counts this as activity, as a key press on the desktop is
+    resetIdleTimer();
+    networkMessage(message);
+}
+
+// [phone remote, operator 2026-10-21] What the phone shows is what the
+// desktop shows, read from the same widgets -- one authority, so a JTTY
+// line growing in place, a red "to me" row, a list-by-callsign
+// attribution are on the phone exactly as on the screen. Sent whole
+// (the visible tail), never as edits to keep in step.
+
+// The conversation window's last lines (CHOSEN: 60, about two screens).
+QVariantList UI_Constructor::remoteConversationTail() const {
+    constexpr int kLines = 60;
+    QVariantList lines;
+    for (QTextBlock b = ui->textEditRX->document()->lastBlock();
+         b.isValid() && lines.size() < kLines; b = b.previous()) {
+        QString const text = b.text().trimmed();
+        if (text.isEmpty()) continue; // the spacer between messages
+        lines.prepend(QVariantMap{{"TEXT", text},
+                                  {"TX", b.userState() == State::TX}});
+    }
+    return lines;
+}
+
+// The band activity rows as displayed (list by callsign or by offset).
+QVariantList UI_Constructor::remoteBandTable() const {
+    QVariantList rows;
+    auto *t = ui->tableWidgetRXAll;
+    auto const cell = [t](int r, int c) {
+        auto *i = t->item(r, c);
+        return i ? i->text().trimmed() : QString();
+    };
+    for (int r = 0; r < t->rowCount(); ++r) {
+        auto *ci = t->item(r, BACallsign);
+        auto *oi = t->item(r, BAOffset);
+        auto *ai = t->item(r, BAAge);
+        rows.append(QVariantMap{
+            {"CALL", ci ? ci->data(Qt::UserRole).toString() : QString()},
+            {"OFFSET", oi ? oi->data(Qt::UserRole).toInt() : 0},
+            {"AGE", cell(r, BAAge)},
+            {"SNR", cell(r, BASnr)},
+            {"SPEED", cell(r, BASpeed)},
+            {"TEXT", cell(r, BAMessage)},
+            {"TOME", ai && ai->data(Qt::UserRole + 1).toBool()},
+            {"SELECTED", ci && ci->isSelected()},
+        });
+    }
+    return rows;
+}
+
+// [operator 2026-10-21] JTTY mode: a selected station latches "Directed to"
+// (called from selectCallsign, so every screen and route) -- by clicking
+// the button, exactly as the operator would, so its own rules (address in
+// the box, release on mode / frequency change) are unchanged. Nothing when
+// already latched, for a group, or when the button is unavailable.
+void UI_Constructor::jttyAutoLatchDirected() {
+#ifdef JS8_ENABLE_JTTY
+    if (!jttyMode() || callsignSelected().isEmpty() ||
+        callsignSelected().startsWith(QLatin1Char('@')))
+        return;
+    updateButtonDisplay(); // enabled/checkable for the new selection
+    auto *b = ui->queryButton;
+    if (b->isCheckable() && !b->isChecked() && b->isEnabled() && b->isVisible()) {
+        qWarning() << "[JTTY] Directed to latched on selecting" << callsignSelected();
+        b->click();
+    }
+#endif
+}
+
+// The desktop buttons the phone may press (UI.ACTION), by name.
+QAbstractButton *UI_Constructor::remoteButton(QString const &name) const {
+    QHash<QString, QAbstractButton *> const map = {
+        {QStringLiteral("send"), ui->startTxButton},
+        {QStringLiteral("halt"), ui->stopTxButton},
+        {QStringLiteral("txenable"), ui->monitorTxButton},
+        {QStringLiteral("cq"), ui->cqMacroButton},
+        {QStringLiteral("snr"), ui->snrMacroButton},
+        {QStringLiteral("reply"), ui->replyMacroButton},
+        {QStringLiteral("info"), ui->infoMacroButton},
+        {QStringLiteral("status"), ui->statusMacroButton},
+        {QStringLiteral("tu73"), ui->typingMacroButton}, // "TU 73" in JTTY mode
+        {QStringLiteral("log"), ui->logQSOButton},
+        {QStringLiteral("directed"), ui->queryButton},
+        {QStringLiteral("deselect"), ui->deselectButton},
+    };
+    return map.value(name, nullptr);
+}
+
+// The top bar and the buttons' state.
+QVariantMap UI_Constructor::remoteUiState() {
+    QVariantMap buttons;
+    for (QString const &n : {QStringLiteral("send"), QStringLiteral("halt"),
+                             QStringLiteral("txenable"), QStringLiteral("cq"),
+                             QStringLiteral("snr"), QStringLiteral("reply"),
+                             QStringLiteral("info"), QStringLiteral("status"),
+                             QStringLiteral("tu73"), QStringLiteral("log"),
+                             QStringLiteral("directed"), QStringLiteral("deselect")})
+        if (auto *b = remoteButton(n)) buttons.insert(n, b->isVisible() && b->isEnabled());
+    // "log" needs a station to log
+    if (callsignSelected().isEmpty()) buttons.insert(QStringLiteral("log"), false);
+    // [operator 2026-10-21] AGN? and Repeat (not desktop buttons): idle
+    // like the macro buttons; AGN? in JS8 mode needs a station to ask,
+    // Repeat a previous message to bring back
+    bool const idle = !isMessageQueuedForTransmit();
+    buttons.insert(QStringLiteral("agn"),
+                   idle && (jttyMode() || !callsignSelected().isEmpty()));
+    buttons.insert(QStringLiteral("repeat"), idle && !m_lastTxMessage.isEmpty());
+    // [operator 2026-10-21] JS8 mode: SNR? (the Directed-to menu's query,
+    // which the desktop greys out for @ALLCALL) ...
+    QString const sel = callsignSelected();
+    buttons.insert(QStringLiteral("snrq"), !jttyMode() && idle && !sel.isEmpty() &&
+                                               sel != QLatin1String("@ALLCALL"));
+    // ... and with a GROUP selected the phone's CQ, Reply, SNR, AGN? and Log
+    // are off (a group is not a contact to log)
+    if (sel.startsWith(QLatin1Char('@')))
+        for (auto const n : {"cq", "reply", "snr", "agn", "log"})
+            buttons.insert(QString::fromLatin1(n), false);
+    return QVariantMap{
+        {"BUTTONS", buttons},
+        {"TU73_TEXT", ui->typingMacroButton->text()}, // TU 73 / TYPING
+        {"MODE", jttyMode() ? QStringLiteral("JTTY") : QStringLiteral("JS8")},
+        {"SPEED", JS8::Submode::name(m_nSubMode)},
+        {"DIAL", static_cast<quint64>(dialFrequency())},
+        {"OFFSET", freq()},
+        {"SELECTED", callsignSelected()},
+        {"TX_ENABLED", ui->monitorTxButton->isChecked()},
+        {"TRANSMITTING", m_transmitting},
+        // [operator 2026-10-21] a message waiting for its slot: Send is down
+        {"QUEUED", ui->startTxButton->isChecked() && !m_transmitting},
+        {"DIRECTED_LATCH", ui->queryButton->isCheckable() &&
+                               ui->queryButton->isChecked()},
+        {"BAND_BY_CALL", bandListByCall()},
+        {"OUTGOING", ui->extFreeTextMsgEdit->toPlainText()},
+    };
+}
+
+// Each pushed when it changed, at most every 250 ms (CHOSEN).
+void UI_Constructor::remotePushChanged() {
+    if (!m_remoteEnabled) return;
+    if (!m_remotePushTimer) {
+        m_remotePushTimer = new QTimer(this);
+        m_remotePushTimer->setSingleShot(true);
+        m_remotePushTimer->setInterval(250);
+        connect(m_remotePushTimer, &QTimer::timeout, this, [this]() {
+            auto const push = [this](QString const &type, QVariant const &v,
+                                     QVariant &last, QString const &key) {
+                if (v == last) return;
+                last = v;
+                sendNetworkMessage(type, QString(), {{"_ID", QVariant(-1)}, {key, v}});
+            };
+            push("RX.TEXT.TAIL", remoteConversationTail(), m_remoteLastText, "LINES");
+            push("RX.BAND.TABLE", remoteBandTable(), m_remoteLastBand, "ROWS");
+            push("UI.STATE", remoteUiState(), m_remoteLastState, "STATE");
+        });
+    }
+    if (!m_remotePushTimer->isActive()) m_remotePushTimer->start();
 }
 
 // [#291 restartfix] Bring the WSJT-X protocol client into line with the
@@ -12664,6 +12845,7 @@ void UI_Constructor::updateButtonDisplay() {
 #ifdef JS8_ENABLE_JTTY
     serviceJttyDirectedLatch(); // [TODO #314]
 #endif
+    remotePushChanged(); // [phone remote] the phone's top bar and buttons
     auto directedText = emptyCallsign ? QString("Directed")
                       : QString("Directed to %1").arg(selectedCallsign);
     if (ui->queryButton->text() != directedText) {
@@ -13254,6 +13436,14 @@ void UI_Constructor::selectCallsign(QString call, int submode) {
             m_cq_loop->onLoopCancel();
         }
     }
+
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-21: "setting Directed to is the only reason for
+    // selecting a call"] JTTY mode: every selection -- any screen, any
+    // route, the same call again too -- latches "Directed to". After the
+    // selection has settled (next event-loop turn).
+    QTimer::singleShot(0, this, [this]() { jttyAutoLatchDirected(); });
+#endif
 
     if (call == m_selectedCallsign)
         return;
@@ -14477,7 +14667,7 @@ void UI_Constructor::tcpNetworkMessage(Message const &message) {
 void networkMessage(); // JS8_Mainwindow/networkMessage.cpp
 
 bool UI_Constructor::canSendNetworkMessage() {
-    return m_config.udpEnabled() || m_config.tcpEnabled();
+    return m_config.udpEnabled() || m_config.tcpEnabled() || m_remoteEnabled;
 }
 
 void UI_Constructor::sendNetworkMessage(QString const &type,
@@ -14529,6 +14719,11 @@ void UI_Constructor::sendNetworkMessage(QString const &type,
 
     if (m_config.tcpEnabled()) {
         m_messageServer->send(m);
+    }
+
+    // [phone remote] the same replies and events, to the phone
+    if (m_remoteEnabled && m_remoteServer) {
+        m_remoteServer->send(m);
     }
 }
 

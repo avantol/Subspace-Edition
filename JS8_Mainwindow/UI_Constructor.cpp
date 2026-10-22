@@ -21,6 +21,7 @@
 #include "JS8_UI/ArqMonitorWindow.h"
 #include "JS8_UI/StationMonitorWindow.h" // [stamon]
 #include "JS8_UI/WsjtxImport.h"          // [operator 2026-10-16]
+#include "JS8_UI/RemoteDialog.h"         // [phone remote]
 #include "JS8_Widgets/BandActivityMessageDelegate.h"
 #include "JS8_Widgets/ScreenRescue.h" // [#246]
 
@@ -226,6 +227,15 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     connect(&m_config, &Configuration::tcp_max_connections_changed,
             m_messageServer, &MessageServer::setMaxConnections);
     connect(&m_networkThread, &QThread::finished, m_messageServer,
+            &QObject::deleteLater);
+
+    // [phone remote, operator 2026-10-21] the phone's web server, on the
+    // network thread beside the TCP API; started by applyRemoteSettings
+    m_remoteServer = new RemoteServer();
+    m_remoteServer->moveToThread(&m_networkThread);
+    connect(m_remoteServer, &RemoteServer::message, this,
+            &UI_Constructor::remoteNetworkMessage);
+    connect(&m_networkThread, &QThread::finished, m_remoteServer,
             &QObject::deleteLater);
 
     // ChunkedArq manager — owns all per-peer chunked-ARQ state
@@ -1161,6 +1171,16 @@ UI_Constructor::UI_Constructor(QString const &program_info,
         ui->menuFile->insertAction(ui->actionSettings, wsjtxImport);
         connect(wsjtxImport, &QAction::triggered, this,
                 &UI_Constructor::importFromWsjtx);
+        // [phone remote] every change of the conversation window
+        connect(ui->textEditRX->document(), &QTextDocument::contentsChanged,
+                this, [this]() { remotePushChanged(); });
+        // [phone remote, operator 2026-10-21] File > Phone remote...
+        auto *remote = new QAction(tr("Phone remote..."), this);
+        ui->menuFile->insertAction(ui->actionSettings, remote);
+        connect(remote, &QAction::triggered, this, [this]() {
+            RemoteDialog dlg(m_settings, this);
+            if (dlg.exec() == QDialog::Accepted) applyRemoteSettings();
+        });
     }
     m_configurations_button = m_rigErrorMessageBox.addButton(
         tr("Configurations..."), QMessageBox::ActionRole);

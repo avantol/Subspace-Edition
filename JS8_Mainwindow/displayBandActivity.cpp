@@ -1111,4 +1111,5 @@ void UI_Constructor::displayBandActivity() {
 #ifdef JS8_ENABLE_JTTY
     if (m_bandLineHintArmed) showBandLineHint(); // [operator 2026-10-21]
 #endif
+    remotePushChanged(); // [phone remote] the phone's band list
 }

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1f24">
+<title>Subspace Remote</title>
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="remote.css">
+</head>
+<body>
+<div id="login" class="screen hidden">
+  <h1>Subspace Remote</h1>
+  <p>Enter the pass code shown in the station's File &gt; Phone remote window.</p>
+  <form id="loginForm">
+    <input id="passcode" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Pass code">
+    <button type="submit">Log in</button>
+  </form>
+  <p id="loginError" class="error"></p>
+</div>
+
+<div id="app" class="screen hidden">
+  <header id="bar">
+    <div class="row">
+      <span id="dial" title="tap for the frequency list">--.------ &#9662;</span>
+      <span class="offsetctl"><button class="step" data-step="-25">&minus;</button><span id="offset">---- Hz</span><button class="step" data-step="25">+</button></span>
+      <span id="mode">--</span>
+      <span id="conn" class="dot" title="connection"></span>
+    </div>
+    <div class="row small">
+      <span id="selected">------</span>
+      <button id="txen" class="pill" data-action="txenable">TX off</button>
+      <span id="txing" class="pill hidden">XMIT</span>
+      <button id="halt" data-action="halt">HALT</button>
+    </div>
+  </header>
+  <nav id="tabs">
+    <button data-tab="band" class="active">Band</button>
+    <button data-tab="convo">Conversation</button>
+    <button data-tab="compose">Compose</button>
+  </nav>
+  <main>
+    <section id="band" class="tab"></section>
+    <section id="convo" class="tab hidden"></section>
+    <section id="compose" class="tab hidden">
+      <textarea id="outgoing" rows="3" autocapitalize="characters" spellcheck="false"
+                placeholder="Message"></textarea>
+      <div class="buttons">
+        <button data-action="send" class="send">Send</button>
+      </div>
+      <div class="buttons grid4">
+        <button data-action="cq">CQ</button>
+        <button data-action="reply">Reply</button>
+        <button data-action="snr">SNR</button>
+        <button data-action="snrq" class="js8only">SNR?</button>
+        <button id="groupBtn" class="js8only">Group</button>
+        <button data-action="tu73" id="tu73">TU 73</button>
+        <button data-action="agn">AGN?</button>
+        <button data-action="repeat">Repeat</button>
+        <button data-action="log">Log</button>
+      </div>
+      <div class="buttons">
+        <button data-action="directed" id="directed">Directed to</button>
+        <button data-action="deselect">Deselect</button>
+      </div>
+      <p class="hint">Tap a station in Band or Conversation to select it; double-tap to select it and move to its offset.</p>
+    </section>
+    <section id="freq" class="tab hidden"></section>
+    <section id="speeds" class="tab hidden"></section>
+    <section id="groups" class="tab hidden"></section>
+  </main>
+</div>
+<div id="notice" class="toast"></div>
+<script src="remote.js"></script>
+</body>
+</html>
