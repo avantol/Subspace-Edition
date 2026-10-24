@@ -126,7 +126,8 @@ void PollingTransceiver::do_sync(bool force_signal, bool no_poll) {
             // or there are no more retries
             force_signal = true;
         }
-    } else if (force_signal || state() != last_signalled_state_) {
+    } else if (force_signal || state() != last_signalled_state_ ||
+               !state().same_meters(last_signalled_state_)) { // [TODO #316]
         // here is the normal passive polling path either our client has
         // requested a state update regardless of change or state has
         // changed asynchronously

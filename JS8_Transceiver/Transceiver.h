@@ -100,6 +100,24 @@ class Transceiver : public QObject {
         void mode(MODE m) { mode_ = m; }
         void ptt(bool state) { ptt_ = state; }
 
+        // [operator 2026-10-24, TODO #316] Transmit meters for the phone
+        // remote. want_meters travels client -> rig only (a phone is
+        // connected: the rig may read the meters while keyed);
+        // tx_power_w / swr travel rig -> client, -1 = not read. Neither
+        // takes part in != (rig-state matching); the rig signals a meter
+        // change by itself (TransceiverBase::update_complete).
+        bool want_meters() const { return want_meters_; }
+        float tx_power_w() const { return tx_power_w_; }
+        float swr() const { return swr_; }
+        void want_meters(bool on) { want_meters_ = on; }
+        void meters(float watts, float swr) {
+            tx_power_w_ = watts;
+            swr_ = swr;
+        }
+        bool same_meters(TransceiverState const &o) const {
+            return tx_power_w_ == o.tx_power_w_ && swr_ == o.swr_;
+        }
+
       private:
         bool online_;
         Frequency rx_frequency_;
@@ -107,6 +125,9 @@ class Transceiver : public QObject {
         MODE mode_;
         enum class Split { unknown, off, on } split_;
         bool ptt_;
+        bool want_meters_{false};
+        float tx_power_w_{-1.f};
+        float swr_{-1.f};
         // Don't forget to update the debug print and != operator if you
         // add more members here
 
@@ -152,6 +173,10 @@ class Transceiver : public QObject {
 
     // something went wrong - not recoverable, start new instance
     Q_SIGNAL void failure(QString const &reason) const;
+
+    // [TODO #316] reading the transmit meters failed: never try this rig
+    // again (the client remembers it per rig)
+    Q_SIGNAL void meters_unavailable() const;
 
     // Ready to be destroyed.
     Q_SIGNAL void finished() const;

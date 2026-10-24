@@ -26,6 +26,8 @@ EmulateSplitTransceiver::EmulateSplitTransceiver(
     connect(wrapped_.get(), &Transceiver::finished, this,
             &Transceiver::finished);
     connect(wrapped_.get(), &Transceiver::failure, this, &Transceiver::failure);
+    connect(wrapped_.get(), &Transceiver::meters_unavailable, this,
+            &Transceiver::meters_unavailable); // [TODO #316]
 }
 
 void EmulateSplitTransceiver::set(TransceiverState const &s,

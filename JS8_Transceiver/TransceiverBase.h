@@ -122,6 +122,10 @@ class TransceiverBase : public Transceiver {
     void update_split(bool);
     void update_mode(MODE);
     void update_PTT(bool = true);
+    void update_meters(float watts, float swr); // [TODO #316] -1 = not read
+
+    // [TODO #316] the client asked for transmit meters (a phone is connected)
+    bool meters_wanted() const { return requested_.want_meters(); }
 
     // Calling this eventually triggers the Transceiver::update(State) signal.
     void update_complete(bool force_signal = false);

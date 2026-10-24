@@ -235,6 +235,14 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     m_remoteServer->moveToThread(&m_networkThread);
     connect(m_remoteServer, &RemoteServer::message, this,
             &UI_Constructor::remoteNetworkMessage);
+    // [operator 2026-10-24, TODO #316: "don't poll for power/swr if the
+    // phone app not connected"] the rig reads its transmit meters only
+    // while a phone has the page open
+    connect(m_remoteServer, &RemoteServer::phoneConnected, this,
+            [this](bool connected) {
+                qWarning() << "[RIG-METER] phone connected=" << connected;
+                m_config.transceiver_want_meters(connected);
+            });
     connect(&m_networkThread, &QThread::finished, m_remoteServer,
             &QObject::deleteLater);
 

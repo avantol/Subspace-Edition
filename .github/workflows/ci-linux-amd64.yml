@@ -62,7 +62,7 @@ jobs:
            deb-pkg/usr/share/applications/
         cp deb-staging/usr/share/icons/hicolor/256x256/apps/js8call-subspace.png \
            deb-pkg/usr/share/icons/hicolor/256x256/apps/
-        printf 'Package: js8call-subspace\nVersion: %s\nSection: hamradio\nPriority: optional\nArchitecture: amd64\nMaintainer: WM8Q <andy.vantol@gmail.com>\nDescription: Subspace Edition\n Subspace Edition, with fast asynchronous protocols for message exchange / storage / relay, and file transfer using JS8-style weak signal communication.\nDepends: libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6network6 | libqt6network6t64, libqt6serialport6 | libqt6serialport6t64, libqt6sql6 | libqt6sql6t64, libqt6sql6-sqlite, libfftw3-single3, libhamlib4 | libhamlib4t64\n' "${VER}" > deb-pkg/DEBIAN/control
+        printf 'Package: js8call-subspace\nVersion: %s\nSection: hamradio\nPriority: optional\nArchitecture: amd64\nMaintainer: WM8Q <ssdev.avantol@xoxy.net>\nDescription: Subspace Edition\n Subspace Edition, with fast asynchronous protocols for message exchange / storage / relay, and file transfer using JS8-style weak signal communication.\nDepends: libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6network6 | libqt6network6t64, libqt6serialport6 | libqt6serialport6t64, libqt6sql6 | libqt6sql6t64, libqt6sql6-sqlite, libfftw3-single3, libhamlib4 | libhamlib4t64\n' "${VER}" > deb-pkg/DEBIAN/control
         dpkg-deb --build deb-pkg Subspace-Edition_${VER}_amd64.deb
         file deb-pkg/usr/bin/js8call-subspace
         ls -la Subspace-Edition_${VER}_amd64.deb

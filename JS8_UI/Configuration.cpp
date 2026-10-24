@@ -415,6 +415,10 @@ class Configuration::impl final : public QDialog {
     void transceiver_tx_frequency(Frequency);
     void transceiver_mode(MODE);
     void transceiver_ptt(bool);
+    void transceiver_want_meters(bool); // [TODO #316]
+    static QString meters_failed_key(QString const &rig_name);
+    bool meters_failed(QString const &rig_name) const;
+    bool meters_possible(QString const &rig_name) const;
     void sync_transceiver(bool force_signal);
 
     Q_SLOT int exec() override;
@@ -691,6 +695,8 @@ class Configuration::impl final : public QDialog {
     bool ppfx_;
     bool miles_;
     bool hold_ptt_;
+    bool report_tx_meters_{false}; // [TODO #316] Settings > Radio > Rig Options
+    bool phone_connected_{false};  // [TODO #316] a phone has the page open
     bool avoid_forced_identify_;
     bool avoid_allcall_;
     bool hail_single_frame_;
@@ -1084,6 +1090,10 @@ void Configuration::transceiver_mode(MODE mode) {
     qCDebug(configuration_js8)
         << "Configuration::transceiver_mode:" << mode << m_->cached_rig_state_;
     m_->transceiver_mode(mode);
+}
+
+void Configuration::transceiver_want_meters(bool on) {
+    m_->transceiver_want_meters(on);
 }
 
 void Configuration::transceiver_ptt(bool on) {
@@ -2037,6 +2047,7 @@ void Configuration::impl::initialize_models() {
         ui_->auto_switch_bands_check_box->isChecked());
     ui_->miles_check_box->setChecked(miles_);
     ui_->hold_ptt_check_box->setChecked(hold_ptt_);
+    ui_->report_tx_meters_check_box->setChecked(report_tx_meters_);
     ui_->avoid_forced_identify_check_box->setChecked(avoid_forced_identify_);
     ui_->avoid_allcall_check_box->setChecked(avoid_allcall_);
     ui_->hail_single_frame_radio->setChecked(hail_single_frame_);
@@ -2626,6 +2637,8 @@ void Configuration::impl::read_settings() {
     ppfx_ = settings_->value("PrincipalPrefix", false).toBool();
     miles_ = settings_->value("Miles", false).toBool();
     hold_ptt_ = settings_->value("HoldPTT", false).toBool();
+    // [TODO #316] new key, default off: no reads while keyed unless asked
+    report_tx_meters_ = settings_->value("SsReportTxMeters", false).toBool();
     avoid_forced_identify_ =
         settings_->value("AvoidForcedIdentify", false).toBool();
     avoid_allcall_ = settings_->value("AvoidAllcall", false).toBool();
@@ -2917,6 +2930,7 @@ void Configuration::impl::write_settings() {
     settings_->setValue("PrincipalPrefix", ppfx_);
     settings_->setValue("Miles", miles_);
     settings_->setValue("HoldPTT", hold_ptt_);
+    settings_->setValue("SsReportTxMeters", report_tx_meters_);
     settings_->setValue("AvoidForcedIdentify", avoid_forced_identify_);
     settings_->setValue("AvoidAllcall", avoid_allcall_);
     settings_->setValue("HailSingleFrame", hail_single_frame_);
@@ -3011,6 +3025,16 @@ void Configuration::impl::set_rig_invariants() {
 
     ui_->CAT_poll_interval_label->setEnabled(!asynchronous_CAT);
     ui_->CAT_poll_interval_spin_box->setEnabled(!asynchronous_CAT);
+
+    // [operator 2026-10-24, TODO #316] "option visually and logically
+    // disabled if flrig and any other known problem radios, hrd, DX lab":
+    // greyed and unchecked for those and for a rig that once failed a
+    // reading, so OK saves it off; transceiver_want_meters refuses the
+    // same rigs as well
+    bool const meters_ok = meters_possible(rig);
+    ui_->report_tx_meters_check_box->setEnabled(meters_ok);
+    if (!meters_ok)
+        ui_->report_tx_meters_check_box->setChecked(false);
 
     auto port_type = transceiver_factory_.CAT_port_type(rig);
 
@@ -3556,6 +3580,8 @@ void Configuration::impl::accept() {
     monitor_last_used_ = ui_->monitor_last_used_check_box->isChecked();
     miles_ = ui_->miles_check_box->isChecked();
     hold_ptt_ = ui_->hold_ptt_check_box->isChecked();
+    report_tx_meters_ = ui_->report_tx_meters_check_box->isChecked();
+    transceiver_want_meters(phone_connected_); // re-apply with the new option
     avoid_forced_identify_ = ui_->avoid_forced_identify_check_box->isChecked();
     avoid_allcall_ = ui_->avoid_allcall_check_box->isChecked();
     hail_single_frame_ = ui_->hail_single_frame_radio->isChecked();
@@ -4491,10 +4517,17 @@ bool Configuration::impl::open_rig(bool force) {
         try {
             close_rig();
 
+            // [TODO #316] a rig that once failed a transmit-meter read is
+            // never read while keyed again (per rig, per profile)
+            auto open_data = rig_data;
+            open_data.meters_allowed = meters_possible(rig_data.rig_name);
+
             // create a new Transceiver object
             auto rig =
-                transceiver_factory_.create(rig_data, transceiver_thread_);
+                transceiver_factory_.create(open_data, transceiver_thread_);
+            bool const want_meters = cached_rig_state_.want_meters();
             cached_rig_state_ = Transceiver::TransceiverState{};
+            cached_rig_state_.want_meters(want_meters); // a phone stays connected
 
             // hook up Configuration transceiver control signals to Transceiver
             // slots
@@ -4516,6 +4549,13 @@ bool Configuration::impl::open_rig(bool force) {
             rig_connections_
                 << connect(rig.get(), &Transceiver::failure, this,
                            &Configuration::impl::handle_transceiver_failure);
+            rig_connections_ << connect(
+                rig.get(), &Transceiver::meters_unavailable, this,
+                [this, name = rig_data.rig_name]() {
+                    settings_->setValue(meters_failed_key(name), true);
+                    qWarning() << "[RIG-METER] remembered: no meter reads on"
+                               << name;
+                });
 
             // setup thread safe startup and close down semantics
             rig_connections_
@@ -4618,6 +4658,32 @@ void Configuration::impl::transceiver_mode(MODE m) {
     cached_rig_state_.online(true); // we want the rig online
     cached_rig_state_.mode(m);
     Q_EMIT set_transceiver(cached_rig_state_, ++transceiver_command_number_);
+}
+
+// [operator 2026-10-24, TODO #316] Per rig, per profile, in its own group
+// (no existing key changes shape). '/' would split the key into groups.
+QString Configuration::impl::meters_failed_key(QString const &rig_name) {
+    QString name = rig_name;
+    name.replace(QLatin1Char('/'), QLatin1Char('_'))
+        .replace(QLatin1Char('\\'), QLatin1Char('_'));
+    return QStringLiteral("SsRigMeters/Failed_") + name;
+}
+
+bool Configuration::impl::meters_failed(QString const &rig_name) const {
+    return settings_->value(meters_failed_key(rig_name), false).toBool();
+}
+
+// [operator 2026-10-24] Meters only with the Rig Options box checked AND a
+// phone connected. Goes with the next set (the PTT command).
+void Configuration::impl::transceiver_want_meters(bool phone_connected) {
+    phone_connected_ = phone_connected;
+    cached_rig_state_.want_meters(phone_connected_ && report_tx_meters_ &&
+                                  meters_possible(rig_params_.rig_name));
+}
+
+bool Configuration::impl::meters_possible(QString const &rig_name) const {
+    return transceiver_factory_.can_read_tx_meters(rig_name) &&
+           !meters_failed(rig_name);
 }
 
 void Configuration::impl::transceiver_ptt(bool on) {

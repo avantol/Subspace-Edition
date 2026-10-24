@@ -291,10 +291,16 @@ void RemoteServer::openEvents(QTcpSocket *socket) {
 // Ends the session: the cookie stops working and open streams close.
 void RemoteServer::endSession() {
     m_session.clear();
+    bool const hadEvents = !m_events.isEmpty();
     for (auto const &s : m_events)
         if (s) s->disconnectFromHost();
     m_events.clear();
     m_keepalive.stop();
+    // [operator 2026-10-24] the counterpart of openEvents' phoneConnected
+    // (true): the streams' own disconnect handler no longer sees them in
+    // m_events, so it would never say so -- and the rig would go on
+    // reading its transmit meters for a phone that is gone (TODO #316)
+    if (hadEvents) emit phoneConnected(false);
 }
 
 void RemoteServer::send(Message const &message) {

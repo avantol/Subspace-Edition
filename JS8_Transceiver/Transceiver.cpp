@@ -23,7 +23,8 @@ QDebug operator<<(QDebug d, Transceiver::TransceiverState const &s) {
                     : Transceiver::TransceiverState::Split::off == s.split_
                         ? "off"
                         : "unknown")
-                << "; PTT: " << (s.ptt_ ? "on" : "off") << ')';
+                << "; PTT: " << (s.ptt_ ? "on" : "off")
+                << "; meters: " << s.tx_power_w_ << "W SWR " << s.swr_ << ')';
     return d.space();
 }
 

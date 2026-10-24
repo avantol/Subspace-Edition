@@ -105,7 +105,15 @@ function renderState(s) {
   $('txing').classList.toggle('hidden', !s.TRANSMITTING);
   const send = document.querySelector('[data-action="send"]');
   send.classList.toggle('busy', !!s.TRANSMITTING || !!s.QUEUED);
-  send.textContent = s.TRANSMITTING ? 'Sending' : s.QUEUED ? 'Queued' : 'Send';
+  // [operator 2026-10-24, TODO #316] the rig's power and SWR, when the
+  // station reads them (Rig Options box, a meter-capable rig, not flrig);
+  // -1 = not read
+  let meters = '';
+  if (s.TRANSMITTING) {
+    if (s.TX_POWER_W >= 0) meters += ` · ${Math.round(s.TX_POWER_W)} W`;
+    if (s.SWR >= 1) meters += ` · SWR ${s.SWR.toFixed(1)}`;
+  }
+  send.textContent = s.TRANSMITTING ? 'Sending' + meters : s.QUEUED ? 'Queued' : 'Send';
   // each phone button follows its desktop button: disabled there, here too
   const b = s.BUTTONS || {};
   document.querySelectorAll('#compose [data-action]').forEach((el) => {

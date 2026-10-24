@@ -1969,6 +1969,16 @@ this setting allows you to select which audio input will be used
                     </property>
                    </widget>
                   </item>
+                  <item>
+                   <widget class="QCheckBox" name="report_tx_meters_check_box">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;While a phone remote is connected, read the radio's output power and SWR twice at the start of each transmission and show them on the phone's Send button.&lt;/p&gt;&lt;p&gt;Only for radios whose CAT reports these meters; never through FLRig. A radio that fails a reading once is not read again.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="text">
+                     <string>Report power and SWR in phone remote</string>
+                    </property>
+                   </widget>
+                  </item>
                  </layout>
                 </widget>
                </item>

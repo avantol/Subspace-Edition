@@ -52,6 +52,7 @@ class HamlibTransceiver final : public PollingTransceiver {
     void do_ptt(bool) override;
 
     void poll() override;
+    void read_tx_meters(); // [TODO #316]
 
     void error_check(int ret_code, QString const &doing) const;
     void set_conf(char const *item, char const *value);
@@ -84,6 +85,11 @@ class HamlibTransceiver final : public PollingTransceiver {
                          // establish the Tx VFO
     bool get_vfo_works_; // Net rigctl promises what it can't deliver
     bool set_vfo_works_; // More rigctl promises which it can't deliver
+
+    // [TODO #316] transmit meters for the phone remote
+    bool meters_allowed_{false}; // not flrig, never failed on this rig
+    setting_t meter_levels_{0};  // levels to read; 0 = none
+    int meter_reads_{0};         // readings taken this transmission
 };
 
 #endif

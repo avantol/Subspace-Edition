@@ -240,7 +240,9 @@ HamlibTransceiver::HamlibTransceiver(
       reversed_{false}, freq_query_works_{rig_ && rig_->caps->get_freq},
       mode_query_works_{rig_ && rig_->caps->get_mode},
       split_query_works_{rig_ && rig_->caps->get_split_vfo},
-      tickle_hamlib_{false}, get_vfo_works_{true}, set_vfo_works_{true} {
+      tickle_hamlib_{false}, get_vfo_works_{true}, set_vfo_works_{true},
+      // [operator 2026-10-24] "no attempt if flrig involved"
+      meters_allowed_{params.meters_allowed && RIG_MODEL_FLRIG != model_number} {
     if (!rig_) {
         throw error{tr("Hamlib initialisation error")};
     }
@@ -644,6 +646,23 @@ int HamlibTransceiver::do_start() {
     } else {
         resolution = -1; // best guess
     }
+
+    // [operator 2026-10-24, TODO #316] Transmit meters, for the phone
+    // remote: only levels the rig says it can report (after open: a NET
+    // rigctl rig learns them from rigctld), never through flrig (cleared
+    // in the constructor), never for a rig that once failed a meter read.
+    meter_levels_ = 0;
+    if (meters_allowed_) {
+#ifdef RIG_LEVEL_RFPOWER_METER_WATTS
+        setting_t const wanted = RIG_LEVEL_SWR | RIG_LEVEL_RFPOWER_METER_WATTS;
+#else
+        setting_t const wanted = RIG_LEVEL_SWR;
+#endif
+        meter_levels_ = rig_has_get_level(rig_.data(), wanted);
+    }
+    qWarning() << "[RIG-METER] rig" << rig_->caps->model_name
+               << "meters allowed=" << meters_allowed_ << "levels="
+               << Qt::hex << static_cast<quint64>(meter_levels_);
 
     poll();
 
@@ -1107,6 +1126,8 @@ void HamlibTransceiver::poll() {
         }
     }
 
+    if (state().ptt()) read_tx_meters(); // [TODO #316]
+
     if (hamlibtransceiver_js8().isDebugEnabled())
         rig_set_debug(RIG_DEBUG_TRACE);
     else if (hamlibtransceiver_js8().isInfoEnabled())
@@ -1138,7 +1159,48 @@ void HamlibTransceiver::do_ptt(bool on) {
         }
     }
 
+    if (on) meter_reads_ = 0; // [TODO #316] two readings per transmission
     update_PTT(on);
+}
+
+// [operator 2026-10-24, TODO #316: "wait for the power and SWR to settle,
+// two readings should be enough"; "don't poll for power/swr if the phone
+// app not connected"] Called from poll() while keyed. The first two polls
+// of a transmission read the meters; the second reading is the one shown
+// (the first may catch the rig still ramping up). After that nothing is
+// read until the next key-up, so no meter read can be waiting in front of
+// the PTT-off command at the end. One failed read: the rig is reported
+// (meters_unavailable, remembered per rig by the client) and never read
+// again while keyed. The #245 rule (no reads while keyed) holds for
+// everything else.
+void HamlibTransceiver::read_tx_meters() {
+    if (!meter_levels_ || !meters_wanted() || meter_reads_ >= 2) return;
+    ++meter_reads_;
+    float watts = -1.f, swr = -1.f;
+    auto const read = [this](setting_t level, float &out) {
+        if (!(meter_levels_ & level)) return true;
+        value_t v{};
+        int const rc = rig_get_level(rig_.data(), RIG_VFO_CURR, level, &v);
+        if (RIG_OK != rc) {
+            qWarning() << "[RIG-METER] read failed:" << rigerror(rc)
+                       << "- not reading meters on this rig again";
+            return false;
+        }
+        out = v.f;
+        return true;
+    };
+    bool ok = read(RIG_LEVEL_SWR, swr);
+#ifdef RIG_LEVEL_RFPOWER_METER_WATTS
+    ok = ok && read(RIG_LEVEL_RFPOWER_METER_WATTS, watts);
+#endif
+    if (!ok) {
+        meter_levels_ = 0;
+        Q_EMIT meters_unavailable();
+        return;
+    }
+    qWarning() << "[RIG-METER] reading" << meter_reads_ << ":" << watts
+               << "W SWR" << swr;
+    if (2 == meter_reads_) update_meters(watts, swr);
 }
 
 void HamlibTransceiver::set_conf(char const *item, char const *value) {

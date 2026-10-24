@@ -79,6 +79,18 @@ bool TransceiverFactory::has_asynchronous_CAT(QString const &name) const {
     return supported_transceivers()[name].asynchronous_;
 }
 
+// [operator 2026-10-24, TODO #316: "disabled if flrig and any other known
+// problem radios, hrd, DX lab"] Transmit meters only through Hamlib's own
+// rig back-ends: not FLRig, not "None" (Hamlib's dummy), not the non-Hamlib
+// interfaces (DX Lab Commander, HRD, OmniRig). A rig that once failed a
+// reading is refused by Configuration (meters_failed), per rig.
+bool TransceiverFactory::can_read_tx_meters(QString const &name) const {
+    if (!supported_transceivers().contains(name)) return false;
+    int const model = supported_transceivers()[name].model_number_;
+    return model < NonHamlibBaseId && RIG_MODEL_FLRIG != model &&
+           RIG_MODEL_DUMMY != model;
+}
+
 std::unique_ptr<Transceiver>
 TransceiverFactory::create(ParameterPack const &params,
                            QThread *target_thread) {

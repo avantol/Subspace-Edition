@@ -44,6 +44,9 @@ void TransceiverBase::set(TransceiverState const &s,
     QString message;
     try {
         may_update u{this, true};
+        // [TODO #316] whether a phone is connected: read before the PTT
+        // change below, so a key-up already knows
+        requested_.want_meters(s.want_meters());
         bool was_online{requested_.online()};
         if (!s.online() && was_online) {
             shutdown();
@@ -180,10 +183,20 @@ void TransceiverBase::update_mode(MODE m) {
     requested_.mode(m); // track rig changes
 }
 
-void TransceiverBase::update_PTT(bool state) { actual_.ptt(state); }
+void TransceiverBase::update_PTT(bool state) {
+    if (state && !actual_.ptt())
+        actual_.meters(-1.f, -1.f); // [TODO #316] a new transmission
+    actual_.ptt(state);
+}
+
+void TransceiverBase::update_meters(float watts, float swr) {
+    actual_.meters(watts, swr);
+}
 
 void TransceiverBase::update_complete(bool force_signal) {
-    if ((do_pre_update() && actual_ != last_) || force_signal) {
+    if ((do_pre_update() &&
+         (actual_ != last_ || !actual_.same_meters(last_))) ||
+        force_signal) {
         Q_EMIT update(actual_, last_sequence_number_);
         last_ = actual_;
     }

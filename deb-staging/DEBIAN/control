@@ -1,9 +1,9 @@
 Package: js8call-subspace
-Version: 4.1.0.509
+Version: 4.1.0.510
 Section: hamradio
 Priority: optional
 Architecture: amd64
 Depends: libqt6core6, libqt6widgets6, libqt6serialport6, libqt6sql6t64 | libqt6sql6, libqt6sql6-sqlite, libfftw3-single3, libhamlib4
-Maintainer: WM8Q <andy.vantol@gmail.com>
+Maintainer: WM8Q <ssdev.avantol@xoxy.net>
 Description: Subspace Edition
  Subspace Edition, with fast asynchronous protocols for message exchange / storage / relay, and file transfer using JS8-style weak signal communication.

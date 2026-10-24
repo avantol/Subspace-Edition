@@ -101,6 +101,7 @@ class TransceiverFactory : public QObject {
         const; // Can PTT via CAT port use DTR or RTS (OmniRig for example)
     bool has_asynchronous_CAT(
         QString const &name) const; // CAT asynchronous rather than polled
+    bool can_read_tx_meters(QString const &name) const; // [TODO #316]
 
     struct ParameterPack {
         QString rig_name;     // from supported_transceivers () key
@@ -123,6 +124,10 @@ class TransceiverFactory : public QObject {
                                     // value "CAT"
         int poll_interval;          // in seconds for interfaces that
                                     // require polling for state changes
+        // [TODO #316] false once this rig failed a transmit-meter read
+        // (remembered per rig). Not a connection parameter: left out of
+        // operator== so it never reopens the rig.
+        bool meters_allowed{true};
 
         bool operator==(ParameterPack const &rhs) const {
             return rhs.rig_name == rig_name && rhs.serial_port == serial_port &&

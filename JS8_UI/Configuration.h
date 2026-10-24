@@ -361,6 +361,10 @@ class Configuration final : public QObject {
     // frequency changes.
     Q_SLOT void transceiver_ptt(bool = true);
 
+    // [TODO #316] A phone remote is connected: the rig may read its
+    // transmit meters (power, SWR) during the next transmissions.
+    Q_SLOT void transceiver_want_meters(bool);
+
     // Attempt to (re-)synchronise transceiver state.
     //
     // Force signal guarantees either a transceiver_update or a

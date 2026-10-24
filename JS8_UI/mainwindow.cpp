@@ -1958,6 +1958,11 @@ QVariantMap UI_Constructor::remoteUiState() {
         {"SELECTED", callsignSelected()},
         {"TX_ENABLED", ui->monitorTxButton->isChecked()},
         {"TRANSMITTING", m_transmitting},
+        // [operator 2026-10-24, TODO #316] the rig's transmit meters, the
+        // second reading of this transmission; -1 = none (not read, no
+        // meter on this rig, flrig, or not keyed)
+        {"TX_POWER_W", m_rigState.ptt() ? m_rigState.tx_power_w() : -1.f},
+        {"SWR", m_rigState.ptt() ? m_rigState.swr() : -1.f},
         // [operator 2026-10-21] a message waiting for its slot: Send is down
         {"QUEUED", ui->startTxButton->isChecked() && !m_transmitting},
         {"DIRECTED_LATCH", ui->queryButton->isCheckable() &&
@@ -3928,15 +3933,18 @@ void UI_Constructor::logCallActivity(CallDetail d, bool spot) {
             d.cqTimestamp = old.cqTimestamp;
         }
         // Sub-band-aware offset preservation: a frame in the HB/hailing
-        // sub-band (500-1000 Hz) is presence-only traffic, not QSO content.
+        // sub-band (below 1000 Hz) is presence-only traffic, not QSO content.
         // If the stored offset is outside the sub-band, keep it as the
         // last-known QSO operating frequency rather than overwriting with
         // the sub-band number. Non-sub-band updates always win; same-sub-
         // band updates replace normally.
-        constexpr int subbandLow = 500;
+        // [operator 2026-10-22, "change the criterion to simply <1000"] The
+        // sub-band was 500-1000: an HB reply at 498 Hz counted as a QSO
+        // offset and froze the call list there while the station's later
+        // frames at 500-1000 were all refused (band activity showed them).
         constexpr int subbandHigh = 1000;
-        bool newInSub = (d.offset >= subbandLow && d.offset <= subbandHigh);
-        bool oldOutOfSub = (old.offset < subbandLow || old.offset > subbandHigh);
+        bool newInSub = d.offset < subbandHigh;
+        bool oldOutOfSub = old.offset >= subbandHigh;
         if (newInSub && oldOutOfSub) {
             d.offset = old.offset;
         }
@@ -12292,7 +12300,9 @@ void UI_Constructor::handle_transceiver_update(
                         << "newPtt=" << new_rig_state.ptt()
                         << "oldPtt=" << m_rigState.ptt();
     }
+    bool const metersChanged = !new_rig_state.same_meters(m_rigState);
     m_rigState = new_rig_state;
+    if (metersChanged) remotePushChanged(); // [TODO #316] to the phone now
 
     auto old_freqNominal = m_freqNominal;
     if (!old_freqNominal) {
@@ -15020,6 +15030,20 @@ void UI_Constructor::write_transmit_entry(QString const &file_name) {
 void UI_Constructor::jttyTryDecode() {
     if (m_jttyDecoding || m_transmitting) return;
 
+    // [operator 2026-10-23, KR1FLE diag: "receiver fell behind" x5 on a busy
+    // PC] A MAGNET station never uses JTTY (applyMagnetJttyVisibility hides
+    // it), so it does not carry the receiver's work. The latch can set
+    // mid-session: the next tick closes an open session.
+    if (m_superSpotterSeen) {
+        if (m_jttySessionOpen && m_jttyReceiver) {
+            m_jttyReceiver->end(JTTY::UPDATE_EXPIRED);
+            m_jttySessionOpen = false;
+            qCWarning(mainwindow_js8)
+                << "[JTTY] MAGNET station: receiver stopped, session" << m_jttySession;
+        }
+        return;
+    }
+
     std::int64_t const pos = m_l2RingPos.load(std::memory_order_acquire);
     int const validSamples =
         (pos < FT2_L2_RINGSIZE) ? static_cast<int>(pos) : FT2_L2_RINGSIZE;
@@ -15068,9 +15092,20 @@ void UI_Constructor::jttyTryDecode() {
         [this, buf, firstSample, pos, nfa, nfb, f0, ftol, dial]() {
             std::vector<JTTY::MessageUpdate> updates;
             try {
+                QElapsedTimer passClock;
+                passClock.start();
                 int const r = m_jttyReceiver->process(
                     buf->data(), static_cast<int>(buf->size()), firstSample,
                     pos, 8, nfa, nfb, f0, ftol);
+                // [operator 2026-10-23] A pass slower than the audio it
+                // covered is how the receiver falls behind: each step is a
+                // quarter frame, 59 * 384 / 4 samples at 12 kHz = 472 ms.
+                qint64 const passMs = passClock.elapsed();
+                if (r > 0 && passMs > r * 472)
+                    qCWarning(mainwindow_js8)
+                        << "[JTTY] slow pass:" << passMs << "ms for" << r
+                        << "step(s) =" << (r * 472) << "ms of audio, span" << nfa
+                        << "-" << nfb << "Hz";
                 if (r == -2) {
                     // The ring moved past the receiver's reach-back window
                     // (this worker fell behind): close out and restart here.
