@@ -1176,6 +1176,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     {
         auto *wsjtxImport =
             new QAction(tr("Import radio setup from WSJT-X..."), this);
+        m_actionWsjtxImport = wsjtxImport; // hidden on MAGNET stations
         ui->menuFile->insertAction(ui->actionSettings, wsjtxImport);
         connect(wsjtxImport, &QAction::triggered, this,
                 &UI_Constructor::importFromWsjtx);
@@ -1184,6 +1185,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
                 this, [this]() { remotePushChanged(); });
         // [phone remote, operator 2026-10-21] File > Phone remote...
         auto *remote = new QAction(tr("Phone remote..."), this);
+        m_actionPhoneRemote = remote; // hidden on MAGNET stations
         ui->menuFile->insertAction(ui->actionSettings, remote);
         connect(remote, &QAction::triggered, this, [this]() {
             RemoteDialog dlg(m_settings, this);

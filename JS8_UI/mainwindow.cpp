@@ -217,6 +217,11 @@ void UI_Constructor::checkStartupWarnings() {
 bool UI_Constructor::offerWsjtxImport() {
     if (m_settings->value("SsWsjtxImportOffered", false).toBool())
         return false;
+    // [operator 2026-10-25] not on a MAGNET station: its File menu item is
+    // hidden there too (applyMagnetJttyVisibility). Not marked offered, so
+    // nothing is decided for the station should it stop being MAGNET.
+    if (m_superSpotterSeen)
+        return false;
     auto const hasRig = [](QString const &rig) {
         return !rig.isEmpty() && rig != QStringLiteral("None");
     };
@@ -1257,16 +1262,18 @@ void UI_Constructor::on_actionUser_Guide_triggered() {
 // row: description + clickable link to the groups.io walkthrough.
 // Modeless so the operator can follow a link and keep the list open.
 void UI_Constructor::on_actionSubspace_Guide_triggered() {
-    struct Entry { char const *desc; char const *url; };
+    // [operator 2026-10-25] notMagnet: not listed on a MAGNET station (no
+    // JTTY there, and its File > Phone remote is hidden)
+    struct Entry { char const *desc; char const *url; bool notMagnet = false; };
     static constexpr Entry kEntries[] = {
 #ifdef JS8_ENABLE_JTTY
         // [operator 2026-10-14] at the top of the list
         {"How to use the JTTY conversational mode",
-         "https://groups.io/g/Subspace/message/378"},
+         "https://groups.io/g/Subspace/message/378", true},
 #endif
         // [operator 2026-10-21] the phone remote (File > Phone remote)
         {"Operating Subspace from your phone, at home and away",
-         "https://groups.io/g/Subspace/message/404"},
+         "https://groups.io/g/Subspace/message/404", true},
         {"How to show one call sign per line in Band Activity",
          "https://groups.io/g/Subspace/message/352"},
         {"How to use Station Monitors",
@@ -1307,6 +1314,7 @@ void UI_Constructor::on_actionSubspace_Guide_triggered() {
     QString html = QStringLiteral(
         "<table cellspacing=\"0\" cellpadding=\"4\">");
     for (auto const &e : kEntries) {
+        if (e.notMagnet && m_superSpotterSeen) continue;
         html += QStringLiteral("<tr><td><a href=\"%1\">%2</a></td></tr>")
                     .arg(QString::fromUtf8(e.url),
                          QString::fromUtf8(e.desc).toHtmlEscaped());
@@ -1791,7 +1799,13 @@ void UI_Constructor::applyRemoteSettings() {
         m_settings->value(QStringLiteral("Port"), RemoteServer::kDefaultPort).toUInt());
     QString const passcode = m_settings->value(QStringLiteral("Passcode")).toString();
     m_settings->endGroup();
-    m_remoteEnabled = enabled && !passcode.isEmpty();
+    // [operator 2026-10-25] Not on a MAGNET station: its File > Phone
+    // remote item is hidden, so a server left enabled there could not be
+    // turned off. The saved setting is kept (it applies again should the
+    // station stop being MAGNET).
+    m_remoteEnabled = enabled && !passcode.isEmpty() && !m_superSpotterSeen;
+    if (enabled && m_superSpotterSeen)
+        qWarning() << "[REMOTE] MAGNET station: phone remote not started";
     m_remoteServer->configure(m_remoteEnabled, port, passcode);
 }
 
@@ -16896,6 +16910,18 @@ void UI_Constructor::serviceSubspaceDecodeBorrow() {
 // JTTY frequencies) is untouched. Called at start-up and the moment the
 // latch is set; nothing else makes these two visible again.
 void UI_Constructor::applyMagnetJttyVisibility() {
+    // [operator 2026-10-25] "don't show if Magnet identity: 'phone remote'
+    // and 'import radio setup...' menu items" (and the first two Help >
+    // Subspace Edition Guide entries, in on_actionSubspace_Guide_triggered)
+    if (m_actionPhoneRemote) m_actionPhoneRemote->setVisible(!m_superSpotterSeen);
+    if (m_actionWsjtxImport) m_actionWsjtxImport->setVisible(!m_superSpotterSeen);
+    applyRemoteSettings(); // and the phone remote's server off on MAGNET
+    // [operator 2026-10-25] and no JTTY entries in its frequency list
+    if (m_superSpotterSeen) {
+        if (int const n = m_config.dropJttyFrequencies())
+            qWarning() << "[JTTY] MAGNET station:" << n
+                       << "JTTY / JS8+JTTY frequency entries removed or made JS8";
+    }
 #ifdef JS8_ENABLE_JTTY
     bool const hide = m_superSpotterSeen;
     if (ui->actionModeJS8JTTY) ui->actionModeJS8JTTY->setVisible(!hide);

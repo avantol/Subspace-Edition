@@ -2393,6 +2393,10 @@ class UI_Constructor : public QMainWindow {
     void setJttyDecodeShown(bool on, QString const &reason);
     bool m_jttyDecodeShown = true;              // SsJttyDecodeShown, per config
     QAction *m_actionJttyDecode = nullptr;      // Mode menu switch
+    // [operator 2026-10-25] File menu items hidden on MAGNET stations
+    // (applyMagnetJttyVisibility)
+    QAction *m_actionWsjtxImport = nullptr;
+    QAction *m_actionPhoneRemote = nullptr;
     // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button
     // LATCHES (its checked state is the latch, the one authority). The box
     // carries "<CALL> <MYCALL> " exactly while latched AND a call is

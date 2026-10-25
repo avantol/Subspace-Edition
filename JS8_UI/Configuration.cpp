@@ -1278,6 +1278,39 @@ int Configuration::seedGroupFrequencies(
     return changed;
 }
 
+// [operator 2026-10-25] "when magnet station detected, remove JTTY
+// frequencies and convert JS8+JTTY frequencies to JS8". A MAGNET station
+// never uses JTTY (its frequencies already count as JS8 everywhere); this
+// makes the saved list say so. A comment the JTTY seed wrote ("JTTY",
+// "JS8+JTTY") goes with it; one the operator wrote is kept. Idempotent;
+// returns the number of entries removed or converted (0 = nothing written).
+int Configuration::dropJttyFrequencies() {
+#ifdef JS8_ENABLE_JTTY
+    auto items = m_->frequencies_.frequency_list();
+    int changed = 0;
+    for (int i = items.size() - 1; i >= 0; --i) {
+        auto &it = items[i];
+        if (it.mode_ == Modes::JTTY) {
+            items.removeAt(i);
+            ++changed;
+        } else if (it.mode_ == Modes::JS8_JTTY) {
+            it.mode_ = Modes::JS8;
+            if (it.description_ == QLatin1String("JS8+JTTY"))
+                it.description_ = QStringLiteral("JS8");
+            ++changed;
+        }
+    }
+    if (changed) {
+        m_->frequencies_.frequency_list(items);
+        m_->frequencies_.sort(FrequencyList_v3::frequency_column);
+        m_->write_settings();
+    }
+    return changed;
+#else
+    return 0;
+#endif
+}
+
 QSet<QString> Configuration::auto_whitelist() const {
     return QSet<QString>(m_->auto_whitelist_.begin(),
                          m_->auto_whitelist_.end());

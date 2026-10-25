@@ -126,6 +126,9 @@ class Configuration final : public QObject {
     pendingGroupFrequencySeed(QList<Radio::Frequency> const &frequencies,
                               QString const &group,
                               QString const &description) const;
+    // MAGNET station: JTTY entries removed, JS8+JTTY made JS8; saves the
+    // list when anything changed; returns how many entries changed
+    int dropJttyFrequencies();
     QSet<QString> auto_whitelist() const;
     QSet<QString> auto_blacklist() const;
     QSet<QString> hb_blacklist() const;
