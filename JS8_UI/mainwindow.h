@@ -2397,6 +2397,20 @@ class UI_Constructor : public QMainWindow {
     // (applyMagnetJttyVisibility)
     QAction *m_actionWsjtxImport = nullptr;
     QAction *m_actionPhoneRemote = nullptr;
+
+    // [operator 2026-10-25] flrig PTT reservation: our flrig build answers
+    // rig.reserve_ptt(ms) by pausing its own radio polling (and serving
+    // other programs' reads from stored values) until our PTT change
+    // arrives. Sent shortly before each key-up and unkey when the radio
+    // type is FLRig; a stock flrig answers "no such method" and is not
+    // asked again until the settings change. Never keys anything.
+    void flrigReservePtt(char const *why);
+    QNetworkAccessManager *m_flrigNam = nullptr;
+    int m_flrigReserveState = 0;      // 0 unknown, 1 accepted, -1 not ours
+    qint64 m_flrigReservedSlot = -1;  // slot already reserved for key-up
+    bool m_flrigUnkeyReserved = false; // this transmission's unkey reserved
+    bool m_pttHeldBetweenFrames = false; // stopTx2 kept PTT down (Hold PTT)
+    bool holdPttForNextFrame() const;  // stopTx2's rule, shared
     // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button
     // LATCHES (its checked state is the latch, the one authority). The box
     // carries "<CALL> <MYCALL> " exactly while latched AND a call is

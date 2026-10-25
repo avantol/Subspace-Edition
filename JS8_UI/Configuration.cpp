@@ -1039,6 +1039,12 @@ QStringListModel *Configuration::macros() { return &m_->macros_; }
 QStringListModel const *Configuration::macros() const { return &m_->macros_; }
 QDir Configuration::save_directory() const { return m_->save_directory_; }
 QString Configuration::rig_name() const { return m_->rig_params_.rig_name; }
+bool Configuration::rig_is_flrig() const {
+    return m_->transceiver_factory_.is_flrig(m_->rig_params_.rig_name);
+}
+QString Configuration::rig_network_port() const {
+    return m_->rig_params_.network_port;
+}
 bool Configuration::pwrBandTxMemory() const { return m_->pwrBandTxMemory_; }
 bool Configuration::pwrBandTuneMemory() const { return m_->pwrBandTuneMemory_; }
 

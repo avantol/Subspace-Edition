@@ -102,6 +102,7 @@ class TransceiverFactory : public QObject {
     bool has_asynchronous_CAT(
         QString const &name) const; // CAT asynchronous rather than polled
     bool can_read_tx_meters(QString const &name) const; // [TODO #316]
+    bool is_flrig(QString const &name) const;           // Hamlib's FLRig model
 
     struct ParameterPack {
         QString rig_name;     // from supported_transceivers () key

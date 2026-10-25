@@ -278,6 +278,10 @@ class Configuration final : public QObject {
     QStringListModel const *macros() const;
     QDir save_directory() const;
     QString rig_name() const;
+    // [operator 2026-10-25] the radio is reached through FLRig, and where
+    // (host:port from Radio > Network Server), for the flrig PTT reservation
+    bool rig_is_flrig() const;
+    QString rig_network_port() const;
     QColor color_table_background() const;
     QColor color_table_highlight() const;
     QColor color_table_foreground() const;

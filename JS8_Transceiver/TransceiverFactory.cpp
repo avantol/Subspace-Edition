@@ -87,8 +87,15 @@ bool TransceiverFactory::has_asynchronous_CAT(QString const &name) const {
 bool TransceiverFactory::can_read_tx_meters(QString const &name) const {
     if (!supported_transceivers().contains(name)) return false;
     int const model = supported_transceivers()[name].model_number_;
-    return model < NonHamlibBaseId && RIG_MODEL_FLRIG != model &&
+    return model < NonHamlibBaseId && !is_flrig(name) &&
            RIG_MODEL_DUMMY != model;
+}
+
+// [operator 2026-10-25] Hamlib's FLRig rig model: ONE test, used by the
+// meter rule above and by the flrig PTT reservation (UI_Constructor).
+bool TransceiverFactory::is_flrig(QString const &name) const {
+    return supported_transceivers().contains(name) &&
+           RIG_MODEL_FLRIG == supported_transceivers()[name].model_number_;
 }
 
 std::unique_ptr<Transceiver>

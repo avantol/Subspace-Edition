@@ -1786,6 +1786,9 @@ void UI_Constructor::prepareApi() {
     // settings accept.
     prepareWsjtxApi();
     applyRemoteSettings(); // [phone remote] same reason, same place
+    // [operator 2026-10-25] the radio settings may now point at another
+    // flrig: ask again whether it takes rig.reserve_ptt
+    m_flrigReserveState = 0;
 }
 
 // [phone remote, operator 2026-10-21] The profile's SsRemote settings to
@@ -4233,6 +4236,67 @@ void UI_Constructor::refuseToSendIn30mWSPRBand() {
     }
 }
 
+// [operator 2026-10-25] flrig PTT reservation, see mainwindow.h. Only for
+// the FLRig radio type; asynchronous (never waits on flrig, never blocks
+// the GUI). The XML-RPC call goes straight to flrig: Hamlib's FLRig driver
+// has no way to send it.
+// CHOSEN constants, not measured on air. Lead [operator 2026-10-25, "can
+// we make it 1 sec?"]: the reservation has to reach flrig through its one
+// request thread (possibly behind another program's live radio read) AND
+// the radio exchange in progress has to finish -- on a 4800-9600 baud
+// radio each can take 100-200 ms; 1 s covers both with room. The bench and
+// the IC-7300 were fully served at 300 ms. Length: the lead plus the PTT
+// request's own trip through the radio thread and Hamlib, inside flrig's
+// 2 s cap. The unkey lead is TX_SWITCHOFF_DELAY (200 ms), not this.
+static constexpr int kFlrigReserveMs = 1500;
+static constexpr double kFlrigReserveLeadS = 1.0;
+
+void UI_Constructor::flrigReservePtt(char const *why) {
+    if (m_flrigReserveState < 0 || !m_config.rig_is_flrig())
+        return;
+    // Hamlib's FLRig driver defaults to 127.0.0.1:12345 when the Network
+    // Server box is empty; so do we
+    QString hostPort = m_config.rig_network_port().trimmed();
+    if (hostPort.isEmpty())
+        hostPort = QStringLiteral("127.0.0.1:12345");
+    QUrl const url(QStringLiteral("http://%1/RPC2").arg(hostPort));
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    if (!m_flrigNam)
+        m_flrigNam = new QNetworkAccessManager(this);
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArray("text/xml"));
+    req.setTransferTimeout(1000);
+    QByteArray const body =
+        "<?xml version=\"1.0\"?><methodCall><methodName>rig.reserve_ptt"
+        "</methodName><params><param><value><i4>" +
+        QByteArray::number(kFlrigReserveMs) +
+        "</i4></value></param></params></methodCall>";
+    QNetworkReply *reply = m_flrigNam->post(req, body);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, why]() {
+        reply->deleteLater();
+        QByteArray const r = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            // flrig not reachable right now: nothing decided, try again later
+            qWarning() << "[FLRIG-RESERVE]" << why << "not delivered:"
+                       << reply->errorString();
+            return;
+        }
+        if (r.contains("<fault>")) {
+            // a stock flrig: no such method -- stop asking
+            m_flrigReserveState = -1;
+            qWarning() << "[FLRIG-RESERVE] this flrig has no rig.reserve_ptt"
+                          " (not the Subspace build); not asked again until"
+                          " the settings change";
+            return;
+        }
+        if (m_flrigReserveState == 0)
+            qWarning() << "[FLRIG-RESERVE] flrig accepts rig.reserve_ptt";
+        m_flrigReserveState = 1;
+        qCDebug(mainwindow_js8) << "[FLRIG-RESERVE]" << why << "reserved";
+    });
+}
+
 void UI_Constructor::prepareSending(qint64 nowMS) {
     // TX Duration in seconds.
     const double tx_duration = JS8::Submode::txDuration(m_nSubMode);
@@ -4393,6 +4457,19 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
         m_lastTxStartTime.msecsTo(DriftingDateTime::currentDateTimeUtc())
             >= MIN_ARQ_PTT_INTERVAL_MS;
 
+    // [operator 2026-10-25] flrig PTT reservation, slotted sends: a slotted
+    // key-up happens at (period - tx_delay) into the period, so it can be
+    // announced kFlrigReserveLeadS ahead -- once per slot.
+    if (m_iptt == 0 && msgLength > 0 && !m_tune && !arqFullRelax &&
+        !jttyAsync && !time_is_in_tx_delay && !m_pttHeldBetweenFrames &&
+        period - tx_delay - kFlrigReserveLeadS <= seconds_into_the_period) {
+        qint64 const slot = nowMS / periodMS;
+        if (slot != m_flrigReservedSlot) {
+            m_flrigReservedSlot = slot;
+            flrigReservePtt("key-up");
+        }
+    }
+
     // Floor-loophole fix (2026-06-09): when arqFullRelax is in effect,
     // the second OR-clause (period-aligned via m_timeToSend +
     // time_is_in_tx_delay) MUST also respect arqIntervalOK. Without
@@ -4428,6 +4505,31 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
                         << "arqFullRelax=" << arqFullRelax
                         << "arqIntervalOK=" << arqIntervalOK
                         << "msSinceLastTx=" << msSinceLastTx;
+        }
+        // [operator 2026-10-25] No flrig reservation at the moment of keying
+        // (ARQ, JTTY, Tune, Send pressed inside the lead): measured on the
+        // IC-7300 (20:24:10Z), the reservation reached flrig 57 ms AFTER the
+        // PTT -- Hamlib's open connection is faster than a separate request
+        // -- and then only paused flrig's polling for nothing. Reservations
+        // are sent only where there is a real lead (slotted key-ups above,
+        // every unkey in stopTx).
+        m_flrigUnkeyReserved = false; // this transmission's unkey: not yet
+        // [operator 2026-10-25, MEASURED on the IC-7300 via flrig's trace,
+        // Hold PTT off] A JTTY piece keys the NEXT piece ~120 ms after it
+        // ends, but its PTT release (stopTx2, TX_SWITCHOFF_DELAY = 200 ms
+        // after stopTx) was still pending and fired anyway: piece 2's key
+        // was a no-op (PTT still on) and the release then unkeyed the radio
+        // for piece 2's whole 30 s; piece 3 was cut 0.14 s in. Only the
+        // first 80-character piece of any JTTY message went on the air --
+        // the "cut off messages". A key-up cancels a release still pending:
+        // the radio is still keyed and stays keyed, exactly as Hold PTT
+        // does. JS8 frames (1.6 s apart) never reach this: their release
+        // has always fired first. Halt clears the message, so no key-up
+        // follows it to cancel its release.
+        if (pttReleaseTimer.isActive()) {
+            pttReleaseTimer.stop();
+            qWarning() << "[TX-PTT] key-up while the previous release was"
+                          " pending: release cancelled, PTT stays on";
         }
         m_iptt = 1;
         m_generateAudioWhenPttConfirmedByTX = true;
@@ -5904,6 +6006,24 @@ void UI_Constructor::stopTx() {
             reachOnTxComplete();
     }
 
+    // [operator 2026-10-25] flrig PTT reservation for the unkey: PTT drops
+    // in stopTx2, TX_SWITCHOFF_DELAY from now -- that is the lead. Only
+    // when it really drops (not held into the next frame), and once per
+    // unkey (stopTx runs twice at the end of a message).
+    // "Held" is recorded HERE, not only in stopTx2: a JTTY piece can key the
+    // next one before stopTx2 runs (20:24:41Z: next key-up at +123 ms,
+    // stopTx2 due at +200 ms), and that key-up must already know PTT stays
+    // down. Same shared rule stopTx2 applies.
+    // A JTTY piece followed by another: the next piece keys before the
+    // release fires and cancels it (prepareSending), so no unkey comes.
+    bool const jttyNextPiece =
+        m_nSubMode == Varicode::JS8CallJTTY && m_txFrameCount > 0;
+    if (holdPttForNextFrame()) {
+        m_pttHeldBetweenFrames = true;
+    } else if (!m_flrigUnkeyReserved && !jttyNextPiece) {
+        m_flrigUnkeyReserved = true;
+        flrigReservePtt("unkey");
+    }
     pttReleaseTimer.start(
         TX_SWITCHOFF_DELAY); // end-of-transmission sequencer delay stopTx2
     monitor(true);
@@ -5927,6 +6047,13 @@ void UI_Constructor::stopTx() {
 /**
  *  stopTx2 is called from stopTx to open the PTT
  */
+// ONE rule for "PTT stays down into the next frame": stopTx2 applies it,
+// and stopTx uses it to decide whether an unkey (and its flrig
+// reservation) is coming at all.
+bool UI_Constructor::holdPttForNextFrame() const {
+    return !m_tune && m_config.hold_ptt() && m_txFrameCount > 0;
+}
+
 void UI_Constructor::stopTx2() {
     // GM8JCF: m_txFrameCount is set to the number of frames to be transmitted
     // when the send button is pressed and remains at that count until the last
@@ -5937,12 +6064,28 @@ void UI_Constructor::stopTx2() {
 
     // If we're holding the PTT and there are more frames to transmit, do not
     // emit the PTT signal
-    if (!m_tune && m_config.hold_ptt() && m_txFrameCount > 0) {
+    if (holdPttForNextFrame()) {
+        m_pttHeldBetweenFrames = true; // [flrig reservation] no key-up next
         return;
     }
 
     // Otherwise, emit the PTT signal
     emitPTT(false);
+
+    // [operator 2026-10-25] flrig PTT reservation for the NEXT frame of an
+    // ARQ / native file-transfer burst: those frames key at a known moment
+    // (MIN_ARQ_PTT_INTERVAL_MS = 3750 ms after the previous key-up; frames
+    // run ~3.1 s, so ~450 ms after this unkey). Sent 100 ms after the unkey
+    // (CHOSEN; flrig took 42 ms to process an unkey on the IC-7300), because
+    // flrig ends any reservation when it handles a PTT request -- arriving
+    // before this unkey, it would be cancelled by it. The first frame after
+    // the peer's ACK is not predictable and gets none.
+    if (m_nSubMode == Varicode::JS8CallFT2 && m_txFrameCount > 0 &&
+        m_chunkedArq && m_chunkedArq->hasActiveSession()) {
+        QTimer::singleShot(100, this, [this]() {
+            if (m_iptt == 0) flrigReservePtt("next ARQ frame");
+        });
+    }
 }
 
 void UI_Constructor::TxAgain() { auto_tx_mode(true); }
@@ -14678,6 +14821,7 @@ void displayCallActivity(); // JS8_Mainwindow/displayCallActivity.cpp
 
 void UI_Constructor::emitPTT(bool on) {
     qCDebug(mainwindow_js8) << "Setting PTT to" << (on ? "on" : "off");
+    if (!on) m_pttHeldBetweenFrames = false; // [flrig reservation] dropped
 
     Q_EMIT m_config.transceiver_ptt(on);
 
