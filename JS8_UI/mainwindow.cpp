@@ -9370,16 +9370,27 @@ void UI_Constructor::on_snrMacroButton_clicked() {
 #endif
     auto now = DriftingDateTime::currentDateTimeUtc();
     int callsignAging = m_config.callsign_aging();
-    if (!m_callActivity.contains(call)) {
-        return;
+    int reading = 0;
+    bool have = false;
+    if (m_callActivity.contains(call)) {
+        auto const cd = m_callActivity[call];
+        if (!callsignAging || cd.utcTimestamp.secsTo(now) / 60 < callsignAging) {
+            reading = cd.snr;
+            have = true;
+        }
     }
+#ifdef JS8_ENABLE_JTTY
+    // [operator 2026-10-25, 03:48:35Z: SNR "appears to not work" on 7.078
+    // in JS8 mode -- the selection was a JTTY row (KD8VAX), which lives in
+    // the JTTY lists, so the JS8 list had nothing and the click did nothing]
+    // "In JS8 mode, the SNR goes out in JS8 format regardless of the speed,
+    // simply use the current speed": the station's JTTY reading, the same
+    // one JTTY mode uses (jttyStationSnr), in the JS8 reply below.
+    if (!have) have = jttyStationSnr(call, &reading);
+#endif
+    if (!have) return;
 
-    auto cd = m_callActivity[call];
-    if (callsignAging && cd.utcTimestamp.secsTo(now) / 60 >= callsignAging) {
-        return;
-    }
-
-    auto snr = Varicode::formatSNR(cd.snr);
+    auto snr = Varicode::formatSNR(reading);
 
     addMessageText(QString("%1 SNR %2").arg(call).arg(snr));
 
@@ -11028,12 +11039,19 @@ QMap<QString, QString> UI_Constructor::buildMacroValues() {
     // A JTTY station selected but not in the list (its messages may all
     // be partial -- "expired" -- which the list does not take): the
     // selection fills <CALL>.
-    else if (jttyMode() && !selectedCall.isEmpty()) {
-        values["<CALL>"] = selectedCall;
+    // [operator 2026-10-25] In JS8 mode too, for a station heard only in
+    // JTTY (a JTTY row selected on a JS8+JTTY frequency): the same
+    // fallback as the SNR button.
+    else if (!selectedCall.isEmpty()) {
+        int unused = 0;
+        if (jttyMode() || jttyStationSnr(selectedCall, &unused))
+            values["<CALL>"] = selectedCall;
     }
     // In JTTY mode <SNR> is the station's own signal from its newest
-    // credited message, complete or partial (jttyStationSnr).
-    if (jttyMode() && !selectedCall.isEmpty()) {
+    // credited message, complete or partial (jttyStationSnr). In JS8 mode
+    // it is the fallback when the JS8 list has no reading.
+    if (!selectedCall.isEmpty() &&
+        (jttyMode() || !values.contains(QStringLiteral("<SNR>")))) {
         int snr = 0;
         if (jttyStationSnr(selectedCall, &snr))
             values["<SNR>"] = Varicode::formatSNR(snr);
@@ -16605,7 +16623,11 @@ bool UI_Constructor::isJttyFrequency(Radio::Frequency dial) const {
 bool UI_Constructor::js8DecodesShown() const {
     // row 2: a JTTY-only frequency carries no JS8 speed (MAGNET excepted,
     // inside onJttyFrequency)
-    return !onJttyFrequency();
+    // [operator 2026-10-25] "in jtty mode, we should not show decodes for
+    // any legacy JS8 mode speeds, no waterfall labels, no band activity
+    // lines (it's OK if the decoder(s) run)": JTTY MODE on a JS8+JTTY
+    // frequency too, not only a JTTY-only frequency (jttyMode covers both).
+    return !jttyMode();
 }
 
 #ifdef JS8_ENABLE_JTTY
@@ -17004,7 +17026,13 @@ void UI_Constructor::l2TryDecode(char const *source) {
     // there hints the operator toward JS8 mode. The switch, its saved
     // value and checkmark are untouched: leaving the frequency resumes
     // decoding at the next tick. ARQ and routing are off there already.
-    if (!m_l2Enabled || m_l2Decoding || m_transmitting || onJttyFrequency()) {
+    // [operator 2026-10-25, REPLACES the "keeps decoding, even in JTTY
+    // mode" ruling above] "the subspace decoder is running when in jtty
+    // mode on a shared JS8+JTTY freq, it should not be running": no
+    // Subspace decode in JTTY MODE (jttyMode: a JTTY-only frequency, or
+    // JTTY mode chosen on a JS8+JTTY one). Leaving JTTY mode resumes it
+    // at the next tick.
+    if (!m_l2Enabled || m_l2Decoding || m_transmitting || jttyMode()) {
         qint64 const now = QDateTime::currentMSecsSinceEpoch();
         if (m_l2Decoding && m_l2DecodeStartedMs > 0 &&
             now - m_l2DecodeStartedMs > 5000 &&
