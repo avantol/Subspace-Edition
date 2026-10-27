@@ -205,6 +205,7 @@ class SpotMapWindow final : public QWidget {
     // station verdict decides dots and Unknown lines only.
     enum class Passband { In, Out, Unknown };
     Passband passbandVerdict(QString const &band, QString const &call,
+                             QString const &mode,   // [dotmode] JS8 / JTTY
                              int staleSecs = JS8_FREQ_STALE_SECS,
                              bool includeRx = true,
                              bool pskrAllowed = true) const;
@@ -783,6 +784,12 @@ class SpotMapWindow final : public QWidget {
             QDateTime when;
             bool radio = false;   // from a frame WE decoded
             bool tx = false;      // transmitting there (else listening)
+            // [dotmode 2026-10-27] The mode the sighting was made in.
+            // A line is already judged in its own mode; the dot's
+            // verdict must be too, or a JS8 sighting places a dot on
+            // the JTTY map whose JS8 line that map hides (KC2DAC,
+            // K3GMQ, K1RA-4 after a QSY within JTTY mode).
+            QString mode;
         };
         QVector<FreqSeen> freqSeen;
     };
@@ -794,7 +801,7 @@ class SpotMapWindow final : public QWidget {
     // already on disk).
     void noteFreq(QString const &band, QString const &call, qint64 hz,
                   QDateTime const &when, bool radio, bool tx,
-                  bool journal = true);
+                  QString const &mode, bool journal = true);
     QHash<QString, QHash<QString, StationInfo>> m_infoByBand;
     // [mqttgrid] call -> locator harvested from EVERY MQTT message
     // (sender sc/sl and reporter rc/rl) — fallback grid source for

@@ -811,7 +811,9 @@ void UI_Constructor::reachRebuildCandidates() {
             // PSKR always allowed (the book uses it regardless of the
             // map's display toggle).
             if (m_spotMapWindow->passbandVerdict(
-                    m_reach.band, *it, JS8_FREQ_STALE_ROUTE_SECS,
+                    m_reach.band, *it,
+                    QStringLiteral("JS8"),   // [dotmode] routing is JS8-only
+                    JS8_FREQ_STALE_ROUTE_SECS,
                     /*includeRx=*/false, /*pskrAllowed=*/true) ==
                 SpotMapWindow::Passband::Out) {
                 reachLog(QStringLiteral(

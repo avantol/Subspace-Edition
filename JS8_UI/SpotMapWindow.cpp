@@ -709,14 +709,17 @@ void SpotMapWindow::setDialFrequency(qint64 const hz) {
 void SpotMapWindow::noteFreq(QString const &band, QString const &call,
                              qint64 const hz, QDateTime const &when,
                              bool const radio, bool const tx,
-                             bool const journal) {
+                             QString const &mode, bool const journal) {
     if (band.isEmpty() || call.isEmpty() || hz <= 0 || !when.isValid())
         return;
     auto &seen = m_infoByBand[band][call.toUpper()].freqSeen;
     auto const now = DriftingDateTime::currentDateTimeUtc();
     // [freqset 2026-09-21, audit F8] Every accepted entry is journaled
     // so a restart restores the SET, not one display copy.
-    if (journal && when.secsTo(now) < JS8_FREQ_STALE_SECS)
+    // [dotmode] Same ruling as edges: the journal has no mode column
+    // and a restored row is JS8, so a JTTY sighting is not journaled.
+    if (journal && mode == QStringLiteral("JS8") &&
+        when.secsTo(now) < JS8_FREQ_STALE_SECS)
         m_gridDb.queueFreq({band, call.toUpper(), hz,
                             when.toSecsSinceEpoch(), radio, tx});
     // Prune on the way in, so the set never grows past one window's
@@ -729,7 +732,7 @@ void SpotMapWindow::noteFreq(QString const &band, QString const &call,
                               }),
                seen.end());
     for (auto &f : seen) {
-        if (f.hz == hz) {
+        if (f.hz == hz && f.mode == mode) {   // [dotmode] mode is identity
             if (when > f.when)
                 f.when = when;   // forward-only
             f.radio = f.radio || radio;
@@ -737,14 +740,15 @@ void SpotMapWindow::noteFreq(QString const &band, QString const &call,
             return;
         }
     }
-    seen.append(StationInfo::FreqSeen{hz, when, radio, tx});
+    seen.append(StationInfo::FreqSeen{hz, when, radio, tx, mode});
 }
 
 // [passband #218] See the header for the three-way contract. Every
 // ruling from TODO_notes.md item-218 is a line here, in order.
 SpotMapWindow::Passband
 SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
-                               int const staleSecs, bool const includeRx,
+                               QString const &mode, int const staleSecs,
+                               bool const includeRx,
                                bool const pskrAllowed) const {
     // Our own dial unknown (no rig control, or CAT not read yet):
     // the filter disables itself entirely, or it would reject
@@ -766,6 +770,10 @@ SpotMapWindow::passbandVerdict(QString const &band, QString const &call,
         // perfectly well); listening-only evidence only if the
         // caller wants it; internet evidence only if allowed.
         if (f.when.secsTo(now) >= staleSecs)
+            continue;
+        // [dotmode] A sighting of another mode is not on this map --
+        // the same gate the line pass applies (offMode).
+        if (f.mode != mode)
             continue;
         if (!f.tx && !includeRx)
             continue;
@@ -882,7 +890,7 @@ void SpotMapWindow::addHearingReport(QString const &band,
         si.freqWhen = now;
         si.freqFromRadio = true;
         noteFreq(band, hearer, hearerRfHz, now, /*radio=*/true,
-                 /*tx=*/true);        // the verdict's evidence
+                 /*tx=*/true, mode);  // the verdict's evidence
         // [audit F7, 2026-09-21] Our own measurement reaches disk from
         // HERE, the one place every first-hand caller passes through.
         // Before, journalStation() ran only for a frame addressed to
@@ -1131,7 +1139,9 @@ void SpotMapWindow::restoreStationsFromDisk() {
                     QDateTime::fromSecsSinceEpoch(r.freqWhen, Qt::UTC);
                 info.freqFromRadio = r.freqRadio;
                 noteFreq(r.band, r.call, r.freqHz, info.freqWhen,
-                         r.freqRadio, /*tx=*/true, /*journal=*/false);
+                         r.freqRadio, /*tx=*/true,
+                         QStringLiteral("JS8"),   // [dotmode] restored = JS8
+                         /*journal=*/false);
             }
         }
         if (!r.rxOnly)
@@ -1172,7 +1182,8 @@ void SpotMapWindow::restoreStationsFromDisk() {
     for (GridDb::FreqRow const &f : m_gridDb.loadFreqs(WINDOW_SECS)) {
         noteFreq(f.band, f.call, f.hz,
                  QDateTime::fromSecsSinceEpoch(f.when, Qt::UTC),
-                 f.radio, f.tx, /*journal=*/false);
+                 f.radio, f.tx, QStringLiteral("JS8"),   // [dotmode]
+                 /*journal=*/false);
         ++freqs;
     }
     if (freqs)
@@ -1875,9 +1886,9 @@ void SpotMapWindow::onMqttMessage(QString const &topic,
                 receiverCall.compare(m_myCall, Qt::CaseInsensitive) == 0;
             if (!senderIsMe)
                 noteFreq(band, sender, spotFreqHz, when,
-                         /*radio=*/reporterIsMe, /*tx=*/true);
+                         /*radio=*/reporterIsMe, /*tx=*/true, mode);
             noteFreq(band, receiverCall, spotFreqHz, when,
-                     /*radio=*/reporterIsMe, /*tx=*/false);
+                     /*radio=*/reporterIsMe, /*tx=*/false, mode);
         }
         if (!senderIsMe)
             info.sawAsSender = true;   // it was the SENDER of a spot
@@ -2682,7 +2693,12 @@ void SpotMapWindow::redraw() {
             // placed it. No in-window frequency = Unknown = the tether
             // rule (drawn only if a live line ties it here), unchanged.
             // Other passbandVerdict callers (relay, routing) keep 60 min.
+            // [dotmode 2026-10-27] ... and in the map's MODE: the line
+            // pass drops a sighting of the other mode (offMode), so the
+            // dot's verdict must ignore it too, or the dot stands on a
+            // sighting whose line this map never draws.
             auto const r = passbandVerdict(m_currentBand, call,
+                                           m_modeContext,
                                            m_viewWindowSecs,
                                            /*includeRx=*/true,
                                            /*pskrAllowed=*/m_showPskr);

@@ -1272,7 +1272,7 @@ void UI_Constructor::on_actionSubspace_Guide_triggered() {
          "https://groups.io/g/Subspace/message/378", true},
 #endif
         // [operator 2026-10-21] the phone remote (File > Phone remote)
-        {"Operating Subspace from your phone, at home and away",
+        {"How to operate Subspace from your phone, at home and away",
          "https://groups.io/g/Subspace/message/404", true},
         {"How to show one call sign per line in Band Activity",
          "https://groups.io/g/Subspace/message/352"},
@@ -14820,7 +14820,22 @@ void displayBandActivity(); // JS8_Mainwindow/displayBandActivity.cpp
 void displayCallActivity(); // JS8_Mainwindow/displayCallActivity.cpp
 
 void UI_Constructor::emitPTT(bool on) {
-    qCDebug(mainwindow_js8) << "Setting PTT to" << (on ? "on" : "off");
+    // [pttlog 2026-10-27] THE moment PTT is commanded, on the GUI
+    // thread, at every speed, always in the diag log. The rig thread
+    // logs its own "[PTT] rig_set_ptt" when it hands the command to
+    // Hamlib, so a hold between the two (K7RIE: 1.3 s and 7.4 s late
+    // key-ups through flrig, 2026-10-26) is attributable from the log
+    // alone, against CAT Watch's arrival time.
+    {
+        qint64 const nowMs =
+            DriftingDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+        unsigned const periodMs = JS8::Submode::periodMS(m_nSubMode);
+        qCWarning(mainwindow_js8).nospace()
+            << "[PTT] commanded " << (on ? "on" : "off")
+            << " secInPeriod=" << (periodMs ? (nowMs % periodMs) / 1000.0 : -1.0)
+            << " holdPtt=" << m_config.hold_ptt()
+            << " heldBetweenFrames=" << m_pttHeldBetweenFrames;
+    }
     if (!on) m_pttHeldBetweenFrames = false; // [flrig reservation] dropped
 
     Q_EMIT m_config.transceiver_ptt(on);

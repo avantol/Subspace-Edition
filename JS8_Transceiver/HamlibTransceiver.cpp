@@ -9,6 +9,7 @@
 #include "JS8_Main/StoragePaths.h"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1140,8 +1141,15 @@ void HamlibTransceiver::poll() {
 
 void HamlibTransceiver::do_ptt(bool on) {
     TRACE_CAT("HamlibTransceiver", on << state() << "reversed =" << reversed_);
-    if (on) {
-        if (RIG_PTT_NONE != rig_->state.pttport.type.ptt) {
+    // [pttlog 2026-10-27] The rig thread's hand-off to Hamlib, and how
+    // long Hamlib held it: the counterpart of "[PTT] commanded" in
+    // emitPTT. Always in the diag log, no CAT trace needed.
+    if (RIG_PTT_NONE != rig_->state.pttport.type.ptt) {
+        qCWarning(hamlibtransceiver_js8).nospace()
+            << "[PTT] rig_set_ptt " << (on ? "on" : "off") << " sending";
+        QElapsedTimer held;
+        held.start();
+        if (on) {
             TRACE_CAT("HamlibTransceiver", "rig_set_ptt PTT = true");
             error_check(
                 rig_set_ptt(rig_.data(), RIG_VFO_CURR,
@@ -1150,13 +1158,14 @@ void HamlibTransceiver::do_ptt(bool on) {
                                 ? RIG_PTT_ON_DATA
                                 : RIG_PTT_ON),
                 tr("setting PTT on"));
-        }
-    } else {
-        if (RIG_PTT_NONE != rig_->state.pttport.type.ptt) {
+        } else {
             TRACE_CAT("HamlibTransceiver", "rig_set_ptt PTT = false");
             error_check(rig_set_ptt(rig_.data(), RIG_VFO_CURR, RIG_PTT_OFF),
                         tr("setting PTT off"));
         }
+        qCWarning(hamlibtransceiver_js8).nospace()
+            << "[PTT] rig_set_ptt " << (on ? "on" : "off")
+            << " done took=" << held.elapsed() << "ms";
     }
 
     if (on) meter_reads_ = 0; // [TODO #316] two readings per transmission
