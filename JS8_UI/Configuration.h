@@ -194,6 +194,9 @@ class Configuration final : public QObject {
     bool spellcheck() const;
     int heartbeat() const;
     int watchdog() const;
+    // [TODO #322] seconds after a send ends before the outgoing box is
+    // cleared (and, in JTTY, Directed to de-selected); 0 = disabled
+    int clear_outgoing_secs() const;
     bool TX_messages() const;
     bool split_mode() const;
     QString opCall() const;

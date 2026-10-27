@@ -2305,8 +2305,18 @@ class UI_Constructor : public QMainWindow {
     // of its conversation-window line (offset, time first printed). The
     // final update rewrites that line in place, or erases it when the
     // final message is hidden or handled elsewhere.
-    struct JttyProvisionalLine { int offset; QDateTime date; };
+    // [jttyappend, operator 2026-10-27] `prefix` = the text of the earlier
+    // piece(s) already on that line, when this message grows on the
+    // previous message's line (empty for a line of its own).
+    struct JttyProvisionalLine { int offset; QDateTime date; QString prefix; };
     QHash<qint64, JttyProvisionalLine> m_jttyProvisional;
+    // [jttyappend] A finished JTTY message (its item's utcTimestamp, ms)
+    // -> the conversation line it was printed on and the full text shown
+    // there, so a following piece the continuation rule gives to the same
+    // sender is appended to that line instead of starting one.
+    QHash<qint64, JttyProvisionalLine> m_jttyLineOfMessage;
+    bool jttyContinuationLine(int offset, JttyProvisionalLine *out) const;
+    static QString jttyJoinedText(QString const &prefix, QString const &text);
     // [jttyband, operator 2026-10-20: "do it the js8 way"] A JTTY message
     // growing in the band activity: its receiver id -> when its one item
     // (First, no Last) was placed in m_jttyActivity (the item's own
@@ -2425,12 +2435,24 @@ class UI_Constructor : public QMainWindow {
     void jttyLatchPutAddress(QString const &call);
     void jttyLatchTakeAddress(QString const &call);
     void serviceJttyDirectedLatch();            // from updateButtonDisplay
+    // [TODO #322, operator 2026-10-27] AFTER-SEND clear of the outgoing
+    // box: Subspace and JTTY keep the sent text for a re-send, and text
+    // in the box blocks auto-replies. Armed when a transmission ends and,
+    // in JTTY, when "Directed to" is latched on (operator 2026-10-27);
+    // fires once after Settings' "Clear outgoing text box ... after"
+    // seconds: in JTTY "Directed to" is de-selected first (its own toggle
+    // takes the address out), then the box is cleared. Cancelled by a
+    // key press (the operator is composing) and by a new send.
+    QTimer m_clearOutgoingTimer;
+    void armClearOutgoing();
+    void clearOutgoingNow();
     // [operator 2026-10-21] First-run hint, JTTY mode: a balloon on the
     // first band-activity line that carries a callsign. Armed by the
     // startup balloon chain (it is that startup's one balloon) and shown
     // when such a line exists; flag HintJttyBandLineShown.
     bool m_bandLineHintArmed = false;
     void showBandLineHint();
+    bool jttyHistoryExists() const;   // a JTTY.TXT on disk = has used JTTY before
 #endif
     void updateWindowTitle();                   // "(vX - MAGNET)" when latched
     bool subspaceDecodeEnabled() const { return m_l2Enabled; }

@@ -1200,6 +1200,11 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     m_guiTimer.setTimerType(Qt::PreciseTimer);
     m_guiTimer.setSingleShot(true);
     connect(&m_guiTimer, &QTimer::timeout, this, &UI_Constructor::guiUpdate);
+
+    // [TODO #322] after-send clear of the outgoing box
+    m_clearOutgoingTimer.setSingleShot(true);
+    connect(&m_clearOutgoingTimer, &QTimer::timeout, this,
+            &UI_Constructor::clearOutgoingNow);
     m_guiTimer.start(UI_POLL_INTERVAL_MS);
 
     pttReleaseTimer.setTimerType(Qt::PreciseTimer);
@@ -3338,9 +3343,17 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             if (!self->m_superSpotterSeen &&
                 !self->m_settings->value("HintJttyBandLineShown", false)
                      .toBool()) {
-                self->m_bandLineHintArmed = true;
-                self->showBandLineHint(); // a line may already be there
-                return; // one balloon per startup
+                // [operator 2026-10-27] a JTTY.TXT already on disk means the
+                // station has used JTTY before (the flag is newer than its
+                // use): marked as shown, silently, no balloon
+                if (self->jttyHistoryExists()) {
+                    self->m_settings->setValue("HintJttyBandLineShown", true);
+                    qWarning() << "[HINT] JTTY band-line hint skipped: JTTY.TXT exists";
+                } else {
+                    self->m_bandLineHintArmed = true;
+                    self->showBandLineHint(); // a line may already be there
+                    return; // one balloon per startup
+                }
             }
 #endif
         };

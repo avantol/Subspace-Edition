@@ -2549,7 +2549,9 @@ bool UI_Constructor::eventFilter(QObject *object, QEvent *event) {
     }
     switch (event->type()) {
     case QEvent::KeyPress:
-        // fall through
+        // [TODO #322] typing = the operator is composing: keep the box
+        m_clearOutgoingTimer.stop();
+        [[fallthrough]];
     case QEvent::MouseButtonPress:
         // reset the Tx watchdog
         resetIdleTimer();
@@ -4830,6 +4832,7 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
         }
 
         m_transmitting = true;
+        m_clearOutgoingTimer.stop(); // [TODO #322] a new send: re-armed at its end
         // [BUILD 334] build-333 TX-SUPPRESS removed — the Detector
         // now captures continuously through our own TX (pre-333
         // behavior); the ring splice it created broke async ARQ
@@ -5953,6 +5956,8 @@ void UI_Constructor::stopTx() {
         if (!waveformTx())
 #endif
         ui->extFreeTextMsgEdit->clear();
+        // [TODO #322] the kept text (and a JTTY latch) go after N seconds
+        armClearOutgoing();
         // [#146 lockhold] The deferred restore owns the unlock while
         // a response draft is still owed.
         ui->extFreeTextMsgEdit->setReadOnly(arqRestoreOwed);
@@ -6456,6 +6461,7 @@ void UI_Constructor::clearRXActivity(bool keepOutgoingBox) {
     m_rxActivityQueue.clear();
 #ifdef JS8_ENABLE_JTTY
     m_jttyProvisional.clear(); // [jttyprogress] their lines go with the pane
+    m_jttyLineOfMessage.clear(); // [jttyappend] so do the lines a piece could join
 #endif
 
     ui->textEditRX->clear();
@@ -11429,12 +11435,23 @@ void UI_Constructor::jttyDirectedLatchToggled(bool on) {
     m_jttyLatchCall = selectedCall;
     m_jttyLatchDial = operatingDial();
     jttyLatchPutAddress(selectedCall);
+    // [TODO #322, operator 2026-10-27] a latch set and then left alone
+    // clears on the same timer as a send (the address blocks auto-replies)
+    armClearOutgoing();
 }
 
 // [operator 2026-10-21] The first-run band-activity hint, JTTY mode: once
 // the first line with a callsign is on screen, a balloon points at it.
 // Shown once (HintJttyBandLineShown); until then it waits, armed, for the
 // mode and a line -- nothing else is skipped or consumed meanwhile.
+// [operator 2026-10-27] The hint's flag exists only since build 508, so a
+// station upgrading from an earlier build looked like a first-time JTTY
+// user. Its own JTTY.TXT says otherwise.
+bool UI_Constructor::jttyHistoryExists() const {
+    return QFile::exists(
+        m_config.writeable_data_dir().absoluteFilePath(QStringLiteral("JTTY.TXT")));
+}
+
 void UI_Constructor::showBandLineHint() {
     if (!jttyMode() || !isVisible() || QApplication::activeModalWidget()) return;
     auto *table = ui->tableWidgetRXAll;
@@ -15091,6 +15108,41 @@ void UI_Constructor::resetIdleTimer() {
     }
 }
 
+// [TODO #322] See the header. Armed at the end of every transmission;
+// the setting is read then, so a change in Settings applies to the next
+// send. The box being read-only means ARQ still owns it (#146): then the
+// clear is skipped, not deferred.
+void UI_Constructor::armClearOutgoing() {
+    int const secs = m_config.clear_outgoing_secs();
+    if (secs <= 0) {
+        m_clearOutgoingTimer.stop();
+        return;
+    }
+    m_clearOutgoingTimer.start(secs * 1000);
+}
+
+void UI_Constructor::clearOutgoingNow() {
+    if (m_transmitting || ui->startTxButton->isChecked())
+        return;                                   // a new send began
+    if (ui->extFreeTextMsgEdit->isReadOnly())
+        return;                                   // ARQ owns the box
+    bool latchDropped = false;
+#ifdef JS8_ENABLE_JTTY
+    if (ui->queryButton->isChecked()) {           // "Directed to"
+        ui->queryButton->setChecked(false);       // its toggle takes the address out
+        latchDropped = true;
+    }
+#endif
+    bool const hadText = !ui->extFreeTextMsgEdit->toPlainText().isEmpty();
+    if (hadText)
+        ui->extFreeTextMsgEdit->clear();
+    if (hadText || latchDropped)
+        qCWarning(mainwindow_js8) << "[CLEAR-OUTGOING]"
+                                  << m_config.clear_outgoing_secs()
+                                  << "s after the send: box cleared=" << hadText
+                                  << "directed-to dropped=" << latchDropped;
+}
+
 void UI_Constructor::incrementIdleTimer() {
     m_idleMinutes++;
     qCDebug(mainwindow_js8)
@@ -15509,17 +15561,37 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         // JS8 mode a "CALL: ..." line grows too and is finished in place
         // (a real command, handed to the command path, replaces it there);
         // in JTTY mode it stays band activity only, as the final rule says.
+        // [jttyfollow, operator 2026-10-27] ...or a piece that continues a
+        // message already in the window (the JS8 buffer's memory: once a
+        // station has addressed me, its following pieces print too)
+        JttyProvisionalLine contProbe;
         if (!(js8FormText && jttyMode()) &&
             (std::abs(offset - freq()) <=
                  JS8::Submode::rxThreshold(Varicode::JS8CallJTTY) ||
-             jttyLineNamesMe(text))) {
+             jttyLineNamesMe(text) ||
+             m_jttyProvisional.contains(u.messageId) ||
+             jttyContinuationLine(offset, &contProbe))) {
             auto const it = m_jttyProvisional.constFind(u.messageId);
             if (!(it != m_jttyProvisional.constEnd() &&
-                  rewriteRxLineText(it->offset, it->date, text,
+                  rewriteRxLineText(it->offset, it->date,
+                                    jttyJoinedText(it->prefix, text),
                                     Varicode::JS8CallJTTY))) {
-                displayTextForFreq(text, offset, now, false, true, true,
-                                   Varicode::JS8CallJTTY);
-                m_jttyProvisional.insert(u.messageId, {offset, now});
+                // [jttyappend, operator 2026-10-27] A piece the continuation
+                // rule gives to the previous message's sender grows ON that
+                // message's conversation line, as the band-activity row
+                // already shows them together (WD9DUI: "AND DECODED." was a
+                // from-less line of its own in his window).
+                JttyProvisionalLine prev;
+                if (jttyContinuationLine(offset, &prev) &&
+                    rewriteRxLineText(prev.offset, prev.date,
+                                      jttyJoinedText(prev.prefix, text),
+                                      Varicode::JS8CallJTTY)) {
+                    m_jttyProvisional.insert(u.messageId, prev);
+                } else {
+                    displayTextForFreq(text, offset, now, false, true, true,
+                                       Varicode::JS8CallJTTY);
+                    m_jttyProvisional.insert(u.messageId, {offset, now, QString()});
+                }
             }
         }
         displayBandActivity();
@@ -15559,8 +15631,17 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
         }
     }
     auto const dropProvisional = qScopeGuard([&] {
-        if (provisional && !provisionalUsed)
-            eraseRxLineForMessage(provisional->offset, provisional->date);
+        if (provisional && !provisionalUsed) {
+            // [jttyappend] a line shared with earlier pieces goes back to
+            // them; only a line of this message's own is erased
+            if (!provisional->prefix.isEmpty())
+                rewriteRxLineText(provisional->offset, provisional->date,
+                                  QStringLiteral("%1 %2 ").arg(provisional->prefix,
+                                                               m_config.eot()),
+                                  Varicode::JS8CallJTTY);
+            else
+                eraseRxLineForMessage(provisional->offset, provisional->date);
+        }
         if (growingRemoved) displayBandActivity();
     });
     if (text.isEmpty()) return;
@@ -15701,7 +15782,15 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
             {"SPEED", QVariant(static_cast<int>(Varicode::JS8CallJTTY))},
         };
         sendNetworkMessage(QStringLiteral("RX.JTTY.ACTIVITY"), text, params);
-        if (jttyLineNamesMe(text))
+        // [jttyfollow API, operator 2026-10-27] DIRECTED also for a piece
+        // that continues a shown message whose text names my station: JS8's
+        // RX.DIRECTED carries the whole assembled message, so a JTTY client
+        // got the head as DIRECTED and the tail as plain ACTIVITY.
+        JttyProvisionalLine apiProbe;
+        bool const continuesToMe = jttyMode() &&
+                                   jttyContinuationLine(offset, &apiProbe) &&
+                                   jttyLineNamesMe(apiProbe.prefix);
+        if (jttyLineNamesMe(text) || continuesToMe)
             sendNetworkMessage(QStringLiteral("RX.JTTY.DIRECTED"), text, params);
     }
 
@@ -15731,23 +15820,52 @@ void UI_Constructor::processJttyUpdate(JTTY::MessageUpdate const &u,
 
     bool const queued = u.terminal == JTTY::UPDATE_COMPLETE &&
                         queueJttyCommand(text, u.snr, offset, dial, now);
-    if (!queued && (nearMyOffset || namesMe)) {
+    // [jttyfollow, operator 2026-10-27] a piece that continues a message
+    // already in the window prints too, wherever its station's offset is
+    JttyProvisionalLine contProbe;
+    bool const continuesShown =
+        (provisional && !provisional->prefix.isEmpty()) ||
+        jttyContinuationLine(offset, &contProbe);
+    if (!queued && (nearMyOffset || namesMe || continuesShown)) {
         // [operator 2026-10-20: "note there was no end-of-msg char"] Now
         // that a line grows in the window, the end-of-message mark is what
         // says it is FINISHED: a complete message ends with it, as a JS8
         // one does; an expired (partial) one does not.
+        // [jttyappend] the line this message is shown on: its growing line,
+        // else the previous message's line when the continuation rule gives
+        // this piece to that message's sender, else a line of its own
+        JttyProvisionalLine lineOf{offset, now, QString()};
+        bool onEarlierLine = false;
+        if (provisional) {
+            lineOf = *provisional;
+            onEarlierLine = true;
+        } else if (jttyContinuationLine(offset, &lineOf)) {
+            onEarlierLine = true;
+        }
+        QString const joined = jttyJoinedText(lineOf.prefix, text);
         QString const shown = u.terminal == JTTY::UPDATE_COMPLETE
-                                  ? QStringLiteral("%1 %2 ").arg(text, m_config.eot())
-                                  : text;
+                                  ? QStringLiteral("%1 %2 ").arg(joined, m_config.eot())
+                                  : joined;
         // [jttyprogress] a line already growing in the window is finished
         // in place; otherwise the message is printed now, as before
-        if (provisional &&
-            rewriteRxLineText(provisional->offset, provisional->date, shown,
-                              Varicode::JS8CallJTTY))
-            provisionalUsed = true;
-        else
+        if (onEarlierLine &&
+            rewriteRxLineText(lineOf.offset, lineOf.date, shown,
+                              Varicode::JS8CallJTTY)) {
+            if (provisional) provisionalUsed = true;
+        } else {
             displayTextForFreq(shown, offset, now, false, true, true,
                                Varicode::JS8CallJTTY);
+            lineOf = {offset, now, QString()};
+        }
+        // remembered for a continuation piece after it (one hour)
+        for (auto it = m_jttyLineOfMessage.begin(); it != m_jttyLineOfMessage.end();) {
+            if (now.toMSecsSinceEpoch() - it.key() > 3600 * 1000)
+                it = m_jttyLineOfMessage.erase(it);
+            else
+                ++it;
+        }
+        m_jttyLineOfMessage.insert(now.toMSecsSinceEpoch(),
+                                   {lineOf.offset, lineOf.date, joined});
     }
 
     if (u.terminal == JTTY::UPDATE_COMPLETE) {
@@ -16311,6 +16429,38 @@ bool UI_Constructor::jttyStationSnr(QString const &call, int *snr) const {
         found = true;
     }
     return found;
+}
+
+// [jttyappend, operator 2026-10-27] The newest item on line `offset` is a
+// piece the continuation rule gives to the previous item's sender (no
+// sender form of its own, started within kJttyContinuationSecs of the
+// previous message's end, and attributed the same sender) AND that
+// previous message's conversation line is known: return that line.
+bool UI_Constructor::jttyContinuationLine(int offset, JttyProvisionalLine *out) const {
+    auto const &line = m_jttyActivity.value(offset);
+    if (line.size() < 2) return false;
+    ActivityDetail const &cur = line.last();
+    ActivityDetail const &prev = line.at(line.size() - 2);
+    bool ownForm = false;
+    QString const own = jttyLineSender(cur.text, &ownForm);
+    if (ownForm && !own.isEmpty()) return false;       // names its sender: its own line
+    if (!cur.startUtc.isValid() ||
+        prev.utcTimestamp.secsTo(cur.startUtc) > kJttyContinuationSecs)
+        return false;
+    QStringList const senders = jttyLineSenders(line, offset, true);
+    if (senders.size() != line.size()) return false;
+    QString const s = senders.last();
+    if (s.isEmpty() ||
+        s.compare(senders.at(senders.size() - 2), Qt::CaseInsensitive) != 0)
+        return false;
+    auto const it = m_jttyLineOfMessage.constFind(prev.utcTimestamp.toMSecsSinceEpoch());
+    if (it == m_jttyLineOfMessage.constEnd()) return false;
+    *out = *it;
+    return true;
+}
+
+QString UI_Constructor::jttyJoinedText(QString const &prefix, QString const &text) {
+    return prefix.isEmpty() ? text : prefix + QLatin1Char(' ') + text;
 }
 
 QStringList UI_Constructor::jttyLineSenders(QList<ActivityDetail> const &line,

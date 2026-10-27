@@ -703,6 +703,7 @@ class Configuration::impl final : public QDialog {
     bool spellcheck_;
     int heartbeat_;
     int watchdog_;
+    int clear_outgoing_secs_{0}; // [TODO #322] SsClearOutgoingSecs, 0 = off
     bool TX_messages_;
     bool use_dynamic_info_;
     QString opCall_;
@@ -958,6 +959,7 @@ bool Configuration::hail_single_frame() const { return m_->hail_single_frame_; }
 bool Configuration::spellcheck() const { return m_->spellcheck_; }
 int Configuration::heartbeat() const { return m_->heartbeat_; }
 int Configuration::watchdog() const { return m_->watchdog_; }
+int Configuration::clear_outgoing_secs() const { return m_->clear_outgoing_secs_; }
 bool Configuration::TX_messages() const { return m_->TX_messages_; }
 bool Configuration::split_mode() const { return m_->split_mode(); }
 QString Configuration::opCall() const { return m_->opCall_; }
@@ -2094,6 +2096,7 @@ void Configuration::impl::initialize_models() {
     ui_->spellcheck_check_box->setChecked(spellcheck_);
     ui_->heartbeat_spin_box->setValue(heartbeat_);
     ui_->tx_watchdog_spin_box->setValue(watchdog_);
+    ui_->clear_outgoing_spin_box->setValue(clear_outgoing_secs_);
     ui_->rig_combo_box->setCurrentText(rig_params_.rig_name);
     ui_->TX_mode_button_group->button(data_mode_)->setChecked(true);
     ui_->split_mode_button_group->button(rig_params_.split_mode)
@@ -2688,6 +2691,8 @@ void Configuration::impl::read_settings() {
     if (watchdog_) {
         watchdog_ = qMax(5, watchdog_);
     }
+    // [TODO #322] new key, Ss prefix: an older build ignores it
+    clear_outgoing_secs_ = qBound(0, settings_->value("SsClearOutgoingSecs", 0).toInt(), 3600);
     TX_messages_ = settings_->value("Tx2QSO", true).toBool();
     rig_params_.poll_interval = settings_->value("Polling", 0).toInt();
     rig_params_.split_mode =
@@ -2976,6 +2981,7 @@ void Configuration::impl::write_settings() {
     settings_->setValue("Spellcheck", spellcheck_);
     settings_->setValue("TxBeacon", heartbeat_);
     settings_->setValue("TxIdleWatchdog", watchdog_);
+    settings_->setValue("SsClearOutgoingSecs", clear_outgoing_secs_);
     settings_->setValue("Tx2QSO", TX_messages_);
     settings_->setValue("CATForceDTR", rig_params_.force_dtr);
     settings_->setValue("DTR", rig_params_.dtr_high);
@@ -3627,6 +3633,7 @@ void Configuration::impl::accept() {
     spellcheck_ = ui_->spellcheck_check_box->isChecked();
     heartbeat_ = ui_->heartbeat_spin_box->value();
     watchdog_ = ui_->tx_watchdog_spin_box->value();
+    clear_outgoing_secs_ = ui_->clear_outgoing_spin_box->value();
     data_mode_ = static_cast<DataMode>(ui_->TX_mode_button_group->checkedId());
     save_directory_.setPath(ui_->save_path_display_label->text());
     calibration_.intercept = ui_->calibration_intercept_spin_box->value();

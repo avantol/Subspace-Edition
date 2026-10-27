@@ -1022,6 +1022,41 @@
                     </property>
                    </widget>
                   </item>
+                  <item row="6" column="0">
+                   <widget class="QLabel" name="label_clear_outgoing">
+                    <property name="text">
+                     <string>Clear outgoing text box (unblock possible auto-replies) after:</string>
+                    </property>
+                    <property name="buddy">
+                     <cstring>clear_outgoing_spin_box</cstring>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="1">
+                   <widget class="QSpinBox" name="clear_outgoing_spin_box">
+                    <property name="toolTip">
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Text left in the outgoing box after a send blocks auto-replies. This many seconds after a send ends, the box is cleared and, in JTTY mode, &quot;Directed to&quot; is de-selected. Typing in the meantime cancels it. Disabled = the text stays, as before.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                    <property name="specialValueText">
+                     <string>Disabled</string>
+                    </property>
+                    <property name="suffix">
+                     <string> seconds after the send ends</string>
+                    </property>
+                    <property name="minimum">
+                     <number>0</number>
+                    </property>
+                    <property name="maximum">
+                     <number>3600</number>
+                    </property>
+                    <property name="singleStep">
+                     <number>5</number>
+                    </property>
+                    <property name="value">
+                     <number>0</number>
+                    </property>
+                   </widget>
+                  </item>
                   <item row="1" column="0">
                    <widget class="QCheckBox" name="autoreply_confirmation_check_box">
                     <property name="text">
