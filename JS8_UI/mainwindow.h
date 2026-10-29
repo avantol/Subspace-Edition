@@ -2543,6 +2543,40 @@ class UI_Constructor : public QMainWindow {
     QVariantList remoteBandTable() const;
     QVariantMap remoteUiState();
     QAbstractButton *remoteButton(QString const &name) const; // UI.ACTION
+    // [txquery, operator 2026-10-28] TX enable was turned OFF by a remote
+    // command (UI.ACTION txenable), not by a click here: the status bar
+    // says so until TX enable changes again. Seed for the arbiter hooks
+    // (TODO #327). Read by TX.GET_ENABLED and UI.STATE (TX_DISABLED_REMOTE).
+    bool m_txDisabledRemote{false};
+    // [txset] true only while a remote command (UI.ACTION txenable,
+    // TX.SET_ENABLED) is clicking the button, so the toggled slot knows
+    // the cause; the last state announced as a TX.ENABLED event (-1 = none)
+    bool m_txEnableByRemote{false};
+    int m_txEnabledAnnounced{-1};
+    // [autoset, operator 2026-10-28 "worth having for flexibility"] the
+    // same three for the Autoreply switch (actionModeAutoreply): the soft
+    // hold an arbiter can use (no new auto-replies, the operator still
+    // free to send) where TX enable off is the hard stop
+    bool m_autoDisabledRemote{false};
+    bool m_autoByRemote{false};
+    int m_autoAnnounced{-1};
+    // [holdreason, operator 2026-10-28 "reasonable default reasons, a
+    // placeholder"] why the remote command turned the switch off: the
+    // command's REASON when it gave one, else "remote command". Shown in
+    // the status bar ("TX disabled by <reason>") and in the Send-refused
+    // message; the arbiter's duration (#327 item 3) is not here yet.
+    QString m_txHoldReason, m_autoHoldReason;
+    // [holdtimeout, operator 2026-10-28 "a provisional timeout for tx
+    // disabled remotely, to avoid a test hard fail. set it to 300
+    // seconds"] a remote hold ends on its own after kRemoteHoldMaxMs
+    // (CHOSEN, 300 s) unless the holder sends the same SET again, which
+    // re-arms it: #327 item 3's lease with a fixed length. Any change of
+    // the switch disarms it.
+    static constexpr int kRemoteHoldMaxMs = 300'000;
+    QTimer *m_txHoldTimer{nullptr}, *m_autoHoldTimer{nullptr};
+    bool m_txHoldExpired{false}, m_autoHoldExpired{false}; // the expiry's own change
+    void armRemoteHold(bool tx);
+    void expireRemoteHold(bool tx);
     void jttyAutoLatchDirected(); // JTTY: a selection latches Directed to
     void remotePushChanged();                   // push whatever changed
     QTimer *m_remotePushTimer{nullptr};
@@ -2567,6 +2601,7 @@ class UI_Constructor : public QMainWindow {
     void createStatusBar();
     void statusChanged();
     void rigFailure(QString const &reason);
+    void rigErrorBoxFinished(int); // [#326 rigbox] the box's buttons
     void spotSetLocal();
     void pskSetLocal();
     void aprsSetLocal();

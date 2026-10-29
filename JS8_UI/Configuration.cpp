@@ -608,6 +608,10 @@ class Configuration::impl final : public QDialog {
     TransceiverFactory::Capabilities::PortType last_port_type_;
     bool rig_is_dummy_;
     bool rig_active_;
+    // [#326 rigbox] a rig-failure box is up (blocking critical_message in
+    // have_rig / handle_transceiver_failure): a failure arriving under it
+    // is logged, not shown again
+    bool rig_failure_box_open_{false};
     bool have_rig_;
     bool rig_changed_;
     TransceiverState cached_rig_state_;
@@ -4549,8 +4553,14 @@ void Configuration::impl::on_calibration_slope_ppm_spin_box_valueChanged(
 
 bool Configuration::impl::have_rig() {
     if (!open_rig()) {
-        JS8MessageBox::critical_message(this, tr("Rig control error"),
-                                        tr("Failed to open connection to rig"));
+        if (rig_failure_box_open_) {
+            qWarning() << "[RIG] open failed while a rig-failure box is showing";
+        } else {
+            rig_failure_box_open_ = true;
+            JS8MessageBox::critical_message(this, tr("Rig control error"),
+                                            tr("Failed to open connection to rig"));
+            rig_failure_box_open_ = false;
+        }
     }
     return rig_active_;
 }
@@ -4801,7 +4811,14 @@ void Configuration::impl::handle_transceiver_failure(QString const &reason) {
     ui_->test_PTT_push_button->setChecked(false);
 
     if (isVisible()) {
+        // [#326 rigbox] one box at a time; a failure under it is logged
+        if (rig_failure_box_open_) {
+            qWarning() << "[RIG] failure while a rig-failure box is showing:" << reason;
+            return;
+        }
+        rig_failure_box_open_ = true;
         JS8MessageBox::critical_message(this, tr("Rig failure"), reason);
+        rig_failure_box_open_ = false;
     } else {
         // pass on if our dialog isn't active
         Q_EMIT self_->transceiver_failure(reason);

@@ -18,7 +18,8 @@ Differences from the JS8 rotator:
     how many (SPLIT / JTTY_MESSAGES) and is logged. TX.COMPLETE fires
     after the last one.
 
-Each message is sent twice, back to back (SENDS_PER_MESSAGE).
+Each message is sent once per cycle (SENDS_PER_MESSAGE; it was 2 until
+2026-10-27, operator: "not repeat the message each run").
 
 Usage:  msg-rotator-jtty.py [MSG_FILE] [INTERVAL] [START]
   START     1-based message number to begin with (default 1)
@@ -46,7 +47,7 @@ Js8Timeout = _base.Js8Timeout
 log = _base.log
 BUSY_RETRY_SEC = _base.BUSY_RETRY_SEC
 TX_COMPLETE_TIMEOUT = _base.TX_COMPLETE_TIMEOUT
-SENDS_PER_MESSAGE = 2
+SENDS_PER_MESSAGE = 1
 
 
 class JttyRotator(_base.Rotator):
@@ -152,6 +153,8 @@ class JttyRotator(_base.Rotator):
             # [operator 2026-10-18] Each message twice, back to back: a
             # WSJT-X operator decodes only in their own window and
             # 1200-1800 Hz, and easily misses a single pass.
+            # [operator 2026-10-27] ...back to once: SENDS_PER_MESSAGE = 1.
+            # The loop stays so the count is one constant.
             for n in range(1, SENDS_PER_MESSAGE + 1):
                 if n > 1 and (self.busy_reason() or self.outgoing_text()):
                     log("     repeat skipped: busy or operator typing")

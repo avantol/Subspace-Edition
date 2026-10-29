@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QString>
 
+#include <cerrno>
 #include <cmath>
 #include <cstring>
 
@@ -408,7 +409,19 @@ void HamlibTransceiver::error_check(int ret_code, QString const &doing) const {
     }
 }
 
+// [errno 2026-10-27] Hamlib's read_string_generic (iofunc.c, 4.5.5 and
+// 4.7.0 alike) reads a network reply one byte at a time and sleeps 5 ms
+// after every byte while the thread's errno == EAGAIN; nothing in that
+// loop resets errno after a successful read. Once something leaves
+// EAGAIN behind on this thread, every ~200-byte flrig reply costs a
+// fixed second -- key, unkey and every poll -- until errno changes. Seen
+// on WM8Q 20:05-20:36 UTC (199 "port_read is busy?" lines per reply,
+// rig_set_ptt took 1,082 ms with flrig at 54 ms, polls queued 4.8 s
+// ahead of a key-up) and the shape of N1ROG's 1.28 s / 7.2 s holds.
+// errno is thread-local: cleared at the entry of every operation that
+// calls Hamlib on this thread.
 int HamlibTransceiver::do_start() {
+    errno = 0;
     TRACE_CAT("HamlibTransceiver",
               QString::fromLatin1(rig_->caps->mfg_name).trimmed()
                   << QString::fromLatin1(rig_->caps->model_name).trimmed());
@@ -732,6 +745,7 @@ auto HamlibTransceiver::get_vfos(bool for_split) const
 }
 
 void HamlibTransceiver::do_frequency(Frequency f, MODE m, bool no_ignore) {
+    errno = 0;   // [errno] see do_start
     TRACE_CAT("HamlibTransceiver",
               f << "mode:" << m << "reversed:" << reversed_);
 
@@ -796,6 +810,7 @@ void HamlibTransceiver::hamlib_bug_bandaid(TransceiverState const &s) {
 
 void HamlibTransceiver::do_tx_frequency(Frequency tx, MODE mode,
                                         bool no_ignore) {
+    errno = 0;   // [errno] see do_start
     TRACE_CAT("HamlibTransceiver", tx << "reversed:" << reversed_);
 
     if (WSJT_RIG_NONE_CAN_SPLIT ||
@@ -926,6 +941,7 @@ void HamlibTransceiver::do_tx_frequency(Frequency tx, MODE mode,
 }
 
 void HamlibTransceiver::do_mode(MODE mode) {
+    errno = 0;   // [errno] see do_start
     TRACE_CAT("HamlibTransceiver", mode);
 
     auto vfos = get_vfos(state().split());
@@ -992,6 +1008,7 @@ void HamlibTransceiver::do_mode(MODE mode) {
 }
 
 void HamlibTransceiver::poll() {
+    errno = 0;   // [errno] see do_start -- the poll is where the second compounds
     if (hamlibtransceiver_js8().isDebugEnabled())
         rig_set_debug(RIG_DEBUG_WARN);
     else
@@ -1140,6 +1157,7 @@ void HamlibTransceiver::poll() {
 }
 
 void HamlibTransceiver::do_ptt(bool on) {
+    errno = 0;   // [errno] see do_start
     TRACE_CAT("HamlibTransceiver", on << state() << "reversed =" << reversed_);
     // [pttlog 2026-10-27] The rig thread's hand-off to Hamlib, and how
     // long Hamlib held it: the counterpart of "[PTT] commanded" in

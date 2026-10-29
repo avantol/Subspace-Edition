@@ -1138,6 +1138,9 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             &UI_Constructor::handle_transceiver_update);
     connect(&m_config, &Configuration::transceiver_failure, this,
             &UI_Constructor::handle_transceiver_failure);
+    // [#326 rigbox] the Rig Control Error box is open()ed, not exec()'d
+    connect(&m_rigErrorMessageBox, &QDialog::finished, this,
+            &UI_Constructor::rigErrorBoxFinished);
     connect(&m_config, &Configuration::udp_server_name_changed, m_messageClient,
             &MessageClient::set_server_name);
     connect(&m_config, &Configuration::udp_server_port_changed, m_messageClient,

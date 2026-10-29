@@ -148,6 +148,125 @@ or unwanted rows without clearing the whole band pane.
 
 `CLEARED` is `false` if no activity existed at that offset.
 
+### `TX.GET_ENABLED`
+
+The TX enable button's state. An outside program that coordinates the
+radio (a phone, an arbiter) reads this before it decides anything.
+
+**Request:** `{"type":"TX.GET_ENABLED"}`
+
+**Response:**
+```json
+{"type":"TX.ENABLED",
+ "params":{"_ID":<id>,"ENABLED":true,"REMOTE":false}}
+```
+
+`ENABLED` is the button. `REMOTE` is `true` when the button was turned off
+by a remote command (`TX.SET_ENABLED`, or `UI.ACTION` with value
+`txenable`) and has not changed since; `REASON` is then the holder's
+reason (see `TX.SET_ENABLED`), and the station's status bar shows
+"TX disabled by <reason>". Any later change of the button, by the operator
+or by a command, clears both. The same facts are in `UI.STATE` as
+`TX_ENABLED` and `TX_DISABLED_REMOTE`.
+
+### `TX.SET_ENABLED`
+
+Sets the TX enable button. Use this, not `UI.ACTION txenable` (a toggle),
+from any program that decides on its own: if the operator's click lands
+between your query and your command, a toggle turns TX on when you meant
+off. The value is applied only when it differs from the button, through
+the button's own click, so turning it off is the full operator halt: the
+current message is cut, queued auto-replies are dropped, ARQ sessions end.
+
+**Request:**
+```json
+{"type":"TX.SET_ENABLED","params":{"ENABLED":false,"REASON":"VARA link"}}
+```
+
+`REASON` (optional, at most 40 characters) names why the holder turns TX
+off, for the operator: the status bar shows "TX disabled by VARA link" and
+a refused Send says "Send refused: TX disabled by VARA link". Without it
+the reason is "remote command".
+
+**Response:**
+```json
+{"type":"TX.ENABLED",
+ "params":{"_ID":<id>,"ENABLED":false,"REMOTE":true,"REASON":"VARA link",
+           "HOLD_S":300,"CHANGED":true,"OK":true}}
+```
+
+`CHANGED` is `false` when the button was already in that state. `OK` is
+`false` with `REASON` `disabled` (the button is unavailable, for example
+no rig) or `missing` (no `ENABLED` given); nothing is applied then.
+
+**The hold is a lease.** A hold placed by a command ends on its own after
+`HOLD_S` seconds (300, fixed in this build) and TX is turned back on, with
+a `TX.ENABLED` event carrying `EXPIRED` true, a log line and a status bar
+message. To keep holding, send the same `TX.SET_ENABLED false` again
+before it runs out; while held it renews the lease (`CHANGED` false) and
+may change the reason. A holder that dies or loses its connection
+therefore holds nothing for longer than `HOLD_S`. Any change of the button
+by anyone cancels the lease.
+
+With TX off, a Send (the operator's button, a macro, or an API send) is
+refused where it always was, and now says why in the status bar for five
+seconds: the hold's reason when a remote command holds TX, else "TX is not
+enabled". The outgoing box is still cleared, as before.
+
+### `TX.ENABLED` (push event)
+
+Sent with `_ID` -1 whenever the TX enable button changes, by the operator
+or by a command, once per change. `ENABLED` is the new state, `REMOTE` is
+`true` when it was turned off by a remote command, `REASON` is then the
+holder's reason. `OVERRIDE` is `true` when the operator turned TX back on
+over a remote hold: the operator always wins, the station logs the
+override and tells the operator in the status bar, and the holder is
+expected to back off until the radio is next clear rather than hold again
+at once.
+
+`EXPIRED` is `true` when the lease ran out and the station turned TX back
+on itself (not an override).
+
+```json
+{"type":"TX.ENABLED",
+ "params":{"_ID":-1,"ENABLED":true,"REMOTE":false,"REASON":"","OVERRIDE":true,
+           "EXPIRED":false}}
+```
+
+### `TX.GET_AUTOREPLY`, `TX.SET_AUTOREPLY`, `TX.AUTOREPLY`
+
+The Autoreply switch (Mode > Enable Autoreply, the AUTO gate), with the
+same three shapes as TX enable: query, set, and a push event on every
+change. This is the soft hold for a program that coordinates the radio:
+with Autoreply off the station starts no new auto-replies, while the
+operator's own sends are untouched and nothing already on the air is cut.
+TX enable off is the hard stop.
+
+**Request:** `{"type":"TX.GET_AUTOREPLY"}` or
+`{"type":"TX.SET_AUTOREPLY","params":{"ENABLED":false}}`
+
+**Response:**
+```json
+{"type":"TX.AUTOREPLY",
+ "params":{"_ID":<id>,"ENABLED":false,"REMOTE":true,"CHANGED":true,
+           "OK":true,"REASON":""}}
+```
+
+`CHANGED` and `OK` are in the set reply only; with `OK` false, `REASON` is
+`disabled` (the switch is unavailable, JTTY mode) or `missing` (no
+`ENABLED`). The set request takes the same optional `REASON` as
+`TX.SET_ENABLED`, the hold is the same 300 s lease (`HOLD_S`, renewed by
+the same request), and the event carries `OVERRIDE` and `EXPIRED` the
+same way. `REMOTE`
+is `true` while the switch is off by a remote command, `REASON` is then
+the holder's reason, and the status bar shows "Autoreply disabled by
+<reason>". The idle
+watchdog also turns Autoreply off and restores it when its dialog is
+dismissed; both are announced as `TX.AUTOREPLY` events with `REMOTE`
+false, so a program holding Autoreply off sees the restore and may hold
+again. In `UI.STATE` the two facts are `AUTOREPLY` and
+`AUTO_DISABLED_REMOTE`.
+
 ---
 
 ## Extended Commands

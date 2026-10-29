@@ -1936,6 +1936,43 @@ QAbstractButton *UI_Constructor::remoteButton(QString const &name) const {
     return map.value(name, nullptr);
 }
 
+// [holdtimeout] (re)start the hold's timer: a remote hold on TX enable
+// (tx) or Autoreply lives kRemoteHoldMaxMs unless renewed.
+void UI_Constructor::armRemoteHold(bool tx) {
+    QTimer *&t = tx ? m_txHoldTimer : m_autoHoldTimer;
+    if (!t) {
+        t = new QTimer(this);
+        t->setSingleShot(true);
+        connect(t, &QTimer::timeout, this, [this, tx]() { expireRemoteHold(tx); });
+    }
+    t->start(kRemoteHoldMaxMs);
+    qWarning() << "[REMOTE] hold armed:" << (tx ? "TX" : "Autoreply")
+               << "for" << kRemoteHoldMaxMs / 1000 << "s";
+}
+
+// [holdtimeout] the hold ran out unrenewed: the switch goes back on by
+// itself (setChecked, so it works while the button is greyed too), said
+// in the log and the status bar, announced with EXPIRED true.
+void UI_Constructor::expireRemoteHold(bool tx) {
+    if (tx) {
+        if (!m_txDisabledRemote || ui->monitorTxButton->isChecked()) return;
+        qWarning() << "[TX-ENABLE] remote hold (" << m_txHoldReason << ") expired after"
+                   << kRemoteHoldMaxMs / 1000 << "s, TX re-enabled";
+        showStatusMessage(tr("Remote TX hold (%1) expired, TX re-enabled").arg(m_txHoldReason));
+        m_txHoldExpired = true;
+        ui->monitorTxButton->setChecked(true);
+        m_txHoldExpired = false;
+    } else {
+        if (!m_autoDisabledRemote || ui->actionModeAutoreply->isChecked()) return;
+        qWarning() << "[AUTOREPLY] remote hold (" << m_autoHoldReason << ") expired after"
+                   << kRemoteHoldMaxMs / 1000 << "s, Autoreply re-enabled";
+        showStatusMessage(tr("Remote Autoreply hold (%1) expired, Autoreply re-enabled").arg(m_autoHoldReason));
+        m_autoHoldExpired = true;
+        ui->actionModeAutoreply->setChecked(true);
+        m_autoHoldExpired = false;
+    }
+}
+
 // The top bar and the buttons' state.
 QVariantMap UI_Constructor::remoteUiState() {
     QVariantMap buttons;
@@ -1974,6 +2011,11 @@ QVariantMap UI_Constructor::remoteUiState() {
         {"OFFSET", freq()},
         {"SELECTED", callsignSelected()},
         {"TX_ENABLED", ui->monitorTxButton->isChecked()},
+        // [txquery] off on a remote command (UI.ACTION txenable), not a click
+        {"TX_DISABLED_REMOTE", m_txDisabledRemote && !ui->monitorTxButton->isChecked()},
+        // [autoset] the Autoreply switch and the same mark for it
+        {"AUTOREPLY", ui->actionModeAutoreply->isChecked()},
+        {"AUTO_DISABLED_REMOTE", m_autoDisabledRemote && !ui->actionModeAutoreply->isChecked()},
         {"TRANSMITTING", m_transmitting},
         // [operator 2026-10-24, TODO #316] the rig's transmit meters, the
         // second reading of this transmission; -1 = none (not read, no
@@ -2148,6 +2190,41 @@ void UI_Constructor::on_monitorButton_toggled(bool) {
 
 void UI_Constructor::on_monitorTxButton_toggled(bool checked) {
     resetPushButtonToggleText(ui->monitorTxButton);
+
+    // [txquery/txset, operator 2026-10-28] off by a remote command (the
+    // handler sets m_txEnableByRemote around its click) is remembered
+    // for the status bar and the API; any other change clears it. Every
+    // change is announced once as a TX.ENABLED event (_ID -1) so an
+    // outside program (arbiter) sees the operator's override without
+    // polling. The stuck-key guard (ensureCanTransmit) reaches here
+    // twice for one change (setChecked, then a direct call): announced
+    // once.
+    // [#327 item 4, operator 2026-10-28] the operator wins: a click that
+    // turns TX back on over a remote hold is applied as any click, logged
+    // as an override, announced with OVERRIDE true (the holder is expected
+    // to back off), and said in the status bar.
+    bool const overridden = checked && m_txDisabledRemote && !m_txEnableByRemote && !m_txHoldExpired;
+    m_txDisabledRemote = !checked && m_txEnableByRemote;
+    if (m_txHoldTimer) m_txHoldTimer->stop(); // [holdtimeout] any change disarms
+    if (m_txEnabledAnnounced != int(checked)) {
+        m_txEnabledAnnounced = int(checked);
+        qWarning() << "[TX-ENABLE]" << (checked ? "on" : "off")
+                   << (m_txEnableByRemote ? "by remote command"
+                       : m_txHoldExpired  ? "by hold timeout"
+                                          : "by operator")
+                   << (overridden ? QStringLiteral("overriding remote hold (%1)").arg(m_txHoldReason)
+                                  : QString());
+        if (overridden)
+            showStatusMessage(tr("Remote TX hold (%1) overridden by operator").arg(m_txHoldReason));
+        sendNetworkMessage("TX.ENABLED", "",
+                           {{"_ID", QVariant(-1)},
+                            {"ENABLED", checked},
+                            {"REMOTE", m_txDisabledRemote},
+                            {"REASON", m_txDisabledRemote ? m_txHoldReason : QString()},
+                            {"OVERRIDE", overridden},
+                            {"EXPIRED", m_txHoldExpired}});
+        remotePushChanged();
+    }
 
     if (!checked) {
         // [#253 txhalt 2026-09-17, operator ruling] Un-selecting TX is
@@ -5058,6 +5135,19 @@ void UI_Constructor::guiUpdate() {
                 tx_status_label.setStyleSheet(
                     "QLabel{background-color: #000; color:#fff}");
                 tx_status_label.setText("Idle timeout");
+            } else if (m_txDisabledRemote && !ui->monitorTxButton->isChecked()) {
+                // [txquery, operator 2026-10-28] the station is off the
+                // air on an outside program's order (phone, arbiter), not
+                // the operator's; shown until TX enable changes again
+                tx_status_label.setStyleSheet(
+                    "QLabel{background-color: #ffbf00; color:#000}");
+                tx_status_label.setText(QStringLiteral("TX disabled by %1").arg(m_txHoldReason));
+            } else if (m_autoDisabledRemote && !ui->actionModeAutoreply->isChecked()) {
+                // [autoset] the soft hold: no auto-replies on an outside
+                // program's order, the operator may still send
+                tx_status_label.setStyleSheet(
+                    "QLabel{background-color: #ffbf00; color:#000}");
+                tx_status_label.setText(QStringLiteral("Autoreply disabled by %1").arg(m_autoHoldReason));
             } else {
                 tx_status_label.setStyleSheet(
                     "QLabel{background-color: #22ff22}");
@@ -7517,6 +7607,14 @@ bool UI_Constructor::ensureCreateMessageReady(const QString &text) {
     // haltAll (an idle-watchdog block during an auto-ACK keyup must
     // not destroy a half-assembled receive session).
     if (!ensureCanTransmit()) {
+        // [#327 item 5, operator 2026-10-28] say why instead of only
+        // emptying the box: the hold's reason when a remote command
+        // holds TX, else the operator's own switch. Status bar, 5 s.
+        QString const why = m_txDisabledRemote
+                                ? tr("TX disabled by %1").arg(m_txHoldReason)
+                                : tr("TX is not enabled");
+        qWarning() << "[TX-CAUSE] send refused:" << why;
+        showStatusMessage(tr("Send refused: %1").arg(why));
         stopTxMechanical();
         return false;
     }
@@ -8810,6 +8908,36 @@ void UI_Constructor::on_actionModeSubspaceDecode_toggled(bool checked) {
 }
 
 void UI_Constructor::on_actionModeAutoreply_toggled(bool const on) {
+    // [autoset, operator 2026-10-28] same bookkeeping as the TX enable
+    // button: off by a remote command (TX.SET_AUTOREPLY sets
+    // m_autoByRemote around its trigger) is remembered for the status
+    // bar and the API, any other change clears it, and every change is
+    // announced once as a TX.AUTOREPLY event (_ID -1). The idle watchdog
+    // turns this off and restores it from its dialog: both announced,
+    // "by operator", which is what an arbiter must treat them as.
+    // [#327 item 4] operator wins, as for TX enable
+    bool const overridden = on && m_autoDisabledRemote && !m_autoByRemote && !m_autoHoldExpired;
+    m_autoDisabledRemote = !on && m_autoByRemote;
+    if (m_autoHoldTimer) m_autoHoldTimer->stop(); // [holdtimeout] any change disarms
+    if (m_autoAnnounced != int(on)) {
+        m_autoAnnounced = int(on);
+        qWarning() << "[AUTOREPLY]" << (on ? "on" : "off")
+                   << (m_autoByRemote ? "by remote command"
+                       : m_autoHoldExpired ? "by hold timeout"
+                                           : "by operator")
+                   << (overridden ? QStringLiteral("overriding remote hold (%1)").arg(m_autoHoldReason)
+                                  : QString());
+        if (overridden)
+            showStatusMessage(tr("Remote Autoreply hold (%1) overridden by operator").arg(m_autoHoldReason));
+        sendNetworkMessage("TX.AUTOREPLY", "",
+                           {{"_ID", QVariant(-1)},
+                            {"ENABLED", on},
+                            {"REMOTE", m_autoDisabledRemote},
+                            {"REASON", m_autoDisabledRemote ? m_autoHoldReason : QString()},
+                            {"OVERRIDE", overridden},
+                            {"EXPIRED", m_autoHoldExpired}});
+        remotePushChanged();
+    }
     // [acceptonce 2026-09-29, operator ruling] Turning auto-reply back
     // OFF re-arms the offer to turn it on. The once-per-session flag was
     // set when the prompt appeared and nothing ever cleared it, so after
@@ -12601,36 +12729,50 @@ void UI_Constructor::rigFailure(QString const &reason) {
         // one automatic retry
         QTimer::singleShot(0, this, &UI_Constructor::rigOpen);
         m_first_error = false;
-    } else {
-        m_rigErrorMessageBox.setDetailedText(reason);
-
-        // don't call slot functions directly to avoid recursion
-        m_rigErrorMessageBox.exec();
-        auto const clicked_button = m_rigErrorMessageBox.clickedButton();
-        if (clicked_button == m_configurations_button) {
-            ui->menuConfig->exec(QCursor::pos());
-        } else {
-            switch (m_rigErrorMessageBox.standardButton(clicked_button)) {
-            case JS8MessageBox::Ok:
-                m_config.select_tab(1);
-                QTimer::singleShot(
-                    0, this, &UI_Constructor::on_actionSettings_triggered);
-                break;
-
-            case JS8MessageBox::Retry:
-                QTimer::singleShot(0, this, &UI_Constructor::rigOpen);
-                break;
-
-            case JS8MessageBox::Cancel:
-                QTimer::singleShot(0, this, &UI_Constructor::close);
-                break;
-
-            default:
-                break; // squashing compile warnings
-            }
-        }
-        m_first_error = true; // reset
+        return;
     }
+    // [#326 rigbox, 2026-10-28] the box is SHOWN, not run: exec() nested
+    // an event loop under which the transmit machine kept going, and a
+    // failure arriving there re-entered this function and exec()'d the
+    // same box again (the recursive-call line before the double free).
+    // open() returns at once; the buttons are handled in
+    // rigErrorBoxFinished. A failure while the box is showing only
+    // refreshes its detail.
+    m_rigErrorMessageBox.setDetailedText(reason);
+    if (m_rigErrorMessageBox.isVisible()) {
+        qWarning() << "[RIG] failure while the error box is showing:" << reason;
+        return;
+    }
+    qWarning() << "[RIG] error box shown:" << reason;
+    m_rigErrorMessageBox.open();
+}
+
+// [#326 rigbox] the Rig Control Error box's buttons, after it closed
+void UI_Constructor::rigErrorBoxFinished(int) {
+    auto const clicked_button = m_rigErrorMessageBox.clickedButton();
+    if (clicked_button == m_configurations_button) {
+        QTimer::singleShot(0, this, [this]() { ui->menuConfig->exec(QCursor::pos()); });
+    } else {
+        switch (m_rigErrorMessageBox.standardButton(clicked_button)) {
+        case JS8MessageBox::Ok:
+            m_config.select_tab(1);
+            QTimer::singleShot(
+                0, this, &UI_Constructor::on_actionSettings_triggered);
+            break;
+
+        case JS8MessageBox::Retry:
+            QTimer::singleShot(0, this, &UI_Constructor::rigOpen);
+            break;
+
+        case JS8MessageBox::Cancel:
+            QTimer::singleShot(0, this, &UI_Constructor::close);
+            break;
+
+        default:
+            break; // squashing compile warnings
+        }
+    }
+    m_first_error = true; // reset
 }
 
 void UI_Constructor::on_outAttenuation_valueChanged(int const a) {
@@ -14999,7 +15141,16 @@ void UI_Constructor::setRig(Frequency f) {
     if (m_transmitting && !m_config.tx_qsy_allowed())
         return;
 
-    if ((m_monitoring || m_transmitting) && m_config.transceiver_online()) {
+    // [#326 rigbox, 2026-10-28] a QUERY, as the sibling setXIT asks. This
+    // used to be transceiver_online() = have_rig() = open_rig(), which
+    // with the rig closed by a failure CREATED AND STARTED a new
+    // transceiver on every frequency set; its failure re-entered the
+    // Rig Control Error box ("QDialog::exec: Recursive call detected")
+    // and tore transceivers down under each other (double free, Ron's
+    // bench 2026-10-28). Re-opening is rigOpen's job alone: startup,
+    // Settings accept, the one automatic retry, the box's Retry, the
+    // CAT button.
+    if ((m_monitoring || m_transmitting) && m_config.is_transceiver_online()) {
         if (m_config.split_mode()) {
             Q_EMIT m_config.transceiver_tx_frequency(m_freqTxNominal);
         }

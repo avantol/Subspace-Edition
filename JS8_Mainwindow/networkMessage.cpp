@@ -822,6 +822,127 @@ if(type == "STATION.SET_SPOT") {
 	});
       return;
     }
+    /** @brief TX.GET_ENABLED: [txquery, operator 2026-10-28] the TX
+     * enable button's state, for an outside program (phone, arbiter)
+     * that needs to know whether the station may transmit at all.
+     * Reply TX.ENABLED: ENABLED (the button), REMOTE (true when it was
+     * turned off by a remote command, UI.ACTION txenable, and has not
+     * changed since). Read-only; UI.ACTION txenable changes it.
+     */
+    if (type == "TX.GET_ENABLED") {
+        bool const enabled = ui->monitorTxButton->isChecked();
+        sendNetworkMessage("TX.ENABLED", "",
+                           {{"_ID", id},
+                            {"ENABLED", enabled},
+                            {"REMOTE", m_txDisabledRemote && !enabled},
+                            {"REASON", m_txDisabledRemote && !enabled ? m_txHoldReason : QString()}});
+        return;
+    }
+    /** @brief TX.SET_ENABLED: [txset, operator 2026-10-28] the set form
+     * of UI.ACTION txenable, for an arbiter: ENABLED true/false is applied
+     * only when it differs from the button, through the button's own
+     * click (off = the full operator halt, #253), so a watcher never
+     * toggles the wrong way when the operator's click lands between its
+     * query and its command. Reply TX.ENABLED with ENABLED, REMOTE,
+     * CHANGED (false when already in that state), OK/REASON ("disabled"
+     * when the button is unavailable, "missing" without ENABLED). The
+     * _ID -1 TX.ENABLED event follows every real change.
+     */
+    if (type == "TX.SET_ENABLED") {
+        QAbstractButton *b = ui->monitorTxButton;
+        QVariant const want = message.params().value("ENABLED");
+        QString reason;
+        if (!want.isValid())
+            reason = QStringLiteral("missing");
+        else if (!b->isVisible() || !b->isEnabled())
+            reason = QStringLiteral("disabled");
+        bool const changed = reason.isEmpty() && b->isChecked() != want.toBool();
+        qWarning() << "[REMOTE] TX.SET_ENABLED" << want.toBool()
+                   << (reason.isEmpty() ? (changed ? "applied" : "no change") : reason);
+        // [holdreason] REASON names the holder's cause ("VARA link");
+        // "remote command" when none given
+        QString const why = message.params().value("REASON").toString().simplified();
+        if (changed) {
+            m_txHoldReason = why.isEmpty() ? QStringLiteral("remote command") : why.left(40);
+            m_txEnableByRemote = true;
+            b->click();
+            m_txEnableByRemote = false;
+        }
+        bool const enabled = b->isChecked();
+        bool const held = m_txDisabledRemote && !enabled;
+        // [holdtimeout] a hold lives kRemoteHoldMaxMs; the same SET again
+        // while held renews it (and may rename the reason)
+        if (held && reason.isEmpty() && !want.toBool()) {
+            if (!changed && !why.isEmpty()) m_txHoldReason = why.left(40);
+            armRemoteHold(true);
+        }
+        sendNetworkMessage("TX.ENABLED", "",
+                           {{"_ID", id},
+                            {"ENABLED", enabled},
+                            {"REMOTE", held},
+                            {"HOLD_S", held ? kRemoteHoldMaxMs / 1000 : 0},
+                            {"CHANGED", changed},
+                            {"OK", reason.isEmpty()},
+                            // the refusal when refused, else the hold's reason
+                            {"REASON", !reason.isEmpty() ? reason : held ? m_txHoldReason : QString()}});
+        remotePushChanged();
+        return;
+    }
+    /** @brief TX.GET_AUTOREPLY / TX.SET_AUTOREPLY: [autoset, operator
+     * 2026-10-28] the Autoreply switch (Mode > Enable Autoreply, the
+     * AUTO gate), same shape as TX.GET_ENABLED / TX.SET_ENABLED: the
+     * soft hold for an arbiter -- no NEW auto-replies start, the
+     * operator's own sends are untouched, nothing on the air is cut.
+     * SET applies ENABLED only when it differs, through the menu
+     * action's own trigger. Reply TX.AUTOREPLY with ENABLED, REMOTE
+     * (off by a remote command), and for SET also CHANGED, OK/REASON
+     * ("disabled" = the switch is unavailable, JTTY mode; "missing").
+     * The _ID -1 TX.AUTOREPLY event follows every real change.
+     */
+    if (type == "TX.GET_AUTOREPLY") {
+        bool const enabled = ui->actionModeAutoreply->isChecked();
+        sendNetworkMessage("TX.AUTOREPLY", "",
+                           {{"_ID", id},
+                            {"ENABLED", enabled},
+                            {"REMOTE", m_autoDisabledRemote && !enabled},
+                            {"REASON", m_autoDisabledRemote && !enabled ? m_autoHoldReason : QString()}});
+        return;
+    }
+    if (type == "TX.SET_AUTOREPLY") {
+        QAction *a = ui->actionModeAutoreply;
+        QVariant const want = message.params().value("ENABLED");
+        QString reason;
+        if (!want.isValid())
+            reason = QStringLiteral("missing");
+        else if (!a->isEnabled())
+            reason = QStringLiteral("disabled");
+        bool const changed = reason.isEmpty() && a->isChecked() != want.toBool();
+        qWarning() << "[REMOTE] TX.SET_AUTOREPLY" << want.toBool()
+                   << (reason.isEmpty() ? (changed ? "applied" : "no change") : reason);
+        QString const why = message.params().value("REASON").toString().simplified();
+        if (changed) {
+            m_autoHoldReason = why.isEmpty() ? QStringLiteral("remote command") : why.left(40);
+            m_autoByRemote = true;
+            a->trigger();
+            m_autoByRemote = false;
+        }
+        bool const enabled = a->isChecked();
+        bool const held = m_autoDisabledRemote && !enabled;
+        if (held && reason.isEmpty() && !want.toBool()) { // [holdtimeout] arm / renew
+            if (!changed && !why.isEmpty()) m_autoHoldReason = why.left(40);
+            armRemoteHold(false);
+        }
+        sendNetworkMessage("TX.AUTOREPLY", "",
+                           {{"_ID", id},
+                            {"ENABLED", enabled},
+                            {"REMOTE", held},
+                            {"HOLD_S", held ? kRemoteHoldMaxMs / 1000 : 0},
+                            {"CHANGED", changed},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", !reason.isEmpty() ? reason : held ? m_autoHoldReason : QString()}});
+        remotePushChanged();
+        return;
+    }
     /** @brief TX.SEND_DIRECTED: Build and enqueue a properly-formatted
      * directed message. Agent supplies TO, CMD, optional EXTRA; server
      * composes `<MYCALL>: <TO> <CMD> <EXTRA>` and validates the TO
@@ -1312,7 +1433,14 @@ if(type == "STATION.SET_SPOT") {
             on_logQSOButton_clicked();
             if (m_logDlg->isVisible()) m_logDlg->accept();
         } else if (reason.isEmpty()) {
+            // [txquery, operator 2026-10-28] the toggled slot reads this
+            // to mark "TX disabled by remote command" (status bar, API)
+            m_txEnableByRemote = (action == QLatin1String("txenable"));
+            if (m_txEnableByRemote) m_txHoldReason = QStringLiteral("remote command");
             b->click();
+            m_txEnableByRemote = false;
+            // [holdtimeout] the toggle's off is a hold too, same lease
+            if (m_txDisabledRemote && !b->isChecked()) armRemoteHold(true);
         }
         sendNetworkMessage("UI.ACTION", action,
                            {{"_ID", message.params().value("_ID")},
