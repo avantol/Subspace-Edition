@@ -1035,19 +1035,19 @@
                   <item row="6" column="1">
                    <widget class="QSpinBox" name="clear_outgoing_spin_box">
                     <property name="toolTip">
-                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Text left in the outgoing box after a send blocks auto-replies. This many seconds after a send ends, the box is cleared and, in JTTY mode, &quot;Directed to&quot; is de-selected. Typing in the meantime cancels it. Disabled = the text stays, as before.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Text left in the outgoing box blocks auto-replies. Every change to the box restarts this countdown; when it reaches zero the box is cleared and, in JTTY mode, &quot;Directed to&quot; is de-selected. 15 minutes or more. Disabled = the text stays, as before.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                     </property>
                     <property name="specialValueText">
                      <string>Disabled</string>
                     </property>
                     <property name="suffix">
-                     <string> seconds after the send ends</string>
+                     <string> minutes</string>
                     </property>
                     <property name="minimum">
                      <number>0</number>
                     </property>
                     <property name="maximum">
-                     <number>3600</number>
+                     <number>120</number>
                     </property>
                     <property name="singleStep">
                      <number>5</number>

@@ -966,6 +966,16 @@ void UI_Constructor::readSettings() {
     // saved list and pane were put on screen against whatever dial
     // the rig came up on (legacy behaviour, stock JS8Call does the
     // same) -- garbage whenever the dial changed between exit and start.
+    // [TODO #286, field 2026-10-31] Seed the per-call unread counts from
+    // the inbox database at startup. They lived only in memory and had
+    // no startup caller: the inbox panel's own first refresh fires
+    // countsUpdated before ensureMessageDock has connected it, so every
+    // count was zero after a restart and no station was flagged, bold
+    // or pinned until a message arrived or the inbox was opened. Runs
+    // before the restore below so the aging filter sees unread senders
+    // as exempt on the first draw (upstream 4d9931d4 does the same).
+    refreshInboxCounts();
+
     if (m_config.reset_activity()) {
         // NOOP
     } else {
@@ -2626,8 +2636,8 @@ bool UI_Constructor::eventFilter(QObject *object, QEvent *event) {
     }
     switch (event->type()) {
     case QEvent::KeyPress:
-        // [TODO #322] typing = the operator is composing: keep the box
-        m_clearOutgoingTimer.stop();
+        // [TODO #331] typing restarts the clear countdown through the
+        // box's own textChanged; nothing to do here
         [[fallthrough]];
     case QEvent::MouseButtonPress:
         // reset the Tx watchdog
@@ -4909,7 +4919,8 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
         }
 
         m_transmitting = true;
-        m_clearOutgoingTimer.stop(); // [TODO #322] a new send: re-armed at its end
+        // [TODO #331] the clear countdown keeps running through a send;
+        // clearOutgoingNow defers while the box is busy
         // [BUILD 334] build-333 TX-SUPPRESS removed — the Detector
         // now captures continuously through our own TX (pre-333
         // behavior); the ring splice it created broke async ARQ
@@ -6046,8 +6057,8 @@ void UI_Constructor::stopTx() {
         if (!waveformTx())
 #endif
         ui->extFreeTextMsgEdit->clear();
-        // [TODO #322] the kept text (and a JTTY latch) go after N seconds
-        armClearOutgoing();
+        // [TODO #331] no arm here: the kept text is already on the
+        // countdown from its last change (textChanged)
         // [#146 lockhold] The deferred restore owns the unlock while
         // a response draft is still owed.
         ui->extFreeTextMsgEdit->setReadOnly(arqRestoreOwed);
@@ -8464,6 +8475,32 @@ void UI_Constructor::on_startTxButton_toggled(bool checked) {
     if (checked && !m_sendSideOn) {
         QSignalBlocker const block(ui->startTxButton);
         ui->startTxButton->setChecked(false);
+        // [#327 item 5, operator 2026-10-29] A click on the greyed Send
+        // while a remote hold has TX off was swallowed with no feedback
+        // (live test: the status bar line alone was missed). Say why in
+        // a box that closes itself; kSendRefusedBoxS = 5 s, chosen.
+        // Non-modal and never activating (#212: a box that grabs focus
+        // during a receive puts the operator's keystrokes on the air).
+        if (m_txDisabledRemote) {
+            QString const why = tr("TX disabled by %1").arg(m_txHoldReason);
+            qWarning() << "[TX-CAUSE] send refused (button):" << why;
+            showStatusMessage(tr("Send refused: %1").arg(why));
+            if (m_sendRefusedBox) {
+                m_sendRefusedBox->setText(why);
+            } else {
+                constexpr int kSendRefusedBoxS = 5;
+                auto *m = new SelfDestructMessageBox(
+                    kSendRefusedBoxS, tr("Send refused"), why,
+                    QMessageBox::Information, QMessageBox::Ok,
+                    QMessageBox::Ok, false, this);
+                m->setAttribute(Qt::WA_ShowWithoutActivating, true);
+                m->setWindowModality(Qt::NonModal);
+                connect(m, &SelfDestructMessageBox::finished, m,
+                        &QObject::deleteLater);
+                m_sendRefusedBox = m;
+                m->show();
+            }
+        }
         return;
     }
     if (checked) {
@@ -8908,6 +8945,10 @@ void UI_Constructor::on_actionModeSubspaceDecode_toggled(bool checked) {
 }
 
 void UI_Constructor::on_actionModeAutoreply_toggled(bool const on) {
+    // [TODO #331, operator 2026-10-31] the clear-outgoing countdown runs
+    // only while AUTO is on: AUTO on starts it for text already in the
+    // box, AUTO off stops it (armClearOutgoing reads the toggle)
+    armClearOutgoing();
     // [autoset, operator 2026-10-28] same bookkeeping as the TX enable
     // button: off by a remote command (TX.SET_AUTOREPLY sets
     // m_autoByRemote around its trigger) is remembered for the status
@@ -11564,8 +11605,9 @@ void UI_Constructor::jttyDirectedLatchToggled(bool on) {
     m_jttyLatchDial = operatingDial();
     jttyLatchPutAddress(selectedCall);
     // [TODO #322, operator 2026-10-27] a latch set and then left alone
-    // clears on the same timer as a send (the address blocks auto-replies)
-    armClearOutgoing();
+    // clears on the same timer (the address blocks auto-replies).
+    // [TODO #331] the address written into the box is a change, so the
+    // countdown starts from textChanged; no separate arm.
 }
 
 // [operator 2026-10-21] The first-run band-activity hint, JTTY mode: once
@@ -14811,8 +14853,18 @@ void UI_Constructor::processTxQueue() {
     }
 
     // our message box needs to be empty...
+    // [TODO #331, field 2026-10-30] ...or hold only a parked auto-reply
+    // (AUTO off parked "KF0SOY SNR +09" at 19:01; it blocked every
+    // later reply for 40 min and was sent stale by hand). A parked
+    // reply is replaced by the next one: addMessageText(clear) below.
     if (!ui->extFreeTextMsgEdit->toPlainText().isEmpty()) {
-        return;
+        if (!boxHoldsParkedAutoReply()) {
+            return;
+        }
+        qCWarning(mainwindow_js8)
+            << "[TX-QUEUE] parked auto-reply replaced:"
+            << m_lastQueueInjectedText.left(40)
+            << "->" << head.message.left(40);
     }
 
     // don't process if we're currently transmitting...
@@ -15259,24 +15311,44 @@ void UI_Constructor::resetIdleTimer() {
     }
 }
 
-// [TODO #322] See the header. Armed at the end of every transmission;
-// the setting is read then, so a change in Settings applies to the next
-// send. The box being read-only means ARQ still owns it (#146): then the
-// clear is skipped, not deferred.
+// [TODO #322/#331] See the header. Called from the box's textChanged
+// and from the AUTO toggle: text in the box restarts the countdown, an
+// empty box stops it. [operator 2026-10-31] Only while auto-replies are
+// enabled -- with AUTO off the text blocks nothing, so it stays. The
+// setting is read each time, so a change in Settings applies at the
+// next change to the box.
 void UI_Constructor::armClearOutgoing() {
     int const secs = m_config.clear_outgoing_secs();
-    if (secs <= 0) {
+    if (secs <= 0 || ui->extFreeTextMsgEdit->toPlainText().isEmpty() ||
+        !ui->actionModeAutoreply->isChecked()) {
         m_clearOutgoingTimer.stop();
         return;
     }
     m_clearOutgoingTimer.start(secs * 1000);
 }
 
+// [TODO #331] A parked auto-reply: the box holds exactly the text the
+// queue drain placed there as an auto-reply, nothing is being sent, and
+// the operator has not touched it (an edit makes the text differ from
+// the snapshot; a send clears the snapshot). Such text is replaceable
+// by the next auto-reply -- it is not something the operator typed.
+bool UI_Constructor::boxHoldsParkedAutoReply() {
+    return m_lastQueueInjectedAutoReply && !m_lastQueueInjectedText.isEmpty() &&
+           ui->extFreeTextMsgEdit->toPlainText() == m_lastQueueInjectedText &&
+           !m_transmitting && !ui->startTxButton->isChecked() &&
+           !isMessageQueuedForTransmit();
+}
+
 void UI_Constructor::clearOutgoingNow() {
-    if (m_transmitting || ui->startTxButton->isChecked())
-        return;                                   // a new send began
-    if (ui->extFreeTextMsgEdit->isReadOnly())
-        return;                                   // ARQ owns the box
+    // [TODO #331] the box is busy: a send is running or ARQ owns it.
+    // Not skipped: the full countdown runs again (a deferral until the
+    // box is free, so kept FT2 text still goes).
+    if (m_transmitting || ui->startTxButton->isChecked() ||
+        ui->extFreeTextMsgEdit->isReadOnly()) {
+        qCDebug(mainwindow_js8) << "[CLEAR-OUTGOING] deferred: box busy";
+        armClearOutgoing();
+        return;
+    }
     bool latchDropped = false;
 #ifdef JS8_ENABLE_JTTY
     if (ui->queryButton->isChecked()) {           // "Directed to"
@@ -15289,8 +15361,9 @@ void UI_Constructor::clearOutgoingNow() {
         ui->extFreeTextMsgEdit->clear();
     if (hadText || latchDropped)
         qCWarning(mainwindow_js8) << "[CLEAR-OUTGOING]"
-                                  << m_config.clear_outgoing_secs()
-                                  << "s after the send: box cleared=" << hadText
+                                  << m_config.clear_outgoing_secs() / 60
+                                  << "min after the last change: box cleared="
+                                  << hadText
                                   << "directed-to dropped=" << latchDropped;
 }
 

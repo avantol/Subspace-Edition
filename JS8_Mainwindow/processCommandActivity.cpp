@@ -2391,7 +2391,20 @@ void UI_Constructor::processCommandActivity() {
         bool const isRemoteObligation = isRelayForward || arqProtocolReply;
         if (!ui->extFreeTextMsgEdit->toPlainText().isEmpty() &&
             !isRemoteObligation) {
-            continue;
+            // [TODO #331, field 2026-10-30] A reply the queue drain parked
+            // with AUTO off is not the operator's text: it must not block
+            // the next reply (KK7VDA's "@MAGNET SNR?" was dropped here,
+            // silently, behind a 40-minute-old parked reply). The drain
+            // replaces it. Operator text still blocks, now logged.
+            if (!boxHoldsParkedAutoReply()) {
+                qWarning() << "[REPLY-GATE] suppressed: text in the"
+                           << "outgoing box, from=" << d.from
+                           << "cmd=" << d.cmd << "reply=" << reply.left(40);
+                continue;
+            }
+            qWarning() << "[REPLY-GATE] parked auto-reply in the box is"
+                       << "replaceable:" << m_lastQueueInjectedText.left(40)
+                       << "new=" << reply.left(40);
         }
 
         // do not queue for reply if there's a buffer open to us

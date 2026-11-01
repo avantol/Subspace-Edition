@@ -1197,14 +1197,20 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     }
     m_configurations_button = m_rigErrorMessageBox.addButton(
         tr("Configurations..."), QMessageBox::ActionRole);
-    connect(ui->extFreeTextMsgEdit, &QTextEdit::textChanged,
-            [this]() { currentTextChanged(); matchCallsignFromInput(); });
+    connect(ui->extFreeTextMsgEdit, &QTextEdit::textChanged, [this]() {
+        currentTextChanged();
+        matchCallsignFromInput();
+        // [TODO #331, operator 2026-10-31] every change to the box
+        // restarts the clear countdown; an emptied box stops it
+        armClearOutgoing();
+    });
 
     m_guiTimer.setTimerType(Qt::PreciseTimer);
     m_guiTimer.setSingleShot(true);
     connect(&m_guiTimer, &QTimer::timeout, this, &UI_Constructor::guiUpdate);
 
-    // [TODO #322] after-send clear of the outgoing box
+    // [TODO #322/#331] clear of the outgoing box, counted from its
+    // last change
     m_clearOutgoingTimer.setSingleShot(true);
     connect(&m_clearOutgoingTimer, &QTimer::timeout, this,
             &UI_Constructor::clearOutgoingNow);

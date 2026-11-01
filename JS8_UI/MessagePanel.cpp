@@ -174,9 +174,13 @@ void MessagePanel::populateMessages(QList<QPair<int, Message>> msgs) {
 
   ui->messageTableWidget->setUpdatesEnabled(true);
 
-  if (ui->messageTableWidget->rowCount() > 0) {
-    ui->messageTableWidget->selectRow(0);
-  }
+  // [TODO #286, field 2026-10-31] No automatic selection after a
+  // refresh. Upstream selected the top row here; with the Build 498
+  // rule (a selected row is a read row) that marked the NEWEST message
+  // read the instant it arrived -- this panel exists from startup and
+  // refreshes on every arrival, shown or hidden -- so the station
+  // showed a star, never the flag ("got a message, call sign window
+  // showed a star"). Only the operator's own click selects a row now.
 
   // Unfreeze + restore sort once, at the end
   ui->messageTableWidget->setSortingEnabled(wasSorting);     // or true if you want arrows always

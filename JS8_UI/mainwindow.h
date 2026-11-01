@@ -1520,6 +1520,9 @@ class UI_Constructor : public QMainWindow {
     // consults it so the frame-time attempt refresh stays silent for
     // auto-replies, matching the enqueue-time skip.
     bool m_lastQueueInjectedAutoReply = false;
+    // [TODO #331] the box holds an untouched, unsent auto-reply that the
+    // queue drain parked (AUTO off); replaceable by the next auto-reply
+    bool boxHoldsParkedAutoReply();
     // [STATUS-BAR ARQ PROGRESS 2026-06-11 build 252]
     // Cache of the real "Last Tx: <message>" text in the leftmost
     // status-bar widget (last_tx_label), captured on the FIRST
@@ -2435,14 +2438,17 @@ class UI_Constructor : public QMainWindow {
     void jttyLatchPutAddress(QString const &call);
     void jttyLatchTakeAddress(QString const &call);
     void serviceJttyDirectedLatch();            // from updateButtonDisplay
-    // [TODO #322, operator 2026-10-27] AFTER-SEND clear of the outgoing
-    // box: Subspace and JTTY keep the sent text for a re-send, and text
-    // in the box blocks auto-replies. Armed when a transmission ends and,
-    // in JTTY, when "Directed to" is latched on (operator 2026-10-27);
-    // fires once after Settings' "Clear outgoing text box ... after"
-    // seconds: in JTTY "Directed to" is de-selected first (its own toggle
-    // takes the address out), then the box is cleared. Cancelled by a
-    // key press (the operator is composing) and by a new send.
+    // [TODO #322, operator 2026-10-27; #331, operator 2026-10-31] Clear
+    // of the outgoing box: text in the box blocks auto-replies (Subspace
+    // and JTTY keep sent text for a re-send; AUTO off parks replies
+    // there). ONE trigger: every change to the box restarts the
+    // countdown (Settings' "Clear outgoing text box ... after", in
+    // minutes, 15 or more), an emptied box stops it. At zero: in JTTY
+    // "Directed to" is de-selected first (its own toggle takes the
+    // address out), then the box is cleared. While a send runs or ARQ
+    // owns the box the clear is deferred by a full countdown. Runs only
+    // while AUTO is on (operator 2026-10-31): the AUTO toggle starts or
+    // stops it for text already in the box.
     QTimer m_clearOutgoingTimer;
     void armClearOutgoing();
     void clearOutgoingNow();
@@ -2575,6 +2581,7 @@ class UI_Constructor : public QMainWindow {
     static constexpr int kRemoteHoldMaxMs = 300'000;
     QTimer *m_txHoldTimer{nullptr}, *m_autoHoldTimer{nullptr};
     bool m_txHoldExpired{false}, m_autoHoldExpired{false}; // the expiry's own change
+    QPointer<QMessageBox> m_sendRefusedBox;   // [#327 item 5] the self-closing "Send refused" box, one at a time
     void armRemoteHold(bool tx);
     void expireRemoteHold(bool tx);
     void jttyAutoLatchDirected(); // JTTY: a selection latches Directed to

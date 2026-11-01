@@ -156,6 +156,8 @@
 #include "JS8_Widgets/LazyFillComboBox.h"
 #include "ui_Configuration.h"
 
+#include <memory> // [TODO #331] shared previous value for the snap rule
+
 #include <QAction>
 #include <QApplication>
 #include "JS8_Audio/AudioDeviceInfo.h"
@@ -707,7 +709,11 @@ class Configuration::impl final : public QDialog {
     bool spellcheck_;
     int heartbeat_;
     int watchdog_;
-    int clear_outgoing_secs_{0}; // [TODO #322] SsClearOutgoingSecs, 0 = off
+    // [TODO #322] 0 = off. [TODO #331] Held in MINUTES under its own key
+    // SsClearOutgoingMins; 517 and earlier keep their SsClearOutgoingSecs
+    // untouched (that key is read once, to seed this one, and never
+    // written again).
+    int clear_outgoing_mins_{0};
     bool TX_messages_;
     bool use_dynamic_info_;
     QString opCall_;
@@ -963,7 +969,7 @@ bool Configuration::hail_single_frame() const { return m_->hail_single_frame_; }
 bool Configuration::spellcheck() const { return m_->spellcheck_; }
 int Configuration::heartbeat() const { return m_->heartbeat_; }
 int Configuration::watchdog() const { return m_->watchdog_; }
-int Configuration::clear_outgoing_secs() const { return m_->clear_outgoing_secs_; }
+int Configuration::clear_outgoing_secs() const { return m_->clear_outgoing_mins_ * 60; }
 bool Configuration::TX_messages() const { return m_->TX_messages_; }
 bool Configuration::split_mode() const { return m_->split_mode(); }
 QString Configuration::opCall() const { return m_->opCall_; }
@@ -1802,6 +1808,23 @@ Configuration::impl::impl(Configuration *self, QDir const &temp_directory,
     connect(ui_->auto_switch_bands_check_box, &QCheckBox::clicked,
             ui_->stations_table_view, &QTableView::setEnabled);
 
+    // [TODO #331, operator 2026-10-31] The clear-outgoing control shows
+    // only Disabled or 15 minutes and up: 1..14 cannot be displayed.
+    // Stepping or typing into that gap lands on the side it came from
+    // -- up from Disabled goes to 15, down from 15 goes to Disabled.
+    {
+        auto *box = ui_->clear_outgoing_spin_box;
+        auto prev = std::make_shared<int>(box->value());
+        connect(box, &QSpinBox::valueChanged, box, [box, prev](int v) {
+            if (v > 0 && v < 15) {
+                v = (*prev >= 15) ? 0 : 15;
+                box->setValue(v); // re-enters with a valid value
+                return;
+            }
+            *prev = v;
+        });
+    }
+
     // [#291] Simulating the WSJT-X id means nothing with the WSJT-X
     // server off, so the sub-option follows its parent live -- same
     // pattern as the line above.
@@ -2100,7 +2123,7 @@ void Configuration::impl::initialize_models() {
     ui_->spellcheck_check_box->setChecked(spellcheck_);
     ui_->heartbeat_spin_box->setValue(heartbeat_);
     ui_->tx_watchdog_spin_box->setValue(watchdog_);
-    ui_->clear_outgoing_spin_box->setValue(clear_outgoing_secs_);
+    ui_->clear_outgoing_spin_box->setValue(clear_outgoing_mins_);
     ui_->rig_combo_box->setCurrentText(rig_params_.rig_name);
     ui_->TX_mode_button_group->button(data_mode_)->setChecked(true);
     ui_->split_mode_button_group->button(rig_params_.split_mode)
@@ -2695,8 +2718,20 @@ void Configuration::impl::read_settings() {
     if (watchdog_) {
         watchdog_ = qMax(5, watchdog_);
     }
-    // [TODO #322] new key, Ss prefix: an older build ignores it
-    clear_outgoing_secs_ = qBound(0, settings_->value("SsClearOutgoingSecs", 0).toInt(), 3600);
+    // [TODO #331, operator 2026-10-31] Minutes under a new Ss key: 0 =
+    // off, otherwise 15 (the operator's floor) to 120 (chosen cap).
+    // Build 517 is in the field with SsClearOutgoingSecs (seconds); on
+    // the first run here that value seeds the new key, floored, so a
+    // station that had the clear on keeps it on. The old key is left
+    // as it is for a return to 517.
+    {
+        int mins = -1;
+        if (settings_->contains("SsClearOutgoingMins"))
+            mins = settings_->value("SsClearOutgoingMins", 0).toInt();
+        else if (int const secs = settings_->value("SsClearOutgoingSecs", 0).toInt(); secs > 0)
+            mins = qMax(15, secs / 60);
+        clear_outgoing_mins_ = mins <= 0 ? 0 : qBound(15, mins, 120);
+    }
     TX_messages_ = settings_->value("Tx2QSO", true).toBool();
     rig_params_.poll_interval = settings_->value("Polling", 0).toInt();
     rig_params_.split_mode =
@@ -2985,7 +3020,7 @@ void Configuration::impl::write_settings() {
     settings_->setValue("Spellcheck", spellcheck_);
     settings_->setValue("TxBeacon", heartbeat_);
     settings_->setValue("TxIdleWatchdog", watchdog_);
-    settings_->setValue("SsClearOutgoingSecs", clear_outgoing_secs_);
+    settings_->setValue("SsClearOutgoingMins", clear_outgoing_mins_); // [TODO #331]
     settings_->setValue("Tx2QSO", TX_messages_);
     settings_->setValue("CATForceDTR", rig_params_.force_dtr);
     settings_->setValue("DTR", rig_params_.dtr_high);
@@ -3637,7 +3672,11 @@ void Configuration::impl::accept() {
     spellcheck_ = ui_->spellcheck_check_box->isChecked();
     heartbeat_ = ui_->heartbeat_spin_box->value();
     watchdog_ = ui_->tx_watchdog_spin_box->value();
-    clear_outgoing_secs_ = ui_->clear_outgoing_spin_box->value();
+    {
+        // [TODO #331] 1..14 typed into the control is the floor, 15
+        int const minutes = ui_->clear_outgoing_spin_box->value();
+        clear_outgoing_mins_ = minutes <= 0 ? 0 : qMax(15, minutes);
+    }
     data_mode_ = static_cast<DataMode>(ui_->TX_mode_button_group->checkedId());
     save_directory_.setPath(ui_->save_path_display_label->text());
     calibration_.intercept = ui_->calibration_intercept_spin_box->value();
