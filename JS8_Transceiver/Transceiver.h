@@ -174,6 +174,14 @@ class Transceiver : public QObject {
     // something went wrong - not recoverable, start new instance
     Q_SIGNAL void failure(QString const &reason) const;
 
+    // [TODO #332, 2026-11-01] The rig path answers, but not usefully: polls
+    // keep running longer than the poll interval, or the rig reports
+    // online with no frequency. Not a failure (nothing threw), so the
+    // failure box never shows; this says so instead. stalled=true with
+    // the seconds it has been going on, stalled=false with the seconds it
+    // lasted once a poll came back in time with a frequency.
+    Q_SIGNAL void not_answering(bool stalled, int seconds) const;
+
     // [TODO #316] reading the transmit meters failed: never try this rig
     // again (the client remembers it per rig)
     Q_SIGNAL void meters_unavailable() const;

@@ -126,7 +126,7 @@ UI_Constructor::UI_Constructor(QString const &program_info,
       m_lastDialFreq{0},
       m_detector{new Detector{JS8_RX_SAMPLE_RATE, JS8_NTMAX}},
       m_FFTSize{6912 / 2}, // conservative value to avoid buffer overruns
-      m_soundInput{new SoundInput}, m_modulator{new Modulator},
+      m_soundInput{new SoundInput}, m_audioWatch{nullptr}, m_modulator{new Modulator},
       m_soundOutput{new SoundOutput("AUDIO-TX")}, m_notification{new NotificationAudio},
       m_cq_loop{new TxLoop{"CQ calls"}}, m_hb_loop{new TxLoop{"HB calls"}},
       m_decoder{this}, m_secBandChanged{0}, m_freqNominal{0},
@@ -182,6 +182,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     m_soundOutput->moveToThread(&m_audioThread);
     m_modulator->moveToThread(&m_audioThread);
     m_soundInput->moveToThread(&m_audioThread);
+    m_audioWatch = new AudioDeviceWatch{m_soundInput, m_soundOutput}; // [#335]
+    m_audioWatch->moveToThread(&m_audioThread);
 #ifdef JS8_ENABLE_FT2
     m_detector->setL2RingBuffer(m_l2RingBuf, FT2_L2_RINGSIZE, &m_l2RingPos);
 #endif
@@ -569,6 +571,23 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // connect(m_soundInput, &SoundInput::status, this,
     // &UI_Constructor::showStatusMessage);
     connect(&m_audioThread, &QThread::finished, m_soundInput,
+            &QObject::deleteLater);
+
+    // [TODO #335] audio device watch: gone/back to the main window, the
+    // rebuild of both streams back to the audio thread, in queue order
+    connect(this, &UI_Constructor::watchAudioDevices, m_audioWatch,
+            &AudioDeviceWatch::setDevices);
+    connect(m_audioWatch, &AudioDeviceWatch::deviceGone, this,
+            &UI_Constructor::handle_audio_device_gone);
+    connect(m_audioWatch, &AudioDeviceWatch::deviceBack, this,
+            &UI_Constructor::handle_audio_device_back);
+    connect(this, &UI_Constructor::rebuildAudioInput, m_soundInput,
+            &SoundInput::rebuild);
+    connect(this, &UI_Constructor::rebuildAudioOutput, m_soundOutput,
+            &SoundOutput::rebuild);
+    connect(this, &UI_Constructor::audioDevicesRebuilt, m_audioWatch,
+            &AudioDeviceWatch::acknowledge);
+    connect(&m_audioThread, &QThread::finished, m_audioWatch,
             &QObject::deleteLater);
 
     connect(this, &UI_Constructor::finished, this, &UI_Constructor::close);
@@ -1138,6 +1157,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             &UI_Constructor::handle_transceiver_update);
     connect(&m_config, &Configuration::transceiver_failure, this,
             &UI_Constructor::handle_transceiver_failure);
+    connect(&m_config, &Configuration::transceiver_not_answering, this,
+            &UI_Constructor::handle_transceiver_not_answering); // [#332]
     // [#326 rigbox] the Rig Control Error box is open()ed, not exec()'d
     connect(&m_rigErrorMessageBox, &QDialog::finished, this,
             &UI_Constructor::rigErrorBoxFinished);
@@ -1332,6 +1353,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
     // output stream into KeepAlive silence now, at startup.
     Q_EMIT warmStartAudioOutput(m_soundOutput,
                                 m_config.audio_output_channel());
+    Q_EMIT watchAudioDevices(m_config.audio_input_device(),
+                             m_config.audio_output_device()); // [#335]
     Q_EMIT initializeNotificationAudioOutputStream(
         m_config.notification_audio_output_device(), m_msAudioOutputBuffered);
     Q_EMIT transmitFrequency(freq() + m_XIT);

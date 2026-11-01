@@ -8,6 +8,7 @@
 #include "JS8_Audio/AudioDevice.h"
 #include "JS8_Audio/NotificationAudio.h"
 #include "JS8_Audio/SoundInput.h"
+#include "JS8_Audio/AudioDeviceWatch.h" // [TODO #335]
 #include "JS8_Audio/SoundOutput.h"
 #include "JS8_Include/EventFilter.h"
 #include "JS8_Include/commons.h"
@@ -194,6 +195,7 @@ class MessageClient;
 class QTime;
 class HelpTextWindow;
 class SoundOutput;
+class AudioDeviceWatch; // [TODO #335]
 class Modulator;
 class SoundInput;
 class Detector;
@@ -744,6 +746,9 @@ class UI_Constructor : public QMainWindow {
     void rigOpen();
     void handle_transceiver_update(Transceiver::TransceiverState const &);
     void handle_transceiver_failure(QString const &reason);
+    void handle_transceiver_not_answering(bool stalled, int seconds); // [#332]
+    void handle_audio_device_gone(QString what, int seconds);          // [#335]
+    void handle_audio_device_back(QString what);                       // [#335]
     void band_changed();
     void monitor(bool);
     void end_tuning();
@@ -868,6 +873,12 @@ class UI_Constructor : public QMainWindow {
     Q_SIGNAL void startAudioInputStream(AudioDeviceInfo const &,
                                         int framesPerBuffer, AudioDevice *sink,
                                         AudioDevice::Channel) const;
+    // [TODO #335] the device watch and the rebuild of both streams
+    Q_SIGNAL void watchAudioDevices(AudioDeviceInfo const &capture,
+                                    AudioDeviceInfo const &playback) const;
+    Q_SIGNAL void rebuildAudioInput() const;
+    Q_SIGNAL void rebuildAudioOutput() const;
+    Q_SIGNAL void audioDevicesRebuilt() const;
     Q_SIGNAL void suspendAudioInputStream() const;
     Q_SIGNAL void resumeAudioInputStream() const;
     Q_SIGNAL void startDetector(AudioDevice::Channel) const;
@@ -1266,6 +1277,7 @@ class UI_Constructor : public QMainWindow {
     Detector *m_detector;
     unsigned m_FFTSize = 0;
     SoundInput *m_soundInput;
+    AudioDeviceWatch *m_audioWatch; // [TODO #335] on the audio thread
     Modulator *m_modulator;
     SoundOutput *m_soundOutput;
     NotificationAudio *m_notification;
@@ -1340,6 +1352,8 @@ class UI_Constructor : public QMainWindow {
 
     // labels in status bar
     QLabel tx_status_label;
+    QLabel rig_status_label; // [TODO #332] "Radio not answering", else hidden
+    QLabel audio_status_label; // [TODO #335] "Audio device gone", else hidden
     QLabel config_label;
     QLabel mode_label;
     QLabel last_tx_label;

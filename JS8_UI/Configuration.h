@@ -469,6 +469,10 @@ class Configuration final : public QObject {
     // the fault condition has been rectified or is transient.
     Q_SIGNAL void transceiver_failure(QString const &reason) const;
 
+    // [TODO #332] the rig path answers too slowly or without a frequency
+    // (Transceiver::not_answering, forwarded as is)
+    Q_SIGNAL void transceiver_not_answering(bool stalled, int seconds) const;
+
     // signal announces audio devices are being enumerated
     //
     // As this can take some time, particularly on Linux, consumers

@@ -17,11 +17,23 @@
 
 namespace {
 unsigned const polls_to_stabilize{3};
+
+// [TODO #332, field 2026-11-01] How many consecutive bad polls before the
+// rig path is reported as not answering. CHOSEN: 5 polls = 5 s at the
+// 1 s interval, inside one Normal slot and far above the one slow
+// request a busy-but-healthy flrig produces (its reads take
+// milliseconds, CAT Watch stats). On WM8Q's station with flrig holding a
+// deleted serial device every poll took 1 to 3.5 s and the dial stayed 0
+// for 36 s after start, with no error anywhere (W5TTA: "freq stayed at
+// zero"). A poll is bad when it runs longer than the poll interval (the
+// only period it is designed to fit) or when the rig says online with no
+// frequency.
+unsigned const polls_before_not_answering{5};
 }
 
 PollingTransceiver::PollingTransceiver(int poll_interval, QObject *parent)
     : TransceiverBase{parent}, interval_{poll_interval * 1000},
-      poll_timer_{nullptr}, retries_{0} {}
+      poll_timer_{nullptr}, retries_{0}, bad_polls_{0}, stalled_{false} {}
 
 void PollingTransceiver::start_timer() {
     if (interval_) {
@@ -47,6 +59,8 @@ void PollingTransceiver::stop_timer() {
 
 void PollingTransceiver::do_post_start() {
     start_timer();
+    bad_polls_ = 0;          // [TODO #332] a fresh open starts the count over
+    stalled_ = false;
     if (!next_state_.online()) {
         // remember that we are expecting to go online
         next_state_.online(true);
@@ -148,6 +162,8 @@ void PollingTransceiver::handle_timeout() {
 
     // we must catch all exceptions here since we are called by Qt and
     // inform our parent of the failure via the offline() message
+    QElapsedTimer took;
+    took.start();
     try {
         do_sync();
     } catch (std::exception const &e) {
@@ -157,5 +173,26 @@ void PollingTransceiver::handle_timeout() {
     }
     if (!message.isEmpty()) {
         offline(message);
+        return;
+    }
+
+    // [TODO #332] rig-liveness watchdog: the poll succeeded, but did it
+    // answer in time and with a frequency? (a throw above is the failure
+    // path, handled by the error box; this is the silent one)
+    bool const bad = interval_ && (took.elapsed() > interval_ ||
+                                   (state().online() && !state().frequency()));
+    if (bad) {
+        if (!bad_polls_)
+            bad_since_.start();
+        ++bad_polls_;
+        if (bad_polls_ >= polls_before_not_answering) {
+            stalled_ = true;
+            Q_EMIT not_answering(true, int(bad_since_.elapsed() / 1000));
+        }
+    } else if (bad_polls_) {
+        if (stalled_)
+            Q_EMIT not_answering(false, int(bad_since_.elapsed() / 1000));
+        bad_polls_ = 0;
+        stalled_ = false;
     }
 }

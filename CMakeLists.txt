@@ -215,6 +215,7 @@ target_sources(
   vendor/sqlite3/sqlite3.c
   vendor/qrcodegen/qrcodegen.cpp
   JS8_Audio/AudioDevice.cpp
+  JS8_Audio/AudioDeviceWatch.cpp
   JS8_Audio/NotificationAudio.cpp
   JS8_Audio/SoundInput.cpp
   JS8_Audio/SoundOutput.cpp

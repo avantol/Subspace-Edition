@@ -222,6 +222,27 @@ SoundInput::start(AudioDeviceInfo const & device,
  * discards captured samples in onCapture — identical decode
  * semantics (the sink sees nothing), warm device.
  */
+bool
+SoundInput::isStarted() const
+{
+    return m_deviceInitialized && m_dev && ma_device_is_started(m_dev);
+}
+
+// [TODO #335] A fresh open on the last device, through the same stop()
+// and start() every other re-open uses (the old device goes to the
+// reaper; m_discarding, the monitor state, is untouched).
+void
+SoundInput::rebuild()
+{
+    if (!m_sink) return;
+    AudioDeviceInfo const device = m_lastDevice;
+    int const frames = m_lastFramesPerBuffer;
+    AudioDevice::Channel const channel = m_lastChannel;
+    AudioDevice *sink = m_sink;
+    stop();
+    start(device, frames, sink, channel);
+}
+
 void
 SoundInput::suspend()
 {

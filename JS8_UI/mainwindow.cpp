@@ -1755,6 +1755,10 @@ void UI_Constructor::openSettings(int tab) {
             Q_EMIT warmStartAudioOutput(m_soundOutput,
                                         m_config.audio_output_channel());
         }
+        if (m_config.restart_audio_input() || m_config.restart_audio_output()) {
+            Q_EMIT watchAudioDevices(m_config.audio_input_device(),
+                                     m_config.audio_output_device()); // [#335]
+        }
 
         if (m_config.restart_notification_audio_output() &&
             !m_config.notification_audio_output_device().isNull()) {
@@ -2686,6 +2690,28 @@ void UI_Constructor::createStatusBar() // createStatusBar
     tx_status_label.setStyleSheet("QLabel{background-color: #22ff22}");
     tx_status_label.setFrameStyle(QFrame::Panel | QFrame::Sunken);
     statusBar()->addWidget(&tx_status_label);
+
+    // [TODO #332] shown only while the rig path is not answering
+    rig_status_label.setAlignment(Qt::AlignCenter);
+    rig_status_label.setMinimumSize(QSize{150, 18});
+    rig_status_label.setStyleSheet("QLabel{background-color: #ff4444; color: white}");
+    rig_status_label.setFrameStyle(QFrame::Panel | QFrame::Sunken);
+    rig_status_label.setToolTip(tr("Rig control answers, but too slowly or with no "
+                                   "frequency. Check the rig's USB/serial link and "
+                                   "flrig (or restart them), then Retry."));
+    statusBar()->addWidget(&rig_status_label);
+    rig_status_label.hide();
+
+    // [TODO #335] shown only while a configured audio device is missing
+    audio_status_label.setAlignment(Qt::AlignCenter);
+    audio_status_label.setMinimumSize(QSize{150, 18});
+    audio_status_label.setStyleSheet("QLabel{background-color: #ff4444; color: white}");
+    audio_status_label.setFrameStyle(QFrame::Panel | QFrame::Sunken);
+    audio_status_label.setToolTip(tr("The selected audio device is not there "
+                                     "(USB unplugged or re-enumerated). Both "
+                                     "streams are rebuilt when it returns."));
+    statusBar()->addWidget(&audio_status_label);
+    audio_status_label.hide();
 
     config_label.setAlignment(Qt::AlignCenter);
     config_label.setMinimumSize(QSize{80, 18});
@@ -12483,6 +12509,7 @@ void UI_Constructor::haltAllOperator(QString const &cause)
 }
 
 void UI_Constructor::rigOpen() {
+    rig_status_label.hide(); // [#332] a fresh open starts the watch over
     update_dynamic_property(ui->readFreq, "state", "warning");
     ui->readFreq->setText("CAT");
     ui->readFreq->setEnabled(true);
@@ -12757,7 +12784,63 @@ void UI_Constructor::handle_transceiver_update(
     ui->readFreq->setText(new_rig_state.split() ? "CAT/S" : "CAT");
 }
 
+// [TODO #332, field 2026-11-01] The rig path answers, but polls run
+// longer than the poll interval or the rig reports no frequency: flrig on
+// a deleted serial device after a USB re-enumeration answers every
+// request from its cache 1 to 3.5 s late and Subspace showed dial 0 with
+// no error (W5TTA "freq stayed at zero"). One label, one log line per
+// transition; no automatic re-open here, that is rigOpen's job alone (the
+// error box has Retry, and this label's tip says what to check).
+void UI_Constructor::handle_transceiver_not_answering(bool stalled,
+                                                      int seconds) {
+    if (stalled) {
+        if (rig_status_label.isHidden()) {
+            qWarning() << "[RIG] not answering:" << m_config.rig_name()
+                       << "polls late or without a frequency for" << seconds
+                       << "s";
+            update_dynamic_property(ui->readFreq, "state", "warning");
+        }
+        rig_status_label.setText(tr("Radio not answering (%1 s)").arg(seconds));
+        rig_status_label.show();
+    } else {
+        if (!rig_status_label.isHidden()) {
+            qWarning() << "[RIG] answering again after" << seconds << "s";
+            update_dynamic_property(ui->readFreq, "state", "ok");
+        }
+        rig_status_label.hide();
+    }
+}
+
+// [TODO #335, field 2026-11-01] The configured capture or playback
+// device is gone (USB re-enumeration took the rig's codec with it).
+// One label, one log line per transition. The streams are rebuilt in
+// handle_audio_device_back, never under a send.
+void UI_Constructor::handle_audio_device_gone(QString what, int seconds) {
+    if (audio_status_label.isHidden())
+        qWarning() << "[AUDIO] device gone:" << what;
+    audio_status_label.setText(tr("Audio device gone (%1 s)").arg(seconds));
+    audio_status_label.setToolTip(what);
+    audio_status_label.show();
+}
+
+void UI_Constructor::handle_audio_device_back(QString what) {
+    if (m_transmitting || m_tune || m_iptt) {
+        return; // the watch asks again at its next poll
+    }
+    // Both streams ride the same hub: rebuild both, in audio-thread
+    // queue order: capture reopened, playback retired, playback warmed
+    // into KeepAlive, then the watch is told.
+    Q_EMIT rebuildAudioInput();
+    Q_EMIT rebuildAudioOutput();
+    Q_EMIT warmStartAudioOutput(m_soundOutput, m_config.audio_output_channel());
+    Q_EMIT audioDevicesRebuilt();
+    qWarning() << "[AUDIO] device back:" << what
+               << "; capture and playback rebuilt";
+    audio_status_label.hide();
+}
+
 void UI_Constructor::handle_transceiver_failure(QString const &reason) {
+    rig_status_label.hide(); // [#332] the failure box takes over
     update_dynamic_property(ui->readFreq, "state", "error");
     ui->readFreq->setEnabled(true);
     // [BUILD 353 haltwrap2] Mechanical: a CAT hiccup mid-receive must

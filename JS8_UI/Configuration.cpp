@@ -4644,6 +4644,12 @@ bool Configuration::impl::open_rig(bool force) {
             rig_connections_
                 << connect(rig.get(), &Transceiver::failure, this,
                            &Configuration::impl::handle_transceiver_failure);
+            // [TODO #332] straight through to the main window
+            rig_connections_ << connect(
+                rig.get(), &Transceiver::not_answering, this,
+                [this](bool stalled, int seconds) {
+                    Q_EMIT self_->transceiver_not_answering(stalled, seconds);
+                });
             rig_connections_ << connect(
                 rig.get(), &Transceiver::meters_unavailable, this,
                 [this, name = rig_data.rig_name]() {

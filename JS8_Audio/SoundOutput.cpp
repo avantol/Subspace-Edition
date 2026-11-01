@@ -352,10 +352,19 @@ SoundOutput::restart(QIODevice * source)
     // audio thread queue. Same intent as the prior QAudioSink code.
     if (m_deviceInitialized
         && m_source == source
+        && !m_gone                      // [TODO #335] a flagged stream is rebuilt
         && ma_device_is_started(m_dev)) {
         return;
     }
     buildAndStart(source);
+}
+
+// [TODO #335]
+void
+SoundOutput::rebuild()
+{
+    teardown();
+    m_source = nullptr;
 }
 
 void
@@ -409,7 +418,7 @@ SoundOutput::attenuation() const
 bool
 SoundOutput::isStreaming() const
 {
-    return m_deviceInitialized && ma_device_is_started(m_dev);
+    return m_deviceInitialized && !m_gone && ma_device_is_started(m_dev);
 }
 
 void

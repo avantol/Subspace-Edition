@@ -41,7 +41,15 @@ class SoundOutput : public QObject {
 
     qreal       attenuation() const;
     AudioFormat format() const { return m_format; }
-    bool        isStreaming() const;
+    bool        isStreaming() const;   // false while the device is flagged gone
+    // [TODO #335] the device watch found the configured device missing:
+    // isStreaming() says false so the modulator never warm-starts on a
+    // stream that may be dead or re-routed; cleared by a successful
+    // buildAndStart or by the watch
+    void        setDeviceGone(bool gone) { m_gone = gone; }
+    // [TODO #335] retire the device; the next restart()/warmStart opens
+    // a fresh one on the configured device
+    Q_SLOT void rebuild();
 
   public Q_SLOTS:
     void setFormat(AudioDeviceInfo const & device, unsigned channels,
@@ -87,6 +95,7 @@ class SoundOutput : public QObject {
     // a use-after-free. null when no device is open.
     ma_device *     m_dev        = nullptr;
     bool            m_deviceInitialized = false;
+    bool            m_gone       = false;   // [TODO #335]
     // [reapguard 2026-07-25] Callbacks in flight on miniaudio's worker.
     // With teardown now async (reaper), teardown() drains this (bounded,
     // µs in practice) after retiring the device and before m_source is

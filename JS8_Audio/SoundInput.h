@@ -44,6 +44,12 @@ class SoundInput : public QObject {
     Q_SLOT void suspend();
     Q_SLOT void resume();
     Q_SLOT void stop();
+    // [TODO #335] the capture device is open and running (false after
+    // PipeWire terminated the stream under a USB re-enumeration)
+    bool isStarted() const;
+    // [TODO #335] close and open again on the last device: start() alone
+    // would return early on a device it believes running
+    Q_SLOT void rebuild();
 
     Q_SIGNAL void error(QString message) const;
     Q_SIGNAL void status(QString message) const;

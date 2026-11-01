@@ -4,6 +4,7 @@
 #include "TransceiverBase.h"
 
 #include <QObject>
+#include <QElapsedTimer>
 
 class QTimer;
 
@@ -70,6 +71,11 @@ class PollingTransceiver : public TransceiverBase {
     Transceiver::TransceiverState next_state_;
 
     unsigned retries_; // number of incorrect polls left
+
+    // [TODO #332] rig-liveness watchdog, see handle_timeout()
+    unsigned bad_polls_;         // consecutive polls late or without a frequency
+    QElapsedTimer bad_since_;    // running since the first of them
+    bool stalled_;               // not_answering(true) has been signalled
 };
 
 #endif
