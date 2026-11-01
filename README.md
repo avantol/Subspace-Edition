@@ -3,6 +3,8 @@ See the [Releases page](https://github.com/avantol/Subspace-Edition/releases/lat
 
 See the [Subspace Edition discussion group](https://groups.io/g/Subspace/topics) for "how-to" information, and to comment, ask questions, or to suggest something. We look forward to hearing from you!
 
+See js8ss.com for a [quick overview of Subspace](https://js8ss.com).
+
 # Privacy Policy for Subspace Edition (Microsoft Store Version)
 Effective Date: April 2024
 
