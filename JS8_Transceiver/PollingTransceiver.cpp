@@ -24,8 +24,10 @@ unsigned const polls_to_stabilize{3};
 // request a busy-but-healthy flrig produces (its reads take
 // milliseconds, CAT Watch stats). On WM8Q's station with flrig holding a
 // deleted serial device every poll took 1 to 3.5 s and the dial stayed 0
-// for 36 s after start, with no error anywhere (W5TTA: "freq stayed at
-// zero"). A poll is bad when it runs longer than the poll interval (the
+// for 36 s after start, with no error anywhere. (W5TTA's "freq stayed at
+// zero" of the same day was a different fault: rigctld holding a dead
+// connection, so her OPEN blocked and no poll ever ran; TODO 336, parked.)
+// A poll is bad when it runs longer than the poll interval (the
 // only period it is designed to fit) or when the rig says online with no
 // frequency.
 unsigned const polls_before_not_answering{5};

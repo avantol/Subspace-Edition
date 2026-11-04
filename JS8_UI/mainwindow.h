@@ -264,9 +264,12 @@ class UI_Constructor : public QMainWindow {
     // state by merely stopping TX).
     void stopTxMechanical();
     // [#253 txhalt] the operator's halt: Halt button / Escape / TX
-    // un-select. Cancels every machine that can re-key, ARQ sessions
-    // in both directions included.
+    // un-select. Logs the gesture, then haltAll("operator").
     void haltAllOperator(QString const &cause);
+    // [haltcause] cancels every machine that can re-key, ARQ sessions
+    // in both directions included. `by` names who halted ("operator",
+    // "band change") in every log line and stop reason it writes.
+    void haltAll(QString const &by);
     bool m_hbButtonIsLongterm;
     bool m_cqButtonIsLongterm;
 

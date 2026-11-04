@@ -18,7 +18,8 @@ class SoundOutput;
 // adapter and PCM2901 codec on one hub) takes the audio device away
 // under the running streams. Nothing in the audio layer is told:
 // PipeWire terminated the capture stream (no source-output left for
-// JS8Call: RX dead, no log line, W5TTA "rx off") and re-routed the
+// JS8Call: RX dead, no log line; W5TTA's "rx off" of the same day was
+// NOT this, her audio started fine, see TODO 336) and re-routed the
 // playback stream (the first Tune after the replug was silent, the
 // modulator believed its stream warm). Only a later stop rebuilt the
 // output, by accident.

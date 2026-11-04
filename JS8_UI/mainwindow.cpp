@@ -2502,7 +2502,7 @@ void UI_Constructor::updateCurrentBand() {
     // [#199 bandhalt, operator 2026-08-30] A band change halts ALL
     // activity: anything left running would spend TX and journal
     // evidence against a band it no longer belongs to. Routed
-    // through the operator-Halt path (stopTxMechanical, auto-route
+    // through haltAll, the operator-Halt path (stopTxMechanical, auto-route
     // cancel, ARQ haltAll both directions, HB/CQ loop cancel,
     // visible-hail abort) plus the three things that path
     // deliberately leaves alone:
@@ -2519,7 +2519,7 @@ void UI_Constructor::updateCurrentBand() {
     if (!m_lastBand.isEmpty()) {
         qWarning() << "[TX-CAUSE] band change halts all activity:"
                    << m_lastBand << "->" << band_name;
-        on_stopTxButton_clicked();
+        haltAll(QStringLiteral("band change"));
         if (m_reach.active)
             reachStop(QStringLiteral("band changed"));
         m_txMessageQueue = {};
@@ -12449,12 +12449,20 @@ void UI_Constructor::on_stopTxButton_clicked() // Stop Tx — OPERATOR halt
 void UI_Constructor::haltAllOperator(QString const &cause)
 {
     qWarning() << "[TX-CAUSE] operator" << cause;
-    // [BUILD 353 haltwrap] Reached ONLY by operator gestures: the Halt
-    // button (Qt auto-connect), Escape, and the TX-enable un-select.
-    // All programmatic stops call stopTxMechanical() directly and can
+    haltAll(QStringLiteral("operator"));
+}
+
+void UI_Constructor::haltAll(QString const &by)
+{
+    // [BUILD 353 haltwrap] Reached by operator gestures (the Halt
+    // button via Qt auto-connect, Escape, the TX-enable un-select,
+    // all through haltAllOperator) and by a band change (#199
+    // bandhalt), which logs its own [TX-CAUSE] line. All other
+    // programmatic stops call stopTxMechanical() directly and can
     // no longer destroy ARQ session state (the old
     // m_stopTxButtonIsLongterm flag ritual had four callers that forgot
-    // it — deleted).
+    // it — deleted). [haltcause] `by` used to be implied: a band
+    // change logged 'operator "HALT clicked"' that nobody clicked.
     stopTxMechanical();
 
     // [autoroute] The banner says "Halt to cancel." -- so Halt
@@ -12466,7 +12474,7 @@ void UI_Constructor::haltAllOperator(QString const &cause)
     // Halts, relaunching a move after each one ("something keeps
     // transmitting here") because only the mode flag was checked.
     else if (m_reach.active)
-        reachStop(QStringLiteral("stopped by operator"));
+        reachStop(QStringLiteral("stopped by %1").arg(by));
 
     // Operator-initiated halt aborts any in-flight chunked-ARQ
     // session and clears all per-peer state (incl. MSG-cmd flags).
@@ -12482,7 +12490,7 @@ void UI_Constructor::haltAllOperator(QString const &cause)
 
     {
         if (m_hb_loop->isActive())
-            qWarning() << "[HAIL-DIAG] loop cancelled: stop button (operator)";
+            qWarning() << "[HAIL-DIAG] loop cancelled: halt by" << by;
         m_hb_loop->onLoopCancel();
         m_cq_loop->onLoopCancel();
         // [BUILD 336 TODO #94] Operator-initiated Halt cancels the
@@ -12491,8 +12499,7 @@ void UI_Constructor::haltAllOperator(QString const &cause)
         // next unrelated TX (an empty vector clears the Modulator's
         // one-shot override flag).
         if (m_visibleHailActive) {
-            qWarning() << "[FT2-TX] Visible Hail: aborted by operator "
-                          "Halt";
+            qWarning() << "[FT2-TX] Visible Hail: aborted, halt by" << by;
             m_visibleHailActive = false;
             if (m_modulator)
                 m_modulator->setFullFrameBoltWaveform({});
@@ -12504,7 +12511,8 @@ void UI_Constructor::haltAllOperator(QString const &cause)
         // waiting on the capability query. [2026-07-23 negophase]
         // haltAll() ends the Manager-side phase; this drops the
         // payload. Both go through the single writer.
-        abortCapabilityNegotiation("Halt");
+        QByteArray const why = QStringLiteral("halt by %1").arg(by).toUtf8();
+        abortCapabilityNegotiation(why.constData());
     }
 }
 
@@ -12788,7 +12796,8 @@ void UI_Constructor::handle_transceiver_update(
 // longer than the poll interval or the rig reports no frequency: flrig on
 // a deleted serial device after a USB re-enumeration answers every
 // request from its cache 1 to 3.5 s late and Subspace showed dial 0 with
-// no error (W5TTA "freq stayed at zero"). One label, one log line per
+// no error (WM8Q's station; W5TTA's zero of the same day was a blocked
+// open behind rigctld, not covered here, TODO 336). One label, one log line per
 // transition; no automatic re-open here, that is rigOpen's job alone (the
 // error box has Retry, and this label's tip says what to check).
 void UI_Constructor::handle_transceiver_not_answering(bool stalled,

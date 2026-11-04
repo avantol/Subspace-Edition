@@ -113,6 +113,15 @@ class SoundOutput : public QObject {
     // and wait-free, so it is safe where logging never was.
     std::atomic<int> m_lateCallbacks{0};
     std::atomic<qint64> m_worstLateMs{0};
+    // [cbprobereset 2026-11-03] Time of this device's previous callback,
+    // 0 = none yet. Was a function-static in onPlayback(): shared by the
+    // TX and notification instances, and never cleared when the stream
+    // stopped, so the time a stream was OFF (Tune release rebuilds it;
+    // suspend()/resume()) was reported as one "late callback" -- 14 to
+    // 30 s values in the field, impossible for a running stream. Cleared
+    // before every ma_device_start (buildAndStart, resume), while no
+    // callback can run, so only gaps inside a running stream count.
+    std::atomic<qint64> m_lastCallbackMs{0};
     void reportLateCallbacks();   // GUI thread only
     // [AUDIO-PRIORITY 2026-06-16 build 286] miniaudio puts thread
     // priority on the context, not the device — so we own a context.

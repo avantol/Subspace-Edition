@@ -96,9 +96,11 @@ SoundOutput::onPlayback(void * pOutput, ma_uint32 frameCount)
     // sound card likely underran, OS audio layer replayed last DMA
     // chunk to cover the gap (the "sputter" signature).
     // Log only when an interval is anomalous so we don't drown the
-    // log in routine callbacks. Static state is single-threaded by
-    // miniaudio convention (one playback thread per device).
-    static qint64 lastCallbackMs = 0;
+    // log in routine callbacks. [cbprobereset] The previous callback's
+    // time is per device (m_lastCallbackMs), cleared at every stream
+    // start, so a stopped stream's off time is never counted.
+    qint64 const lastCallbackMs =
+        m_lastCallbackMs.load(std::memory_order_relaxed);
     qint64 const nowMs = QDateTime::currentMSecsSinceEpoch();
     if (lastCallbackMs > 0) {
         qint64 const dt = nowMs - lastCallbackMs;
@@ -121,7 +123,7 @@ SoundOutput::onPlayback(void * pOutput, ma_uint32 frameCount)
             }
         }
     }
-    lastCallbackMs = nowMs;
+    m_lastCallbackMs.store(nowMs, std::memory_order_relaxed);
 
     qint64 const totalBytes = m_format.bytesForFrames(frameCount);
     char *       out        = static_cast<char *>(pOutput);
@@ -255,6 +257,8 @@ SoundOutput::buildAndStart(QIODevice * source)
     m_deviceInitialized = true;
     m_source = source;
 
+    // [cbprobereset] fresh stream: no previous callback to measure from
+    m_lastCallbackMs.store(0, std::memory_order_relaxed);
     if (ma_device_start(m_dev) != MA_SUCCESS) {
         Q_EMIT error(tr("Failed to start audio output device."));
         teardown();
@@ -380,6 +384,8 @@ void
 SoundOutput::resume()
 {
     if (m_deviceInitialized && !ma_device_is_started(m_dev)) {
+        // [cbprobereset] the time spent suspended is not a late callback
+        m_lastCallbackMs.store(0, std::memory_order_relaxed);
         if (ma_device_start(m_dev) != MA_SUCCESS) {
             Q_EMIT error(tr("Failed to resume audio output device."));
         } else {
