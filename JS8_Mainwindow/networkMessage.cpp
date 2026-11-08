@@ -266,6 +266,19 @@ void UI_Constructor::networkMessage(Message const &message) {
             bool ok = false;
             auto f = params["OFFSET"].toInt(&ok);
             if (ok) {
+                // [entryoffset 2026-11-08] An offset stated WITH the dial
+                // (CommsPlan's schedule, js8net set_freq) wins over the
+                // offset the arrival entry remembers: the entry change
+                // comes only when the radio reports the new dial, after
+                // this offset is set. The entry being left keeps the
+                // offset it had, saved here before it changes.
+                bool dialOk = false;
+                auto const dial = params.value("DIAL").toInt(&dialOk);
+                if (dialOk && dial > 0) {
+                    if (!m_lastEntryKey.isEmpty())
+                        m_entryOffset[m_lastEntryKey] = operatorOffset();
+                    m_offsetGivenDial = static_cast<Frequency>(dial);
+                }
                 setFreqOffsetForRestore(f, false);
             }
         }

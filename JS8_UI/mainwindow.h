@@ -960,6 +960,12 @@ class UI_Constructor : public QMainWindow {
     void setupJS8();
 
     int freq() const { return m_freq; }
+    // [entryoffset] the operator's offset: while an auto-reply has moved
+    // the offset for its send (setFreqOffsetForRestore(f, true)), the one
+    // it will go back to, else the one in use
+    int operatorOffset() const {
+        return (m_shouldRestoreFreq && m_previousFreq) ? m_previousFreq : m_freq;
+    }
 
     /** Sabotage transmission if frequency would result in WSPR band. */
     void refuseToSendIn30mWSPRBand();
@@ -1276,6 +1282,10 @@ class UI_Constructor : public QMainWindow {
     Frequency m_lastDialFreq = 0;
     QString m_lastBand;
     QString m_lastEntryKey; // [TODO #235 phase 1] see standardEntryKey
+    // [entryoffset 2026-11-08] the dial of an API RIG.SET_FREQ that stated
+    // its own OFFSET with the DIAL: arriving there keeps that offset instead
+    // of the entry's remembered one. 0 = none pending.
+    Frequency m_offsetGivenDial = 0;
 
     Detector *m_detector;
     unsigned m_FFTSize = 0;
@@ -2507,6 +2517,10 @@ class UI_Constructor : public QMainWindow {
     // current", which was wrong.
     QMap<QString, BandActivity> m_bandActivityBandCache; // entry -> band table
     QMap<QString, QString> m_rxTextBandCache; // entry -> rx text
+    // [entryoffset 2026-11-08, operator: "return to last-used offset for
+    // each defined frequency"] the audio offset last used on each entry,
+    // restored on arrival; persisted as SsEntryActivity/<Hz>/Offset
+    QMap<QString, int> m_entryOffset; // entry -> offset Hz
     QMap<QString, QMap<QString, QSet<QString>>>
         m_heardGraphOutgoingBandCache; // band -> heard in
     QMap<QString, QMap<QString, QSet<QString>>>

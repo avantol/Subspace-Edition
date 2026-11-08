@@ -731,6 +731,8 @@ void UI_Constructor::writeSettings() {
         for (auto it = m_congestionRange.cbegin();
              it != m_congestionRange.cend(); ++it)
             keys.insert(it.key()); // [#261] learned range lives with the entry
+        for (auto it = m_entryOffset.cbegin(); it != m_entryOffset.cend(); ++it)
+            keys.insert(it.key()); // [entryoffset]
         if (!m_lastEntryKey.isEmpty())
             keys.insert(m_lastEntryKey);
 
@@ -750,6 +752,12 @@ void UI_Constructor::writeSettings() {
                 m_settings->setValue("RangeHi", r->hi);
                 m_settings->setValue("RangeN", r->samples);
             }
+            // [entryoffset] the live entry's offset is the one in use now
+            if (live)
+                m_settings->setValue("Offset", operatorOffset());
+            else if (auto const o = m_entryOffset.constFind(key);
+                     o != m_entryOffset.cend())
+                m_settings->setValue("Offset", *o);
 #ifdef JS8_ENABLE_JTTY
             // [audit D2, operator 2026-10-14] "Calls" keeps its shape for
             // older builds: no speed-32 row. A station heard at JTTY SPEED
@@ -1019,6 +1027,8 @@ void UI_Constructor::readSettings() {
                         m_settings->value("RangeLo").toInt(),
                         m_settings->value("RangeHi").toInt(),
                         m_settings->value("RangeN").toInt()};
+                if (m_settings->contains("Offset")) // [entryoffset]
+                    m_entryOffset[key] = m_settings->value("Offset").toInt();
                 m_settings->beginGroup("Calls");
                 for (auto const &call : m_settings->allKeys()) {
                     auto cd = readCall(call, m_settings->value(call).toMap());
@@ -6395,6 +6405,12 @@ void UI_Constructor::applyEntryTransition(QString const &entryKey,
                << "nominal=" << m_freqNominal
                << "txNominal=" << m_freqTxNominal
                << "ptt=" << m_rigState.ptt() << "tx=" << m_transmitting;
+    // [entryoffset] Leaving an entry keeps the offset used there. Not while
+    // an API move with its own offset is under way: that offset was set the
+    // moment the request came, before this move, and belongs to the new
+    // dial; the entry left was saved when the request came.
+    if (!m_lastEntryKey.isEmpty() && !m_offsetGivenDial)
+        m_entryOffset[m_lastEntryKey] = operatorOffset();
     if (!m_lastEntryKey.isEmpty())
         cacheActivity(m_lastEntryKey);
     if (!startup || m_config.reset_activity())
@@ -6406,6 +6422,29 @@ void UI_Constructor::applyEntryTransition(QString const &entryKey,
     m_lastEntryKey = entryKey;
     if (!entryKey.isEmpty())
         restoreActivity(entryKey);
+    // [entryoffset] Arriving at an entry brings back the offset last used
+    // there, unless the move came with its own offset (API DIAL + OFFSET),
+    // which then stays and becomes this entry's. A dial off the list keeps
+    // whatever offset is in use.
+    Frequency const dial = operatingDial(); // [#256]
+    if (m_offsetGivenDial && m_offsetGivenDial == dial) {
+        qWarning() << "[ENTRY] offset" << freq() << "given with the dial"
+                   << dial << "-- kept";
+        m_offsetGivenDial = 0;
+    } else if (!entryKey.isEmpty()) {
+        if (auto const o = m_entryOffset.constFind(entryKey);
+            o != m_entryOffset.cend() && *o != freq()) {
+            int const before = freq();
+            setFreqOffsetForRestore(*o, false);
+            if (freq() == *o)
+                qWarning() << "[ENTRY] offset restored" << before << "->"
+                           << *o << "for entry" << entryKey;
+            else
+                qWarning() << "[ENTRY] offset" << *o << "for entry" << entryKey
+                           << "not restored (a message is queued; offset stays"
+                           << freq() << ")";
+        }
+    }
 #ifdef JS8_ENABLE_JTTY
     // [JTTY, operator 2026-10-12] A JTTY frequency forces JTTY mode;
     // elsewhere the Mode menu chooses it. The transition machine
@@ -12786,6 +12825,11 @@ void UI_Constructor::handle_transceiver_update(
     // ensure frequency display is correct
     // setRig();
     updateCurrentBand();
+    // [entryoffset] the radio is on the dial an API move named with its
+    // offset, and no entry change consumed the mark (same entry, or off the
+    // list both sides): the move is complete
+    if (m_offsetGivenDial && operatingDial() == m_offsetGivenDial)
+        m_offsetGivenDial = 0;
     displayDialFrequency();
     update_dynamic_property(ui->readFreq, "state", "ok");
     ui->readFreq->setEnabled(false);
@@ -15273,6 +15317,9 @@ void UI_Constructor::setRig(Frequency f) {
     if (f) {
         m_freqNominal = f;
         m_freqTxNominal = m_freqNominal - m_XIT;
+        // [entryoffset] any later dial request ends an API move that
+        // brought its own offset (RIG.SET_FREQ sets the mark after this)
+        m_offsetGivenDial = 0;
     }
     // [#249] every frequency request the GUI makes, with its state
     qCDebug(mainwindow_js8) << "[CAT] setRig f=" << f
