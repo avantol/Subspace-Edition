@@ -111,8 +111,11 @@ void UI_Constructor::processCommandActivity() {
         // the band-activity "my call" color and isFreqOffsetFree(), ran
         // on an always-empty cache; the color was carried by a MENTION
         // test instead. One call, at the one place toMe is decided.
+        // [operator 2026-11-08] the mark names the sender: listed by
+        // callsign, a neighbour in the same 10 Hz is not addressing me
         if (toMe)
-            markOffsetDirected(d.offset, /*isAllCall=*/false);
+            markOffsetDirected(d.offset, /*isAllCall=*/false, &d.from,
+                               /*exact=*/false);
 
         // log call activity BEFORE the command-allowed gate so even
         // unrecognized directed commands refresh the sender's SNR in the

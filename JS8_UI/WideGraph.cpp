@@ -764,6 +764,18 @@ void WideGraph::setBand(QString const &band) {
 
 void WideGraph::clearWaterfall() { ui->widePlot->clearWaterfall(); }
 
+WideGraph::PlotPicture WideGraph::grabPlot() {
+    auto *plot = ui->widePlot;
+    PlotPicture pic;
+    pic.image = plot->grab().toImage();
+    double const ratio = plot->width() > 0 ? double(pic.image.width()) / plot->width() : 1.0;
+    pic.startHz = plot->frequencyAt(0);
+    pic.hzPerPx = plot->freqPerPixel() / ratio;
+    pic.dialHz = plot->dialBandwidth();
+    pic.scalePx = static_cast<int>(30 * ratio + 0.5); // CPlotter paints the waterfall from y 30
+    return pic;
+}
+
 void WideGraph::on_fStartSpinBox_valueChanged(int const n) {
     ui->widePlot->setStartFreq(n);
 }

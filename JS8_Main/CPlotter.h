@@ -134,6 +134,10 @@ class CPlotter final : public QWidget {
     int frequencyAt(int const x) const {
         return static_cast<int>(freqFromX(x));
     }
+    // [phone remote, operator 2026-11-09] the scale (Hz per widget pixel)
+    // and the dial's width in Hz, so a picture of the plot can be read
+    float freqPerPixel() const { return m_freqPerPixel; }
+    int dialBandwidth() const;
 
     // [BUILD 336] Hit-test a widget-coordinate point against the
     // painted callsign labels; empty string when nothing is close.

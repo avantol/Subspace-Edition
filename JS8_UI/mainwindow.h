@@ -1939,6 +1939,8 @@ class UI_Constructor : public QMainWindow {
         // [operator 2026-10-19, JTTY mode] the station the message came
         // from and its exact offset: only THAT row turns red. offset -1 =
         // a JS8 mark, which keeps the 10 Hz neighbourhood rule.
+        // [operator 2026-11-08] a JS8 mark names its sender too (call):
+        // listed by callsign, only that station's row turns red.
         QString call;
         int offset = -1;
     };
@@ -2433,10 +2435,9 @@ class UI_Constructor : public QMainWindow {
     void setJttyDecodeShown(bool on, QString const &reason);
     bool m_jttyDecodeShown = true;              // SsJttyDecodeShown, per config
     QAction *m_actionJttyDecode = nullptr;      // Mode menu switch
-    // [operator 2026-10-25] File menu items hidden on MAGNET stations
+    // [operator 2026-10-25] File menu item hidden on MAGNET stations
     // (applyMagnetJttyVisibility)
     QAction *m_actionWsjtxImport = nullptr;
-    QAction *m_actionPhoneRemote = nullptr;
 
     // [operator 2026-10-25] flrig PTT reservation: our flrig build answers
     // rig.reserve_ptt(ms) by pausing its own radio polling (and serving
@@ -2579,6 +2580,7 @@ class UI_Constructor : public QMainWindow {
     QVariantList remoteConversationTail() const;
     QVariantList remoteBandTable() const;
     QVariantMap remoteUiState();
+    QVariantList remoteInbox();                 // [operator 2026-11-09] the Message Inbox
     QAbstractButton *remoteButton(QString const &name) const; // UI.ACTION
     // [txquery, operator 2026-10-28] TX enable was turned OFF by a remote
     // command (UI.ACTION txenable), not by a click here: the status bar
@@ -2618,7 +2620,13 @@ class UI_Constructor : public QMainWindow {
     void jttyAutoLatchDirected(); // JTTY: a selection latches Directed to
     void remotePushChanged();                   // push whatever changed
     QTimer *m_remotePushTimer{nullptr};
-    QVariant m_remoteLastText, m_remoteLastBand, m_remoteLastState;
+    QVariant m_remoteLastText, m_remoteLastBand, m_remoteLastState, m_remoteLastInbox;
+    // [operator 2026-11-09] the _IDs of the phone's latest requests: a
+    // reply to one goes to the phone only (sendNetworkMessage). The last
+    // kPhoneRequestIds (CHOSEN, 64: a tap makes one or two requests).
+    static constexpr int kPhoneRequestIds = 64;
+    QList<qint64> m_phoneRequestIds;
+    bool m_remoteInboxDirty{false}; // the inbox changed: read it at the next push
     ChunkedArq::Manager *m_chunkedArq{nullptr};
     WSJTXMessageClient *m_wsjtxMessageClient;
     WSJTXMessageMapper *m_wsjtxMessageMapper;
@@ -2715,7 +2723,8 @@ class UI_Constructor : public QMainWindow {
     bool isDirectedOffset(int offset, bool *pIsAllCall,
                           CachedDirectedType const **pMark = nullptr);
     void markOffsetDirected(int offset, bool isAllCall,
-                            QString const *station = nullptr);
+                            QString const *station = nullptr,
+                            bool exact = true);
     bool rowDirectedToMe(QString const &rowCall, int rowOffset,
                          bool *pStation = nullptr);
     void clearOffsetDirected(int offset, char const *why);

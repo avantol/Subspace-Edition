@@ -195,6 +195,8 @@ void UI_Constructor::ensureMessageDock()
     connect(messagePanel_, &MessagePanel::countsUpdated, this, [this]() {
             refreshInboxCounts();
             displayCallActivity();
+            m_remoteInboxDirty = true; // [phone remote] the phone's Inbox
+            remotePushChanged();
         });
 }
 
@@ -1283,7 +1285,8 @@ void UI_Constructor::on_actionUser_Guide_triggered() {
 // Modeless so the operator can follow a link and keep the list open.
 void UI_Constructor::on_actionSubspace_Guide_triggered() {
     // [operator 2026-10-25] notMagnet: not listed on a MAGNET station (no
-    // JTTY there, and its File > Phone remote is hidden)
+    // JTTY there). [operator 2026-11-09] the phone remote is listed again:
+    // MAGNET stations have it now
     struct Entry { char const *desc; char const *url; bool notMagnet = false; };
     static constexpr Entry kEntries[] = {
 #ifdef JS8_ENABLE_JTTY
@@ -1293,7 +1296,7 @@ void UI_Constructor::on_actionSubspace_Guide_triggered() {
 #endif
         // [operator 2026-10-21] the phone remote (File > Phone remote)
         {"How to operate Subspace from your phone, at home and away",
-         "https://groups.io/g/Subspace/message/404", true},
+         "https://groups.io/g/Subspace/message/404"},
         {"How to show one call sign per line in Band Activity",
          "https://groups.io/g/Subspace/message/352"},
         {"How to use Station Monitors",
@@ -1826,13 +1829,9 @@ void UI_Constructor::applyRemoteSettings() {
         m_settings->value(QStringLiteral("Port"), RemoteServer::kDefaultPort).toUInt());
     QString const passcode = m_settings->value(QStringLiteral("Passcode")).toString();
     m_settings->endGroup();
-    // [operator 2026-10-25] Not on a MAGNET station: its File > Phone
-    // remote item is hidden, so a server left enabled there could not be
-    // turned off. The saved setting is kept (it applies again should the
-    // station stop being MAGNET).
-    m_remoteEnabled = enabled && !passcode.isEmpty() && !m_superSpotterSeen;
-    if (enabled && m_superSpotterSeen)
-        qWarning() << "[REMOTE] MAGNET station: phone remote not started";
+    // [operator 2026-11-09] on a MAGNET station too (it was kept off there
+    // from 2026-10-25; MAGNET asked for it)
+    m_remoteEnabled = enabled && !passcode.isEmpty();
     m_remoteServer->configure(m_remoteEnabled, port, passcode);
 }
 
@@ -1841,6 +1840,11 @@ void UI_Constructor::remoteNetworkMessage(Message const &message) {
     // [phone remote] a phone operator is an operator: the idle watchdog
     // counts this as activity, as a key press on the desktop is
     resetIdleTimer();
+    // [operator 2026-11-09] remember it: its reply goes to the phone only
+    if (message.id() > 0) {
+        m_phoneRequestIds.append(message.id());
+        while (m_phoneRequestIds.size() > kPhoneRequestIds) m_phoneRequestIds.removeFirst();
+    }
     networkMessage(message);
 }
 
@@ -2055,6 +2059,35 @@ QVariantMap UI_Constructor::remoteUiState() {
     };
 }
 
+// [phone remote, operator 2026-11-09] the Message Inbox panel's list (all
+// calls, newest first, Inbox::fetchForCall as the panel reads it), each
+// field written as the panel's own column shows it: ID, TYPE (UNREAD shows
+// the flag), DATE, FREQ, FROM (the relay path, "A via B"), TO, TEXT.
+QVariantList UI_Constructor::remoteInbox() {
+    Inbox inbox(inboxPath());
+    if (!inbox.open()) return {};
+    QVariantList items;
+    for (auto const &[mid, msg] : inbox.fetchForCall(QStringLiteral("%"))) {
+        auto const params = msg.params();
+        auto const utc = params.value("UTC").toString();
+        QDateTime const ts(QDate::fromString(utc.left(10), "yyyy-MM-dd"),
+                           QTime::fromString(utc.mid(11), "HH:mm:ss"), QTimeZone::utc());
+        auto segs = params.value("PATH").toString().split('>');
+        std::reverse(segs.begin(), segs.end());
+        auto const dial = (quint64)params.value("DIAL").toInt();
+        items.append(QVariantMap{
+            {"ID", mid},
+            {"TYPE", msg.type()},
+            {"DATE", ts.toString("ddd MMM d HH:mm:ss yyyy")},
+            {"FREQ", QString("%1 MHz").arg(Radio::pretty_frequency_MHz_string(dial))},
+            {"FROM", segs.join(" via ")},
+            {"TO", params.value("TO").toString()},
+            {"TEXT", params.value("TEXT").toString()},
+        });
+    }
+    return items;
+}
+
 // Each pushed when it changed, at most every 250 ms (CHOSEN).
 void UI_Constructor::remotePushChanged() {
     if (!m_remoteEnabled) return;
@@ -2067,11 +2100,19 @@ void UI_Constructor::remotePushChanged() {
                                      QVariant &last, QString const &key) {
                 if (v == last) return;
                 last = v;
-                sendNetworkMessage(type, QString(), {{"_ID", QVariant(-1)}, {key, v}});
+                // [operator 2026-11-09] the phone's screen: to the phone only
+                if (m_remoteServer)
+                    m_remoteServer->send(Message(type, QString(), {{"_ID", QVariant(-1)}, {key, v}}));
             };
             push("RX.TEXT.TAIL", remoteConversationTail(), m_remoteLastText, "LINES");
             push("RX.BAND.TABLE", remoteBandTable(), m_remoteLastBand, "ROWS");
             push("UI.STATE", remoteUiState(), m_remoteLastState, "STATE");
+            // [operator 2026-11-09] the inbox only after it changed (the
+            // panel's countsUpdated), not a database read every push
+            if (m_remoteInboxDirty) {
+                m_remoteInboxDirty = false;
+                push("UI.INBOX", remoteInbox(), m_remoteLastInbox, "ITEMS");
+            }
         });
     }
     if (!m_remotePushTimer->isActive()) m_remotePushTimer->start();
@@ -14221,7 +14262,12 @@ bool UI_Constructor::rowDirectedToMe(QString const &rowCall, int rowOffset,
     if (pStation) *pStation = false;
     if (!isDirectedOffset(rowOffset, &allCall, &mark) || allCall || !mark)
         return false;
-    if (mark->offset < 0) return true; // JS8: the neighbourhood rule
+    // JS8: the 10 Hz neighbourhood (a JS8 row drifts a few Hz). [operator
+    // 2026-11-08, K7RIE + W0IFM both at 2405, only W0IFM addressed me]
+    // Listed by callsign, two stations in one bucket are two rows: only
+    // the sender's row turns red.
+    if (mark->offset < 0)
+        return !bandListByCall() || mark->call.isEmpty() || rowCall == mark->call;
     // JTTY, listed by offset: the line. Listed by callsign: the sender's
     // row; a mark without a call, the unattributed row at its line.
     // [operator 2026-10-20, KI7URZ 1603] An unattributed row (no call) was
@@ -14235,15 +14281,16 @@ bool UI_Constructor::rowDirectedToMe(QString const &rowCall, int rowOffset,
 }
 
 void UI_Constructor::markOffsetDirected(int offset, bool isAllCall,
-                                        QString const *station) {
+                                        QString const *station, bool exact) {
     QDateTime const now = DriftingDateTime::currentDateTimeUtc();
-    // a station given (JTTY, possibly an empty call) = exact; none = JS8
+    // a station given (JTTY, possibly an empty call) = exact; none, or a
+    // JS8 sender (exact false) = the 10 Hz neighbourhood
     QString const call = station ? *station : QString();
-    int const exact = station ? offset : -1;
+    int const markOffset = station && exact ? offset : -1;
     m_rxDirectedCache.insert(offset / 10 * 10,
-                             new CachedDirectedType{isAllCall, now, call, exact}, 10);
+                             new CachedDirectedType{isAllCall, now, call, markOffset}, 10);
     m_rxDirectedCache.insert(offset / 10 * 10 + 10,
-                             new CachedDirectedType{isAllCall, now, call, exact}, 10);
+                             new CachedDirectedType{isAllCall, now, call, markOffset}, 10);
     // [operator 2026-10-19] the "my call" red: when it is set, painted
     // ([DIRMARK] paint, displayBandActivity) and cleared, and by whom
     qWarning() << "[DIRMARK] set" << offset / 10 * 10 << "allcall=" << isAllCall
@@ -15293,6 +15340,16 @@ void UI_Constructor::sendNetworkMessage(QString const &type,
 
     auto m = Message(type, message, sent);
 
+    // [operator 2026-11-09] a reply goes back where its request came from:
+    // the answer to a phone request to the phone only, never to the UDP
+    // and TCP clients (a snapshot or a waterfall picture is over a UDP
+    // datagram, and no other client asked)
+    if (m_remoteEnabled && m_remoteServer && m.id() > 0 &&
+        m_phoneRequestIds.contains(m.id())) {
+        m_remoteServer->send(m);
+        return;
+    }
+
     if (m_config.udpEnabled()) {
         m_messageClient->send(m);
     }
@@ -15301,7 +15358,7 @@ void UI_Constructor::sendNetworkMessage(QString const &type,
         m_messageServer->send(m);
     }
 
-    // [phone remote] the same replies and events, to the phone
+    // [phone remote] the same events, to the phone
     if (m_remoteEnabled && m_remoteServer) {
         m_remoteServer->send(m);
     }
@@ -17582,12 +17639,13 @@ void UI_Constructor::serviceSubspaceDecodeBorrow() {
 // JTTY frequencies) is untouched. Called at start-up and the moment the
 // latch is set; nothing else makes these two visible again.
 void UI_Constructor::applyMagnetJttyVisibility() {
-    // [operator 2026-10-25] "don't show if Magnet identity: 'phone remote'
-    // and 'import radio setup...' menu items" (and the first two Help >
-    // Subspace Edition Guide entries, in on_actionSubspace_Guide_triggered)
-    if (m_actionPhoneRemote) m_actionPhoneRemote->setVisible(!m_superSpotterSeen);
+    // [operator 2026-10-25] "don't show if Magnet identity: ... 'import
+    // radio setup...' menu items" (and the JTTY Help > Subspace Edition
+    // Guide entry, in on_actionSubspace_Guide_triggered). [operator
+    // 2026-11-09] NOT the phone remote any more: MAGNET asked for it
+    // (W5TTA, approved by K7RIE), so File > Phone remote... and its server
+    // are the same on a MAGNET station as on any other.
     if (m_actionWsjtxImport) m_actionWsjtxImport->setVisible(!m_superSpotterSeen);
-    applyRemoteSettings(); // and the phone remote's server off on MAGNET
     // [operator 2026-10-25] and no JTTY entries in its frequency list
     if (m_superSpotterSeen) {
         if (int const n = m_config.dropJttyFrequencies())

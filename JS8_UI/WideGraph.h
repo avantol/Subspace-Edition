@@ -8,6 +8,7 @@
 #include <QColor>
 #include <QDir>
 #include <QEvent>
+#include <QImage>
 #include <QMutex>
 #include <QObject>
 #include <QScopedPointer>
@@ -68,6 +69,17 @@ class WideGraph : public QWidget {
     void saveSettings();
     void setBand(QString const &);
     void clearWaterfall(); // [TODO #132] passthrough to CPlotter
+    // [phone remote, operator 2026-11-09] the plot as the screen shows it:
+    // frequency scale, waterfall, spectrum, markers; and how to read it
+    // (picture pixels, which are screen pixels times the pixel ratio)
+    struct PlotPicture {
+        QImage image;
+        double startHz = 0;  // the picture's left edge
+        double hzPerPx = 0;  // per picture pixel
+        int dialHz = 0;      // the dial's width (the cursors' width)
+        int scalePx = 0;     // the frequency scale's height (cursors start below it)
+    };
+    PlotPicture grabPlot();
     void setFilterCenter(int);
     void setFilterWidth(int);
     void setFilterMinimumBandwidth(int);

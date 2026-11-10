@@ -187,7 +187,7 @@ async function bandClick(r, dbl) {
 // the result shows even if the event stream is slow or reconnecting.
 async function refresh() {
   const p = (await api('UI.GET_SNAPSHOT')).params || {};
-  renderState(p.STATE); renderBand(p.ROWS); renderConvo(p.LINES);
+  renderState(p.STATE); renderBand(p.ROWS); renderConvo(p.LINES); renderInbox(p.INBOX);
 }
 
 let noticeTimer = null;
@@ -276,16 +276,140 @@ async function convoClick(l, dbl) {
   } catch (e) { /* login shown */ }
 }
 
+// [operator 2026-11-09] Inbox: the station's Message Inbox, one line each
+// (the flag on an unread message, From, Message); a tap opens the whole
+// message, which marks it read as opening it on the station does
+let inboxItems = [];
+function renderInbox(items) {
+  if (!items) return;
+  inboxItems = items;
+  $('inbox').innerHTML = items.length
+    ? '<div class="irow head"><span class="flag">⚑</span><span class="from">From</span><span class="text">Message</span></div>' +
+      items.map((m, i) => `
+    <div class="irow${m.TYPE === 'UNREAD' ? ' unread' : ''}" data-i="${i}">
+      <span class="flag">${m.TYPE === 'UNREAD' ? '⚑' : ''}</span>
+      <span class="from">${esc(m.FROM)}</span><span class="text">${esc(m.TEXT)}</span></div>`).join('')
+    : '<p class="hint">No messages.</p>';
+}
+
+let openMsg = null;
+$('inbox').addEventListener('click', async (e) => {
+  const el = e.target.closest('.irow');
+  if (!el || el.classList.contains('head')) return;
+  const m = inboxItems[+el.dataset.i];
+  if (!m) return;
+  openMsg = m;
+  $('msgText').textContent = m.TEXT || '';
+  $('msgDetails').innerHTML = [['ID', m.ID], ['Date', m.DATE], ['Freq', m.FREQ], ['From', m.FROM], ['To', m.TO]]
+    .map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+  $('msgDetails').classList.add('hidden');
+  $('msgDialog').classList.remove('hidden');
+  if (m.TYPE === 'UNREAD') {
+    try {
+      await api('UI.INBOX_READ', '', { ID: m.ID });
+      await refresh();
+    } catch (e2) { /* login shown */ }
+  }
+});
+
+function closeMsg() {
+  $('msgDialog').classList.add('hidden');
+  openMsg = null;
+}
+$('msgCloseBtn').addEventListener('click', closeMsg);
+$('msgDialog').addEventListener('click', (e) => { if (e.target === $('msgDialog')) closeMsg(); });
+$('msgDetailsBtn').addEventListener('click', () => $('msgDetails').classList.toggle('hidden'));
+$('msgDeleteBtn').addEventListener('click', async () => {
+  const m = openMsg;
+  if (!m) return;
+  try {
+    const p = (await api('UI.INBOX_DELETE', '', { ID: m.ID })).params || {};
+    if (p.OK === false) notice('That message is no longer in the inbox.');
+    closeMsg();
+    await refresh();
+  } catch (e2) { /* login shown */ }
+});
+
+// [operator 2026-11-09] Waterfall: one picture of the station's waterfall
+// (with its frequency scale), taken when tapped, shown at full size to
+// scroll around in. A tap on it (not a swipe) moves the offset there, as
+// a click on the desktop's waterfall does, and marks it with the white
+// cursor the desktop draws: two lines, one signal wide.
+let wfInfo = null;
+$('wfBtn').addEventListener('click', async () => {
+  notice('Getting the waterfall...');
+  try {
+    const p = (await api('UI.GET_WATERFALL')).params || {};
+    if (p.OK === false) {
+      notice(p.REASON === 'hidden' ? 'The waterfall is not on the station\'s screen.'
+                                   : 'The station could not take the picture.');
+      return;
+    }
+    if (!p.IMAGE) { notice('No picture came back; try again.'); return; }
+    wfInfo = p;
+    $('wfCursor').classList.add('hidden');
+    $('wfImg').src = `data:${p.MIME};base64,${p.IMAGE}`;
+    $('notice').classList.remove('show');
+    $('wfView').classList.remove('hidden');
+  } catch (e) { /* login shown */ }
+});
+function closeWf() {
+  $('wfView').classList.add('hidden');
+  $('wfImg').removeAttribute('src');
+  wfInfo = null;
+}
+
+// a tap, not a swipe: the browser sends no click after scrolling, and a
+// finger that moved more than 10 px (CHOSEN) is not a tap either
+let wfDown = null;
+$('wfImg').addEventListener('pointerdown', (e) => { wfDown = { x: e.clientX, y: e.clientY }; });
+$('wfImg').addEventListener('click', async (e) => {
+  if (!wfInfo || !wfInfo.HZ_PER_PX) return;
+  if (wfDown && Math.hypot(e.clientX - wfDown.x, e.clientY - wfDown.y) > 10) return;
+  // picture pixels are page pixels here (the picture is shown at full size)
+  const hz = Math.floor(wfInfo.START_HZ + e.offsetX * wfInfo.HZ_PER_PX);
+  try {
+    const p = (await api('UI.WATERFALL_CLICK', '', { HZ: hz })).params || {};
+    if (p.OK) {
+      placeWfCursor(p.OFFSET);
+      notice(`Offset ${p.OFFSET} Hz.`);
+    } else if (p.REASON === 'not_moved') {
+      notice('Not moved: a message is waiting to go out.');
+    } else {
+      notice(`Refused (${p.REASON || 'no reply'}).`);
+    }
+    await refresh();
+  } catch (e2) { /* login shown */ }
+});
+function placeWfCursor(offset) {
+  const c = $('wfCursor');
+  c.style.left = `${(offset - wfInfo.START_HZ) / wfInfo.HZ_PER_PX}px`;
+  c.style.width = `${wfInfo.DIAL_HZ / wfInfo.HZ_PER_PX}px`;
+  c.style.top = `${wfInfo.SCALE_PX || 0}px`;
+  c.classList.remove('hidden');
+}
+$('wfCloseBtn').addEventListener('click', closeWf);
+$('wfView').addEventListener('click', (e) => { if (e.target === $('wfView')) closeWf(); });
+
+// [operator 2026-11-09] HALT as wide as the Inbox tab, in portrait and
+// landscape alike: the tab's width follows the screen, so HALT follows it
+const syncHaltWidth = () => {
+  const w = $('inboxTab').offsetWidth;
+  if (w) $('halt').style.width = `${w}px`;
+};
+new ResizeObserver(syncHaltWidth).observe($('inboxTab'));
+
 function setConn(ok) {
   $('conn').classList.toggle('on', ok);
   $('conn').classList.toggle('off', !ok);
+  $('connLabel').textContent = ok ? 'CONN' : 'INOP';
 }
 
 async function start() {
   const snap = await api('UI.GET_SNAPSHOT');
   const p = snap.params || {};
   showApp();
-  renderState(p.STATE); renderBand(p.ROWS); renderConvo(p.LINES);
+  renderState(p.STATE); renderBand(p.ROWS); renderConvo(p.LINES); renderInbox(p.INBOX);
   reopenEvents();
 }
 
@@ -309,12 +433,13 @@ function reopenEvents() {
     if (m.type === 'RX.TEXT.TAIL') renderConvo(p.LINES);
     else if (m.type === 'RX.BAND.TABLE') renderBand(p.ROWS);
     else if (m.type === 'UI.STATE') renderState(p.STATE);
+    else if (m.type === 'UI.INBOX') renderInbox(p.ITEMS);
   };
 }
 
 // [operator 2026-10-21] -/+ beside the offset: 25 Hz a tap, through the
 // station's own offset change (refused there while transmitting)
-document.querySelectorAll('button.step').forEach((b) => b.addEventListener('click', async () => {
+document.querySelectorAll('button.step[data-step]').forEach((b) => b.addEventListener('click', async () => {
   try {
     const p = (await api('UI.OFFSET_STEP', '', { STEP: +b.dataset.step })).params || {};
     if (p.REASON === 'hb_zone') notice('Unable to QSY to HB zone (1000 Hz and below).');
@@ -329,7 +454,7 @@ document.querySelectorAll('button.step').forEach((b) => b.addEventListener('clic
 function showTab(name) {
   document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x.dataset.tab === name));
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== name));
-  // [operator 2026-10-21] opening the Conversation lands on its newest line
+  // [operator 2026-10-21] opening Chats (the conversation) lands on its newest line
   if (name === 'convo') requestAnimationFrame(() => { $('convo').scrollTop = $('convo').scrollHeight; });
 }
 let lastTab = 'band';
@@ -449,9 +574,8 @@ $('freq').addEventListener('click', async (e) => {
       <button data-i="${i}" data-mode="JTTY" class="${stationMode === 'JTTY' && f.CURRENT ? 'on' : ''}">JTTY</button></div>`);
     return;
   }
-  // [operator 2026-10-21] the current entry may be chosen too (re-tunes the rig)
-  if (!confirm(f.CURRENT ? `Set the radio to ${f.MHZ} MHz again?`
-                         : `Change to ${f.MHZ} MHz (${f.BAND}, ${f.MODE})?`)) return;
+  // [operator 2026-10-21] the current entry may be chosen too (re-tunes the
+  // rig). [operator 2026-11-09] no "Change to ...?" question: a tap goes
   goFreq(f, '');
 });
 

@@ -842,6 +842,8 @@ void CPlotter::drawFilter() {
 // offset and bandwith, the second prospective offset and bandwidth. These are
 // not reliant on anything but height, submode, and bins per pixel.
 
+int CPlotter::dialBandwidth() const { return JS8::Submode::bandwidth(m_nSubMode); }
+
 void CPlotter::drawDials() {
     if (auto const height = size().height() - 30; height > 0) {
         auto const width = static_cast<int>(

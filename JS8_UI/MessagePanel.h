@@ -25,6 +25,10 @@ public slots:
   void refresh();
   void populateMessages(QList<QPair<int, Message>> msgs);
   QString prepareReplyMessage(QString path, QString text);
+  // [phone remote, operator 2026-11-09] public so the phone's Inbox reads
+  // and deletes through the panel's own rules
+  void deleteMessage(int id);
+  void markMessageRead(int id);
 
 private slots:
   void messageTableSelectionChanged(const QItemSelection & /*selected*/,
@@ -33,8 +37,6 @@ private slots:
 
 private:
   void deleteSelectedMessages(); // shared by context menu + Delete key
-  void deleteMessage(int id);
-  void markMessageRead(int id);
   Ui::MessagePanel *ui;
   Inbox *inbox;
   QString call;

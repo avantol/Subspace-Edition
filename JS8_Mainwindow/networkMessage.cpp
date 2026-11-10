@@ -12,6 +12,8 @@
 #include "JS8_Main/ChunkedArq.h"
 #include "JS8_Main/Modes.h" // [phone remote] UI.GET_FREQ_LIST
 
+#include <QBuffer> // [phone remote] UI.GET_WATERFALL
+
 /**
  * @brief Processes an incoming API network message
  * This function acts as the primary router for the JS8Call API. It handles
@@ -1786,12 +1788,118 @@ if(type == "STATION.SET_SPOT") {
         return;
     }
 
+    /** @brief UI.GET_INBOX / UI.INBOX_READ / UI.INBOX_DELETE: [phone remote,
+     * operator 2026-11-09] the Message Inbox panel's list (remoteInbox), and
+     * a message (params ID) read or deleted through the panel itself: read
+     * when its text is opened, as a click on its row does (UNREAD only).
+     * REASON "gone" when no message has that ID.
+     */
+    if (type == "UI.GET_INBOX") {
+        sendNetworkMessage("UI.INBOX", QString(),
+                           {{"_ID", message.params().value("_ID")}, {"ITEMS", remoteInbox()}});
+        return;
+    }
+    if (type == "UI.INBOX_READ" || type == "UI.INBOX_DELETE") {
+        int const mid = message.params().value("ID").toInt();
+        Inbox inbox(inboxPath());
+        QString const reason = !inbox.open() || inbox.value(mid).type().isEmpty()
+                                   ? QStringLiteral("gone")
+                                   : QString();
+        bool const del = type == "UI.INBOX_DELETE";
+        qWarning() << "[REMOTE] inbox" << (del ? "delete" : "read") << mid
+                   << (reason.isEmpty() ? QStringLiteral("done") : reason);
+        if (reason.isEmpty()) {
+            ensureMessageDock();
+            if (del) messagePanel_->deleteMessage(mid);
+            else messagePanel_->markMessageRead(mid);
+            messagePanel_->refresh(); // the desktop's list, and countsUpdated
+        }
+        sendNetworkMessage(type, QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason}});
+        return;
+    }
+
+    /** @brief UI.GET_WATERFALL: [phone remote, operator 2026-11-09] one
+     * picture of the waterfall as the screen shows it (scale with the
+     * frequencies, waterfall, spectrum, markers), on demand: IMAGE (base64),
+     * MIME (JPEG; PNG if this Qt has no JPEG writer), WIDTH, HEIGHT; and
+     * how to read it: START_HZ (the left edge), HZ_PER_PX (per picture
+     * pixel), DIAL_HZ (the cursor's width), SCALE_PX (the frequency scale's
+     * height; the cursors are drawn below it). REASON "hidden" when the
+     * waterfall is not on the screen. Like every reply, answered where the
+     * request came from (sendNetworkMessage).
+     */
+    if (type == "UI.GET_WATERFALL") {
+        QString reason;
+        WideGraph::PlotPicture pic;
+        QImage &img = pic.image;
+        QByteArray bytes;
+        QString mime = QStringLiteral("image/jpeg");
+        if (!m_wideGraph->isVisible() || m_wideGraph->height() < 40) {
+            reason = QStringLiteral("hidden");
+        } else {
+            pic = m_wideGraph->grabPlot();
+            QBuffer buf(&bytes);
+            buf.open(QIODevice::WriteOnly);
+            // quality 80 (CHOSEN): noise-like pictures compress poorly as PNG
+            if (img.isNull()) {
+                reason = QStringLiteral("failed");
+            } else if (!img.save(&buf, "JPG", 80)) {
+                bytes.clear();
+                buf.seek(0);
+                mime = QStringLiteral("image/png");
+                if (!img.save(&buf, "PNG")) reason = QStringLiteral("failed");
+            }
+        }
+        qWarning() << "[REMOTE] waterfall" << img.width() << "x" << img.height() << mime
+                   << bytes.size() << "bytes" << reason;
+        sendNetworkMessage("UI.WATERFALL", QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason},
+                            {"MIME", mime},
+                            {"WIDTH", img.width()},
+                            {"HEIGHT", img.height()},
+                            {"START_HZ", pic.startHz},
+                            {"HZ_PER_PX", pic.hzPerPx},
+                            {"DIAL_HZ", pic.dialHz},
+                            {"SCALE_PX", pic.scalePx},
+                            {"IMAGE", reason.isEmpty() ? QString::fromLatin1(bytes.toBase64())
+                                                       : QString()}});
+        return;
+    }
+
+    /** @brief UI.WATERFALL_CLICK: [phone remote, operator 2026-11-09] a tap
+     * on the waterfall picture (params HZ, read from the picture's own
+     * scale): the desktop waterfall click's own handler (changeFreq),
+     * which keeps the offset while a message waits for its slot unless
+     * "QSY while queued" is on. Reply: OFFSET (the offset now), OK false
+     * with REASON "not_moved" when it did not change to HZ.
+     */
+    if (type == "UI.WATERFALL_CLICK") {
+        int const hz = std::max(0, message.params().value("HZ").toInt());
+        changeFreq(hz);
+        int const now = freq();
+        QString const reason = now == hz ? QString() : QStringLiteral("not_moved");
+        qWarning() << "[REMOTE] waterfall click" << hz << "Hz, offset now" << now << reason;
+        sendNetworkMessage("UI.WATERFALL_CLICK", QString(),
+                           {{"_ID", message.params().value("_ID")},
+                            {"OK", reason.isEmpty()},
+                            {"REASON", reason},
+                            {"OFFSET", now}});
+        remotePushChanged();
+        return;
+    }
+
     if (type == "UI.GET_SNAPSHOT") {
         sendNetworkMessage("UI.SNAPSHOT", QString(),
                            {{"_ID", message.params().value("_ID")},
                             {"LINES", remoteConversationTail()},
                             {"ROWS", remoteBandTable()},
-                            {"STATE", remoteUiState()}});
+                            {"STATE", remoteUiState()},
+                            {"INBOX", remoteInbox()}});
         return;
     }
 

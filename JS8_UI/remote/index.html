@@ -26,7 +26,10 @@
     <div class="row">
       <span id="dial" title="tap for the frequency list">--.------ &#9662;</span>
       <span class="offsetctl"><button class="step" data-step="-25">&minus;</button><span id="offset">---- Hz</span><button class="step" data-step="25">+</button></span>
+      <span id="wfBtn" class="tappable" title="waterfall">WF</span>
+      <span class="portraitbreak"></span>
       <span id="mode">--</span>
+      <span id="connLabel">INOP</span>
       <span id="conn" class="dot" title="connection"></span>
     </div>
     <div class="row small">
@@ -38,8 +41,9 @@
   </header>
   <nav id="tabs">
     <button data-tab="band" class="active">Band</button>
-    <button data-tab="convo">Conversation</button>
+    <button data-tab="convo">Chats</button>
     <button data-tab="compose">Compose</button>
+    <button data-tab="inbox" id="inboxTab">Inbox</button>
   </nav>
   <main>
     <section id="band" class="tab"></section>
@@ -65,12 +69,30 @@
         <button data-action="directed" id="directed">Directed to</button>
         <button data-action="deselect">Deselect</button>
       </div>
-      <p class="hint">Tap a station in Band or Conversation to select it; double-tap to select it and move to its offset.</p>
+      <p class="hint">Tap a station in Band or Chats to select it; double-tap to select it and move to its offset.</p>
     </section>
+    <section id="inbox" class="tab hidden"></section>
     <section id="freq" class="tab hidden"></section>
     <section id="speeds" class="tab hidden"></section>
     <section id="groups" class="tab hidden"></section>
   </main>
+</div>
+<div id="msgDialog" class="overlay hidden">
+  <div class="dialog">
+    <div id="msgText" class="msgtext"></div>
+    <dl id="msgDetails" class="details hidden"></dl>
+    <div class="buttons">
+      <button id="msgDetailsBtn">Details</button>
+      <button id="msgDeleteBtn" class="danger">Delete</button>
+      <button id="msgCloseBtn">Close</button>
+    </div>
+  </div>
+</div>
+<div id="wfView" class="overlay hidden">
+  <div class="wfbox">
+    <div class="wfscroll"><div class="wfpic"><img id="wfImg" alt="Waterfall"><div id="wfCursor" class="wfcursor hidden"></div></div></div>
+    <div class="buttons"><button id="wfCloseBtn">Close</button></div>
+  </div>
 </div>
 <div id="notice" class="toast"></div>
 <script src="remote.js"></script>

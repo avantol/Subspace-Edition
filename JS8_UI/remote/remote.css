@@ -23,15 +23,28 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #bar { padding: 8px 12px; background: var(--panel); border-bottom: 1px solid #333; }
 #bar .row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 #bar .small { font-size: 13px; color: var(--muted); margin-top: 4px; }
+/* [operator 2026-11-09] portrait: the speed always starts the second line
+   (it fit on the first or not depending on the offset's and speed's
+   widths); landscape: one line */
+.portraitbreak { display: none; }
+/* (the break is an empty line of its own, with a row gap on each side:
+   half gaps there make the two one) */
+@media (orientation: portrait) {
+  #bar .portraitbreak { display: block; flex-basis: 100%; height: 0; }
+  #bar .row:first-child { row-gap: 3px; } }
 #dial { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums;
   cursor: pointer; text-decoration: underline dotted #6b7682; }
-#offset, #mode { color: var(--muted); }
+#offset, #mode, #wfBtn { color: var(--muted); }
 .offsetctl { display: inline-flex; align-items: center; gap: 2px; }
 .offsetctl #offset.warn { color: #f5d000; font-weight: 600; }
 .offsetctl #offset { min-width: 4.1em; text-align: center; font-variant-numeric: tabular-nums; }
 button.step { width: 34px; height: 30px; border: 0; border-radius: 6px; background: #2c333b;
   color: var(--text); font-size: 20px; line-height: 1; padding: 0; }
-.dot { width: 12px; height: 12px; border-radius: 50%; background: #666; margin-left: auto; }
+/* [operator 2026-11-09] the dot's word on its left, as WF is written; the
+   pair sits at the right end of its line */
+#connLabel { color: var(--muted); margin-left: auto; }
+#connLabel + .dot { margin-left: -6px; } /* 4px from its word, not the row's 10px gap */
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #666; }
 .dot.on { background: var(--ok); } .dot.off { background: #c0392b; }
 .pill { padding: 1px 8px; border-radius: 10px; background: #39424c; color: var(--text); }
 .pill.on { background: var(--ok); } #txing { background: var(--tx); color: #000; }
@@ -39,7 +52,7 @@ button.step { width: 34px; height: 30px; border: 0; border-radius: 6px; backgrou
 
 #tabs { display: flex; gap: 6px; padding: 6px 8px; background: var(--bg); }
 /* [operator 2026-10-21] each tab as wide as its label plus an even share of
-   the rest: Band narrow, Conversation wide */
+   the rest: Band narrow, Compose wide */
 #tabs button { flex: 1 1 auto; min-width: 0; background: #2c333b; padding: 8px 10px; }
 #tabs button.active { background: var(--accent); }
 main { flex: 1; overflow: hidden; }
@@ -86,7 +99,7 @@ button.pill { border: 0; font-size: 13px; }
 
 /* [operator 2026-10-21] tappable lines are buttons, not text: no Android
    "Touch to Search" pop-up, no text selection, no long-press menu */
-.frow, .brow, .line, .choose, #dial, #mode {
+.frow, .brow, .line, .irow, .choose, #dial, #mode, #wfBtn {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent; cursor: pointer; }
 .frow { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px;
@@ -102,5 +115,41 @@ button.pill { border: 0; font-size: 13px; }
 .choose button { flex: 1; padding: 10px; border: 0; border-radius: 6px;
   background: #2c333b; color: var(--text); font-size: 15px; font-weight: 600; }
 .choose button.on { background: var(--accent); color: #fff; }
-#mode.tappable { cursor: pointer; text-decoration: underline dotted #6b7682; }
+#mode.tappable, #wfBtn.tappable { cursor: pointer; text-decoration: underline dotted #6b7682; }
 .hint { color: var(--muted); font-size: 13px; }
+#inbox > .hint { padding: 10px 12px; }
+
+/* [operator 2026-11-09] Inbox: one line a message (flag, From, Message) */
+.irow { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px;
+  border-bottom: 1px solid #2c333b; }
+/* fixed column widths (rem, not em: the heading is a smaller font) so
+   every line's columns sit under the headings */
+.irow .flag { width: 1.2rem; flex: none; text-align: center; color: var(--tx); }
+.irow .from { flex: none; width: 32%; font-weight: 700; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.irow .text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.irow.unread .text { font-weight: 700; }
+.irow.head { position: sticky; top: 0; background: var(--bg); color: var(--muted);
+  font-size: 13px; padding: 6px 12px; cursor: default; }
+.irow.head .from { font-weight: 400; }
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 20;
+  display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dialog { width: 100%; max-width: 520px; max-height: 100%; overflow-y: auto;
+  background: var(--panel); border-radius: 10px; padding: 14px 14px 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .6); }
+.msgtext { white-space: pre-wrap; word-break: break-word; font-size: 16px; }
+.details { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0;
+  padding-top: 10px; border-top: 1px solid #39424c; font-size: 14px; }
+.details dt { color: var(--muted); }
+.details dd { margin: 0; word-break: break-word; }
+.buttons button.danger { background: #c0392b; color: #fff; }
+/* [operator 2026-11-09] the waterfall picture at full size, scrolled in its box */
+.wfbox { width: 100%; max-height: 100%; display: flex; flex-direction: column;
+  background: var(--panel); border-radius: 10px; padding: 10px; }
+.wfscroll { flex: 1 1 auto; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch;
+  background: #000; border-radius: 4px; }
+.wfscroll img { display: block; max-width: none; height: auto; }
+.wfpic { position: relative; display: inline-block; vertical-align: top; }
+/* the desktop's white mouse cursor: two lines one signal apart */
+.wfcursor { position: absolute; bottom: 0; box-sizing: border-box; pointer-events: none;
+  border-left: 2px solid #fff; border-right: 2px solid #fff; }.wfbox .buttons { margin-top: 8px; }
