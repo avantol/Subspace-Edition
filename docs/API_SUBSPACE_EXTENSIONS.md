@@ -615,6 +615,24 @@ with an event-driven flow.
 Note: fires once per transmission block, not once per frame. `TX.FRAME`
 events continue to fire per audio frame during TX.
 
+### `TX.PENDING`
+
+A slotted frame is waiting for its key-up. Pushed once per slot while it
+waits (the first one as soon as the frame is ready), so a program sharing
+the radio (the Arbiter) can hold the others before this station keys.
+`KEYUP_IN_MS` is relative to the moment of sending: a client's clock is not
+this station's. A client lets a `PENDING` true lapse after that time if no
+`RIG.PTT` on follows. `PENDING` false comes when the frame stops waiting:
+keyed (`RIG.PTT` on follows), halted, or TX turned off.
+
+```json
+{"type":"TX.PENDING","value":"","params":{"_ID":-1,"PENDING":true,"KEYUP_IN_MS":2791}}
+{"type":"TX.PENDING","value":"","params":{"_ID":-1,"PENDING":false}}
+```
+
+Not sent for sends that key at once (ARQ transfers, JTTY, Tune): `RIG.PTT`
+is their notice. Never sent while TX is off.
+
 ### `TX.CHUNKED_PROGRESS`, `TX.CHUNKED_COMPLETE`, `TX.CHUNKED_FAILED`
 
 The course of a `TX.SEND_CHUNKED` transfer, matched by `MSG_ID`:

@@ -55,12 +55,22 @@ void TransceiverBase::set(TransceiverState const &s,
             startup();
         }
         if (requested_.online()) {
-            bool ptt_on{false};
-            bool ptt_off{false};
-            if (s.ptt() != requested_.ptt()) {
-                ptt_on = s.ptt();
-                ptt_off = !s.ptt();
-            }
+            // [ownptt 2026-11-11] requested_.ptt() is the PTT we commanded,
+            // never the PTT read from the radio, which includes other
+            // programs' transmissions on a shared radio (inherited code
+            // copied the reading in at the end of every set()). W8UFO
+            // 10 Nov: VarAC keyed 185 ms before our slot and our PTT on
+            // looked like no change, so none was sent (19:48:44); a set()
+            // during CommsPlan's tune left "on" behind and our next frame
+            // sent PTT off first, then keyed 284 ms late (22:08:44).
+            //   on:  we want it and have not commanded it, or the radio
+            //        reads not keyed (something else dropped it: Hold PTT
+            //        keys again at the next frame, as before)
+            //   off: only a PTT on we commanded, so we never un-key
+            //        another program's transmission
+            bool const ptt_on{s.ptt() &&
+                              (!requested_.ptt() || !actual_.ptt())};
+            bool const ptt_off{!s.ptt() && requested_.ptt()};
             if (ptt_off) {
                 do_ptt(false);
                 do_post_ptt(false);
@@ -108,8 +118,9 @@ void TransceiverBase::set(TransceiverState const &s,
                                       // Rx to Tx
             }
 
-            // record what actually changed
-            requested_.ptt(actual_.ptt());
+            // [ownptt] record what we commanded, only when we commanded it
+            if (ptt_on || ptt_off)
+                requested_.ptt(s.ptt());
         }
         last_sequence_number_ = sequence_number;
     } catch (std::exception const &e) {
@@ -149,6 +160,9 @@ void TransceiverBase::shutdown() {
     do_post_stop();
     actual_.online(false);
     requested_.online(false);
+    // [ownptt] the PTT off above was sent: nothing of ours is keyed, so the
+    // first PTT on after a re-open is a change (from K7RIE's 11 Nov patch)
+    requested_.ptt(false);
 }
 
 void TransceiverBase::stop() noexcept {

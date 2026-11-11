@@ -424,6 +424,8 @@ class UI_Constructor : public QMainWindow {
     bool ensureKeyNotStuck(QString const &text);
     bool ensureNotIdle();
     bool ensureCanTransmit();
+    QString txOffReason() const;                // [#327 item 5] why TX is off
+    void showTxRefused(QString const &what, QString const &why); // status bar + box
     bool ensureCreateMessageReady(const QString &text);
     QString createMessage(QString const &text, bool *pDisableTypeahead);
     QString appendMessage(QString const &text, bool isData,
@@ -2450,6 +2452,12 @@ class UI_Constructor : public QMainWindow {
     int m_flrigReserveState = 0;      // 0 unknown, 1 accepted, -1 not ours
     qint64 m_flrigReservedSlot = -1;  // slot already reserved for key-up
     bool m_flrigUnkeyReserved = false; // this transmission's unkey reserved
+    // [txpending 2026-11-11] API clients (the Arbiter) are told of a slotted
+    // send before its key-up: TX.PENDING true once per slot while a frame
+    // waits, false when it stops waiting
+    void announceTxPending(bool pending, qint64 keyupInMs = 0);
+    bool m_txPendingAnnounced = false;
+    qint64 m_txPendingSlot = -1;      // slot last announced
     bool m_pttHeldBetweenFrames = false; // stopTx2 kept PTT down (Hold PTT)
     bool holdPttForNextFrame() const;  // stopTx2's rule, shared
     // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button
@@ -2614,7 +2622,7 @@ class UI_Constructor : public QMainWindow {
     static constexpr int kRemoteHoldMaxMs = 300'000;
     QTimer *m_txHoldTimer{nullptr}, *m_autoHoldTimer{nullptr};
     bool m_txHoldExpired{false}, m_autoHoldExpired{false}; // the expiry's own change
-    QPointer<QMessageBox> m_sendRefusedBox;   // [#327 item 5] the self-closing "Send refused" box, one at a time
+    QPointer<QMessageBox> m_txRefusedBox;     // [#327 item 5] the self-closing "Send/Tune refused" box, one at a time
     void armRemoteHold(bool tx);
     void expireRemoteHold(bool tx);
     void jttyAutoLatchDirected(); // JTTY: a selection latches Directed to

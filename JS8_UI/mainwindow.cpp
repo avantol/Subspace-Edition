@@ -4463,6 +4463,24 @@ void UI_Constructor::flrigReservePtt(char const *why) {
     });
 }
 
+// [txpending 2026-11-11] TX.PENDING (_ID -1): PENDING true with KEYUP_IN_MS,
+// relative because a client's clock is not ours (DriftingDateTime); false
+// only after a true. The client lets a true lapse after the key-up time.
+void UI_Constructor::announceTxPending(bool pending, qint64 keyupInMs) {
+    if (!pending && !m_txPendingAnnounced) return;
+    m_txPendingAnnounced = pending;
+    if (pending) {
+        qWarning() << "[TX-PENDING] announced, key-up in" << keyupInMs << "ms";
+        sendNetworkMessage("TX.PENDING", "",
+                           {{"_ID", QVariant(-1)},
+                            {"PENDING", true},
+                            {"KEYUP_IN_MS", QVariant(keyupInMs)}});
+    } else {
+        sendNetworkMessage("TX.PENDING", "",
+                           {{"_ID", QVariant(-1)}, {"PENDING", false}});
+    }
+}
+
 void UI_Constructor::prepareSending(qint64 nowMS) {
     // TX Duration in seconds.
     const double tx_duration = JS8::Submode::txDuration(m_nSubMode);
@@ -4634,6 +4652,29 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
             m_flrigReservedSlot = slot;
             flrigReservePtt("key-up");
         }
+    }
+
+    // [txpending 2026-11-11] Tell API clients (the Arbiter) of a slotted send
+    // as soon as its frame waits, so another program can be held before we
+    // key: W8UFO 10 Nov 19:48:44, VarAC keyed 185 ms before our slot and the
+    // Arbiter, told only at our key-up, could hold no one; the frame had
+    // been waiting 2.8 s. The flrig reservation's 1 s lead is too short for
+    // VarAC (~1 s to obey its cluster lock), and it is sent only with flrig.
+    // Not for un-slotted sends (ARQ relax, JTTY, Tune): they key at once and
+    // RIG.PTT is their notice. Never while TX is off: a held station sends
+    // nothing, so it claims nothing.
+    if (m_iptt == 0 && msgLength > 0 && !m_tune && !arqFullRelax &&
+        !jttyAsync && ensureCanTransmit()) {
+        qint64 const slot = nowMS / periodMS;
+        if (!m_txPendingAnnounced || slot != m_txPendingSlot) {
+            m_txPendingSlot = slot;
+            announceTxPending(
+                true, std::max<qint64>(
+                          0, std::llround((period - tx_delay -
+                                           seconds_into_the_period) * 1000.0)));
+        }
+    } else {
+        announceTxPending(false);
     }
 
     // Floor-loophole fix (2026-06-09): when arqFullRelax is in effect,
@@ -7702,6 +7743,37 @@ bool UI_Constructor::ensureCanTransmit() {
     return ui->monitorTxButton->isChecked();
 }
 
+// [#327 item 5] why TX is off, for a refusal: the hold's reason when a
+// remote command holds TX, else the operator's own switch
+QString UI_Constructor::txOffReason() const {
+    return m_txDisabledRemote ? tr("TX disabled by %1").arg(m_txHoldReason)
+                              : tr("TX is not enabled");
+}
+
+// [#327 item 5, operator 2026-10-29] a refused click says why: the status
+// bar, and a box that closes itself (the status bar line alone was missed
+// in the live test); kTxRefusedBoxS = 5 s, chosen. One box at a time.
+// Non-modal and never activating (#212: a box that grabs focus during a
+// receive puts the operator's keystrokes on the air).
+void UI_Constructor::showTxRefused(QString const &what, QString const &why) {
+    showStatusMessage(QStringLiteral("%1: %2").arg(what, why));
+    if (m_txRefusedBox) {
+        m_txRefusedBox->setWindowTitle(what);
+        m_txRefusedBox->setText(why);
+        return;
+    }
+    constexpr int kTxRefusedBoxS = 5;
+    auto *m = new SelfDestructMessageBox(kTxRefusedBoxS, what, why,
+                                         QMessageBox::Information,
+                                         QMessageBox::Ok, QMessageBox::Ok,
+                                         false, this);
+    m->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    m->setWindowModality(Qt::NonModal);
+    connect(m, &SelfDestructMessageBox::finished, m, &QObject::deleteLater);
+    m_txRefusedBox = m;
+    m->show();
+}
+
 bool UI_Constructor::ensureCreateMessageReady(const QString &text) {
     if (text.isEmpty()) {
         return false;
@@ -7727,9 +7799,7 @@ bool UI_Constructor::ensureCreateMessageReady(const QString &text) {
         // [#327 item 5, operator 2026-10-28] say why instead of only
         // emptying the box: the hold's reason when a remote command
         // holds TX, else the operator's own switch. Status bar, 5 s.
-        QString const why = m_txDisabledRemote
-                                ? tr("TX disabled by %1").arg(m_txHoldReason)
-                                : tr("TX is not enabled");
+        QString const why = txOffReason();
         qWarning() << "[TX-CAUSE] send refused:" << why;
         showStatusMessage(tr("Send refused: %1").arg(why));
         stopTxMechanical();
@@ -8588,24 +8658,9 @@ void UI_Constructor::on_startTxButton_toggled(bool checked) {
         // Non-modal and never activating (#212: a box that grabs focus
         // during a receive puts the operator's keystrokes on the air).
         if (m_txDisabledRemote) {
-            QString const why = tr("TX disabled by %1").arg(m_txHoldReason);
+            QString const why = txOffReason();
             qWarning() << "[TX-CAUSE] send refused (button):" << why;
-            showStatusMessage(tr("Send refused: %1").arg(why));
-            if (m_sendRefusedBox) {
-                m_sendRefusedBox->setText(why);
-            } else {
-                constexpr int kSendRefusedBoxS = 5;
-                auto *m = new SelfDestructMessageBox(
-                    kSendRefusedBoxS, tr("Send refused"), why,
-                    QMessageBox::Information, QMessageBox::Ok,
-                    QMessageBox::Ok, false, this);
-                m->setAttribute(Qt::WA_ShowWithoutActivating, true);
-                m->setWindowModality(Qt::NonModal);
-                connect(m, &SelfDestructMessageBox::finished, m,
-                        &QObject::deleteLater);
-                m_sendRefusedBox = m;
-                m->show();
-            }
+            showTxRefused(tr("Send refused"), why);
         }
         return;
     }
@@ -12394,6 +12449,23 @@ void UI_Constructor::on_tableWidgetCalls_cellDoubleClicked(int row, int col) {
 }
 
 void UI_Constructor::on_tuneButton_clicked(bool checked) {
+    // [tunehold 2026-11-11, TODO #349] Tune is a transmission: refused while
+    // TX is turned off, as Send is (by the operator, or held by the
+    // Arbiter). Field 2026-11-03: two Tune presses went out while the
+    // Arbiter held this station. The button, the menu item and the API's
+    // RIG.SET_TUNE all arrive here. A Tune already on ends with TX off
+    // (the halt's stopTxMechanical).
+    if (checked && !m_tune && !ensureCanTransmit()) {
+        QString const why = txOffReason();
+        qWarning() << "[TX-CAUSE] tune refused:" << why;
+        QSignalBlocker const blockButton(ui->tuneButton);
+        QSignalBlocker const blockAction(ui->actionEnable_Tuning_Tone_TUNE);
+        ui->tuneButton->setChecked(false);
+        ui->actionEnable_Tuning_Tone_TUNE->setChecked(false);
+        resetPushButtonToggleText(ui->tuneButton);
+        showTxRefused(tr("Tune refused"), why);
+        return;
+    }
     static bool lastChecked = false;
     if (lastChecked == checked)
         return;
@@ -12506,6 +12578,7 @@ void UI_Constructor::stopTxMechanical()
     if (m_auto and !m_tuneup)
         auto_tx_mode(false);
     m_btxok = false;
+    announceTxPending(false); // [txpending] halted: nothing waits now
 
     resetMessage();
 }
