@@ -2220,7 +2220,9 @@ template <typename Mode> class DecodeMode {
 
     void subtractjs8(std::vector<std::complex<float>> const &cref,
                      float const dt) {
-        auto const nstart = static_cast<int>(dt * 12000.0f);
+        // [SUBFILTER] Nearest sample; a plain cast truncates toward zero,
+        // so a negative dt and a positive one were biased opposite ways.
+        auto const nstart = static_cast<int>(std::lround(dt * 12000.0f));
         std::size_t const cref_start =
             (nstart < 0) ? static_cast<std::size_t>(-nstart) : 0;
         std::size_t const dd_start =
@@ -2328,36 +2330,27 @@ template <typename Mode> class DecodeMode {
             }
         }
 
-        // Compute a Hann-like window directly into the real part of the
-        // first NFILT + 1 elements in the filter, accumulating the sum
-        // as we go.
+        // [SUBFILTER 2026-11-14] The subtraction low-pass as a zero-phase
+        // circular-convolution kernel: positive-time taps at the start of
+        // the buffer, negative-time taps wrapped to its end, as 2.2.0's
+        // subtractjs8.f90 lays it out (upstream 691bdb46). The C++ port
+        // rotated the negative half to +NFILT/2+1..+NFILT instead, which
+        // centred the kernel NFILT/2 samples (58 ms) late; bench: a strong
+        // signal lost 5.0 dB per subtraction instead of 21.7 dB, and an
+        // overlapping weak neighbour 16 dB down went from 0/12 to 12/12.
 
         sum = 0.0f;
+        for (int j = -NFILT / 2; j <= NFILT / 2; ++j)
+            sum += std::pow(std::cos(pi * j / NFILT), 2);
 
+        filter.fill(ZERO);
         for (int j = -NFILT / 2; j <= NFILT / 2; ++j) {
-            int const index = j + NFILT / 2;
-            float const value = std::pow(std::cos(pi * j / NFILT), 2);
-
-            filter[index].real(value);
-            sum += value;
+            float const value = std::pow(std::cos(pi * j / NFILT), 2) / sum;
+            std::size_t const index =
+                j >= 0 ? static_cast<std::size_t>(j)
+                       : filter.size() - static_cast<std::size_t>(-j);
+            filter[index] = std::complex<float>(value, 0.0f);
         }
-
-        // Now that we've got the sum, create actual complex numbers using
-        // the normalized real values that we just populated and zero the
-        // rest of the filter.
-
-        std::fill(std::transform(filter.begin(), filter.begin() + NFILT + 1,
-                                 filter.begin(),
-                                 [sum](auto const value) {
-                                     return std::complex<float>(
-                                         value.real() / sum, 0.0f);
-                                 }),
-                  filter.end(), ZERO);
-
-        // Shift to position the window.
-
-        std::rotate(filter.begin(), filter.begin() + NFILT / 2,
-                    filter.begin() + NFILT + 1);
 
         // Transform the filter into the frequency domain.
 
@@ -2657,13 +2650,22 @@ template <typename Mode> class DecodeMode {
         // PLACE, not one per codeword. [STATIONSPLIT 2026-09-30]
 
         std::size_t emitted = 0;
-        for (auto const &[decode, instances] : decodes) {
+        for (auto &[decode, instances] : decodes) {
             // Bounded: fires only for a codeword that genuinely had more
             // than one place, which is the whole point of the change.
             if (instances.size() > 1)
                 qWarning() << "[STATIONSPLIT] emitting" << instances.size()
                            << "stations sharing one codeword, submode"
                            << Mode::NSUBMODE;
+            // [FROMTO 2026-11-12] Strongest place first. The dupe cache
+            // keeps the FIRST copy of a FROM: TO frame and drops the rest
+            // at any place, so the first must be the true signal, not a
+            // weak false copy (W0IFM answered W1NEM's one "@MAGNET SNR?"
+            // five times: +31 real, -20..-27 copies, TODO #302).
+            std::stable_sort(instances.begin(), instances.end(),
+                             [](Best const &a, Best const &b) {
+                                 return a.snr > b.snr;
+                             });
             for (auto const &best : instances) {
                 emitEvent(JS8::Event::Decoded{
                     data.params.nutc, best.snr, best.xdt - Mode::ASTART,

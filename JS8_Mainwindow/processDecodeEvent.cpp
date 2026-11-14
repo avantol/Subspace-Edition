@@ -10,6 +10,20 @@
 #include "JS8_Main/NativeBinary.h"
 #include "JS8_Main/ArqMonitor.h"
 
+// [ONESENDER 2026-11-14] Record `offset` as a false copy of `kept` (see
+// CopyPlace), or refresh the record if there is one.
+void UI_Constructor::markCopyPlace(int submode, int offset, int kept, int tol) {
+    auto const now = QDateTime::currentDateTimeUtc();
+    for (auto &c : m_copyPlaces) {
+        if (c.submode == submode && std::abs(c.offset - offset) <= tol &&
+            std::abs(c.kept - kept) <= tol) {
+            c.when = now;
+            return;
+        }
+    }
+    m_copyPlaces.push_back({submode, offset, kept, now});
+}
+
 void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
 
     std::visit(
@@ -124,6 +138,32 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 int const evOffset = decodedtext.frequencyOffset();
                 int const placeTol =
                     JS8::Submode::rxThreshold(decodedtext.submode());
+                // [ONESENDER 2026-11-14, operator-ruled, TODO #302; was
+                // FROMTO 2026-11-12, FROM: TO only] A frame that NAMES ITS
+                // SENDER -- FROM: TO, heartbeat, CQ, the compound sender
+                // frame -- is one transmission wherever it lands: no second
+                // station can send it, and its sender cannot send it twice
+                // at once. So for these the time/position test alone
+                // decides, at ANY place. A very strong signal also decodes
+                // as weak false copies (mostly k * 120 Hz away), and each
+                // was answered (W0IFM answered W1NEM's one "@MAGNET SNR?"
+                // five times, 12 Nov 12:43-12:44 -- a compound sender frame
+                // then a frame with no sender). ALL.TXT copies by kind:
+                // FROM: TO 66, heartbeat 20, CQ 9, sender frame 4. The
+                // decoder emits the strongest place first, so the copy kept
+                // is the true one. The copy's place is then recorded
+                // (m_copyPlaces) so its frames WITHOUT a sender go too --
+                // but only where the same content is at the true place in
+                // the same transmission. Frames with no sender at any other
+                // place keep the per-place rule: ten stations sending the
+                // same "STORED" are ten stations.
+                // The "<....>" placeholder sender is not a sender.
+                bool const namesSender =
+                    (decodedtext.frameType() == Varicode::FrameDirected &&
+                     decodedtext.isDirectedMessage() &&
+                     !decodedtext.directedMessage().first().startsWith('<')) ||
+                    decodedtext.isHeartbeat() ||
+                    decodedtext.frameType() == Varicode::FrameCompound;
                 if (auto const it = m_messageDupeCache.find(dedupeKey);
                     it != m_messageDupeCache.end()) {
                     auto const now = QDateTime::currentDateTimeUtc();
@@ -139,9 +179,12 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                         (decodedtext.submode() == Varicode::JS8CallFT2)
                             ? 12.0
                             : 0.5 * JS8::Submode::period(decodedtext.submode());
-                    if (auto const *place = it->second.find(evOffset, placeTol)) {
-                        for (int i = 0; i < place->n; ++i) {
-                            auto const &o = place->occ[i];
+                    // The same transmission: same ring position, or (no
+                    // position) seen within the window.
+                    auto const dupeIn =
+                        [&](FramePlace const &p) -> FrameOccurrence const * {
+                        for (int i = 0; i < p.n; ++i) {
+                            auto const &o = p.occ[i];
                             bool dupe;
                             if (ev.absPos > 0 && o.absPos > 0) {
                                 dupe = std::llabs(ev.absPos - o.absPos)
@@ -149,20 +192,76 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                             } else {
                                 dupe = o.when.secsTo(now) < window;
                             }
-                            if (dupe) {
-                                // Promoted from qCDebug 2026-09-30: this
-                                // drop never reached the diagnostic log.
+                            if (dupe)
+                                return &o;
+                        }
+                        return nullptr;
+                    };
+                    auto const *place = it->second.find(evOffset, placeTol);
+                    if (place) {
+                        if (auto const *o = dupeIn(*place)) {
+                            // Promoted from qCDebug 2026-09-30: this
+                            // drop never reached the diagnostic log.
+                            qCWarning(mainwindow_js8)
+                                << "[DECODE-EVENT] DUPLICATE, skipping frame="
+                                << decodedtext.frame()
+                                << "absPos=" << ev.absPos
+                                << "matched=" << o->absPos
+                                << "offset=" << evOffset
+                                << "age=" << o->when.secsTo(now) << "s";
+                            return;
+                        }
+                    }
+                    if (namesSender) {
+                        for (auto const &p : it->second.places) {
+                            if (&p == place)
+                                continue;
+                            if (auto const *o = dupeIn(p)) {
+                                // Bounded: one line per false copy dropped.
                                 qCWarning(mainwindow_js8)
-                                    << "[DECODE-EVENT] DUPLICATE, skipping frame="
+                                    << "[DECODE-EVENT] DUPLICATE sender frame"
+                                       " at another place, skipping frame="
                                     << decodedtext.frame()
-                                    << "absPos=" << ev.absPos
-                                    << "matched=" << o.absPos
+                                    << "msg=" << decodedtext.message()
                                     << "offset=" << evOffset
-                                    << "age=" << o.when.secsTo(now) << "s";
+                                    << "snr=" << decodedtext.snr()
+                                    << "kept offset=" << p.offset
+                                    << "absPos=" << ev.absPos
+                                    << "matched=" << o->absPos
+                                    << "age=" << o->when.secsTo(now) << "s";
+                                markCopyPlace(decodedtext.submode(), evOffset,
+                                              p.offset, placeTol);
                                 return;
                             }
                         }
                     } else {
+                        // No sender: dropped only at a place already proven
+                        // a copy, and only if the same content is at that
+                        // copy's true place in the same transmission.
+                        for (auto const &c : m_copyPlaces) {
+                            if (c.submode != decodedtext.submode() ||
+                                std::abs(c.offset - evOffset) > placeTol)
+                                continue;
+                            auto const *kp = it->second.find(c.kept, placeTol);
+                            if (!kp || kp == place)
+                                continue;
+                            if (auto const *o = dupeIn(*kp)) {
+                                qCWarning(mainwindow_js8)
+                                    << "[DECODE-EVENT] DUPLICATE at a copy"
+                                       " place, skipping frame="
+                                    << decodedtext.frame()
+                                    << "msg=" << decodedtext.message()
+                                    << "offset=" << evOffset
+                                    << "snr=" << decodedtext.snr()
+                                    << "kept offset=" << kp->offset
+                                    << "absPos=" << ev.absPos
+                                    << "matched=" << o->absPos
+                                    << "age=" << o->when.secsTo(now) << "s";
+                                return;
+                            }
+                        }
+                    }
+                    if (!place) {
                         // One line per NEW place, not one per other station.
                         qCWarning(mainwindow_js8)
                             << "[DECODE-EVENT] kept: same content, new place --"
@@ -190,6 +289,13 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                 m_messageDupeCache[dedupeKey].add(
                     {QDateTime::currentDateTimeUtc(), ev.absPos, evOffset},
                     placeTol);
+
+                // [ONESENDER] The true place is still transmitting: its
+                // copies' records stay.
+                for (auto &c : m_copyPlaces)
+                    if (c.submode == decodedtext.submode() &&
+                        std::abs(c.kept - evOffset) <= placeTol)
+                        c.when = QDateTime::currentDateTimeUtc();
 
                 // [TODO #107] Native-binary (V3) frame: hand the raw
                 // 72 bits to the binary reassembler and STOP. The

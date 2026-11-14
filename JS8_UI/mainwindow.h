@@ -2054,6 +2054,19 @@ class UI_Constructor : public QMainWindow {
     using FrameCache =
         std::unordered_map<FrameCacheKey, FrameCacheEntry,
                            FrameCacheKey::Hash>;
+    // [ONESENDER 2026-11-14] A place proven to be a false copy of another:
+    // a frame naming its sender was decoded here AND at `kept` in the same
+    // transmission. Frames without a sender at this place are dropped while
+    // the same content is at `kept` in the same transmission. `when` is
+    // refreshed by every frame accepted at `kept`; the record goes two
+    // periods after the last one -- a transmission's next frame starts one
+    // period later and is decoded before that period ends.
+    struct CopyPlace {
+        int submode;
+        int offset;      // the copy, audio Hz
+        int kept;        // the true place, audio Hz
+        QDateTime when;  // last frame accepted at `kept`
+    };
     using BandActivity = QMap<int, QList<ActivityDetail>>;
 
     // [bandcall] Band activity column indices -- ONE authority for the
@@ -2072,6 +2085,8 @@ class UI_Constructor : public QMainWindow {
 
     QQueue<DecodeParams> m_decoderQueue;
     FrameCache m_messageDupeCache;  // submode, frame -> date seen
+    std::vector<CopyPlace> m_copyPlaces;  // [ONESENDER] see CopyPlace
+    void markCopyPlace(int submode, int offset, int kept, int tol);
     QVariantMap m_showColumnsCache; // table column:key -> show boolean
     QVariantMap m_sortCache;        // table key -> sort by
     // [bandcall] Band activity listing mode: "offset" (classic, one

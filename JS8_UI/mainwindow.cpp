@@ -3611,6 +3611,11 @@ void UI_Constructor::decodeDone() {
                newest.secsTo(QDateTime::currentDateTimeUtc()) >
                    JS8::Submode::period(it.first.submode);
     });
+    // [ONESENDER] two periods after the true place's last frame (CopyPlace).
+    std::erase_if(m_copyPlaces, [](auto const &c) {
+        return c.when.secsTo(QDateTime::currentDateTimeUtc()) >
+               2 * static_cast<qint64>(JS8::Submode::period(c.submode));
+    });
 
     decodeBusy(false);
 }
