@@ -979,6 +979,9 @@ class UI_Constructor : public QMainWindow {
     /** Update the clock shown. */
     void updateClockUI(const QDateTime &);
 
+    /** Decide the status bar's TX/RX label (the one place that does). */
+    void updateTxStatusLabel();
+
     void setFreq(int);
     void transmit();
 

@@ -3576,7 +3576,7 @@ void UI_Constructor::decodeBusy(bool b) // decodeBusy()
     m_decoderBusy = b;
 
     if (m_decoderBusy) {
-        tx_status_label.setText("Decoding");
+        updateTxStatusLabel();
 
         m_decoderBusyStartTime = QDateTime::
             currentDateTimeUtc(); // DriftingDateTime::currentDateTimeUtc();
@@ -5250,6 +5250,62 @@ void UI_Constructor::updateClockUI(const QDateTime &now) {
     ui->labUTC->setText(parts.join("\n"));
 }
 
+// [study onelabel, operator 2026-11-20] The one place that decides the status
+// bar's TX/RX label: called once per second (guiUpdate) and at every decode
+// start (decodeBusy). decodeBusy used to write "Decoding" itself, over
+// whatever the label said, so "TX waits for ...", "TX disabled by ..." and
+// "Tx: ..." alternated with "Decoding" about twice a second (measured on the
+// bench: two changes per second for the whole of a message's wait).
+void UI_Constructor::updateTxStatusLabel() {
+    if (m_transmitting) {
+        tx_status_label.setStyleSheet(
+            "QLabel{background-color: #ff2222; color:#000}");
+        if (m_tune) {
+            tx_status_label.setText("Tx: TUNE");
+        } else {
+            auto message =
+                DecodedText(msgsent, msgibits, m_nSubMode).message();
+            tx_status_label.setText(
+                QString("Tx: %1").arg(message).left(40).trimmed());
+        }
+    } else if (m_monitoring) {
+        if (m_tx_watchdog) {
+            tx_status_label.setStyleSheet(
+                "QLabel{background-color: #000; color:#fff}");
+            tx_status_label.setText("Idle timeout");
+        } else if (m_txDisabledRemote && !ui->monitorTxButton->isChecked()) {
+            // [txquery, operator 2026-10-28] the station is off the
+            // air on an outside program's order (phone, arbiter), not
+            // the operator's; shown until TX enable changes again
+            tx_status_label.setStyleSheet(
+                "QLabel{background-color: #ffbf00; color:#000}");
+            tx_status_label.setText(QStringLiteral("TX disabled by %1").arg(m_txHoldReason));
+        } else if (m_askWaitingId != 0) {
+            // [study askgrant] the message waits for the Arbiter's grant
+            tx_status_label.setStyleSheet(
+                "QLabel{background-color: #ffbf00; color:#000}");
+            tx_status_label.setText(
+                m_askWaitReason.isEmpty()
+                    ? QStringLiteral("TX waits for the Arbiter")
+                    : QStringLiteral("TX waits for %1").arg(m_askWaitReason));
+        } else if (m_autoDisabledRemote && !ui->actionModeAutoreply->isChecked()) {
+            // [autoset] the soft hold: no auto-replies on an outside
+            // program's order, the operator may still send
+            tx_status_label.setStyleSheet(
+                "QLabel{background-color: #ffbf00; color:#000}");
+            tx_status_label.setText(QStringLiteral("Autoreply disabled by %1").arg(m_autoHoldReason));
+        } else {
+            tx_status_label.setStyleSheet(
+                "QLabel{background-color: #22ff22}");
+            tx_status_label.setText(m_decoderBusy ? "Decoding"
+                                                  : "Receiving");
+        }
+    } else if (!m_tx_watchdog) {
+        tx_status_label.setStyleSheet("");
+        tx_status_label.setText("");
+    }
+}
+
 //------------------------------------------------------------- //guiUpdate()
 void UI_Constructor::guiUpdate() {
     unsigned period = JS8::Submode::period(m_nSubMode);
@@ -5303,54 +5359,11 @@ void UI_Constructor::guiUpdate() {
             progressBar.setValue(0);
         }
 
+        updateTxStatusLabel();
         if (m_transmitting) {
-            tx_status_label.setStyleSheet(
-                "QLabel{background-color: #ff2222; color:#000}");
-            if (m_tune) {
-                tx_status_label.setText("Tx: TUNE");
-            } else {
-                auto message =
-                    DecodedText(msgsent, msgibits, m_nSubMode).message();
-                tx_status_label.setText(
-                    QString("Tx: %1").arg(message).left(40).trimmed());
-            }
             transmitDisplay(true);
         } else if (m_monitoring) {
-            if (m_tx_watchdog) {
-                tx_status_label.setStyleSheet(
-                    "QLabel{background-color: #000; color:#fff}");
-                tx_status_label.setText("Idle timeout");
-            } else if (m_txDisabledRemote && !ui->monitorTxButton->isChecked()) {
-                // [txquery, operator 2026-10-28] the station is off the
-                // air on an outside program's order (phone, arbiter), not
-                // the operator's; shown until TX enable changes again
-                tx_status_label.setStyleSheet(
-                    "QLabel{background-color: #ffbf00; color:#000}");
-                tx_status_label.setText(QStringLiteral("TX disabled by %1").arg(m_txHoldReason));
-            } else if (m_askWaitingId != 0) {
-                // [study askgrant] the message waits for the Arbiter's grant
-                tx_status_label.setStyleSheet(
-                    "QLabel{background-color: #ffbf00; color:#000}");
-                tx_status_label.setText(
-                    m_askWaitReason.isEmpty()
-                        ? QStringLiteral("TX waits for the Arbiter")
-                        : QStringLiteral("TX waits for %1").arg(m_askWaitReason));
-            } else if (m_autoDisabledRemote && !ui->actionModeAutoreply->isChecked()) {
-                // [autoset] the soft hold: no auto-replies on an outside
-                // program's order, the operator may still send
-                tx_status_label.setStyleSheet(
-                    "QLabel{background-color: #ffbf00; color:#000}");
-                tx_status_label.setText(QStringLiteral("Autoreply disabled by %1").arg(m_autoHoldReason));
-            } else {
-                tx_status_label.setStyleSheet(
-                    "QLabel{background-color: #22ff22}");
-                tx_status_label.setText(m_decoderBusy ? "Decoding"
-                                                      : "Receiving");
-            }
             transmitDisplay(false);
-        } else if (!m_tx_watchdog) {
-            tx_status_label.setStyleSheet("");
-            tx_status_label.setText("");
         }
 
         auto callLabel = m_config.my_callsign();
