@@ -903,6 +903,50 @@ if(type == "STATION.SET_SPOT") {
         remotePushChanged();
         return;
     }
+    /** @brief TX.SET_ASK / TX.GRANT: [study askgrant 2026-11-20] ask
+     * before transmitting, for an arbiter. TX.SET_ASK {ASK true, LEASE_MS}
+     * switches the asking on for LEASE_MS (sent again = renewed; ASK false
+     * or no renewal = off, and a frame that waits keys at its slot as
+     * before). Reply TX.ASKING with OK, ASK. While it is on, the first
+     * frame of a message waits in prepareSending and the event TX.ASK
+     * (_ID -1) {ASK_ID, ASKING true, KEYUP_IN_MS} says so; TX.ASK
+     * {ASK_ID, ASKING false} follows when that message no longer asks or,
+     * once granted, is over. TX.GRANT {ASK_ID, GRANT true} lets the
+     * message key; {GRANT false, REASON} only names what it waits for
+     * (status bar). Reply TX.GRANT with OK (false: no message with that
+     * ASK_ID waits), ASK_ID, GRANTED. Not asked: Tune and ARQ.
+     */
+    if (type == "TX.SET_ASK") {
+        int const leaseMs = message.params().value("LEASE_MS").toInt();
+        bool const on = message.params().value("ASK").toBool() && leaseMs > 0;
+        if (on == m_askLease.hasExpired())
+            qWarning() << "[TX-ASK] asking switched" << (on ? "on" : "off");
+        m_askLease.setRemainingTime(on ? leaseMs : 0);
+        sendNetworkMessage("TX.ASKING", "",
+                           {{"_ID", id}, {"OK", true}, {"ASK", on}});
+        return;
+    }
+    if (type == "TX.GRANT") {
+        qint64 const askId = message.params().value("ASK_ID").toLongLong();
+        bool const grant = message.params().value("GRANT").toBool();
+        bool const ok = askId != 0 && askId == m_askWaitingId;
+        if (ok && grant) {
+            m_askGrantedId = askId;
+            m_askWaitingId = 0;
+            m_askWaitReason.clear();
+            qWarning() << "[TX-ASK]" << askId << "granted";
+        } else if (ok) {
+            m_askWaitReason =
+                message.params().value("REASON").toString().simplified().left(40);
+            qWarning() << "[TX-ASK]" << askId << "waits for" << m_askWaitReason;
+        }
+        sendNetworkMessage("TX.GRANT", "",
+                           {{"_ID", id},
+                            {"OK", ok},
+                            {"ASK_ID", QVariant(askId)},
+                            {"GRANTED", ok && grant}});
+        return;
+    }
     /** @brief TX.GET_AUTOREPLY / TX.SET_AUTOREPLY: [autoset, operator
      * 2026-10-28] the Autoreply switch (Mode > Enable Autoreply, the
      * AUTO gate), same shape as TX.GET_ENABLED / TX.SET_ENABLED: the

@@ -79,6 +79,7 @@
 #include <QTextBlockUserData>
 #include <QDir>
 #include <QDockWidget>
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QHash>
@@ -2473,6 +2474,16 @@ class UI_Constructor : public QMainWindow {
     void announceTxPending(bool pending, qint64 keyupInMs = 0);
     bool m_txPendingAnnounced = false;
     qint64 m_txPendingSlot = -1;      // slot last announced
+    // [study askgrant 2026-11-20] ask before transmitting: while an API
+    // client (the Arbiter) keeps the asking switched on (TX.SET_ASK, a lease
+    // it renews), the first frame of a message waits in prepareSending for
+    // TX.GRANT; the grant lasts until the message is over (stopTxMechanical)
+    void askEnd(char const *why);     // TX.ASK, ASKING false
+    QDeadlineTimer m_askLease;        // the asking is on until this runs out
+    qint64 m_askSerial = 0;           // the last ASK_ID given out
+    qint64 m_askWaitingId = 0;        // the message that waits for its grant (0 = none)
+    qint64 m_askGrantedId = 0;        // the granted message, until it is over (0 = none)
+    QString m_askWaitReason;          // what it waits for, as the client said
     bool m_pttHeldBetweenFrames = false; // stopTx2 kept PTT down (Hold PTT)
     bool holdPttForNextFrame() const;  // stopTx2's rule, shared
     // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button

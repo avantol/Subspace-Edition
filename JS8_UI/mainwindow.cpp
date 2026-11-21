@@ -4486,6 +4486,22 @@ void UI_Constructor::announceTxPending(bool pending, qint64 keyupInMs) {
     }
 }
 
+// [study askgrant 2026-11-20] TX.ASK (_ID -1) with ASKING false: the message
+// that waited no longer asks, or the granted message is over. Sent once.
+void UI_Constructor::askEnd(char const *why) {
+    qint64 const id = m_askWaitingId != 0 ? m_askWaitingId : m_askGrantedId;
+    if (id == 0) return;
+    qWarning() << "[TX-ASK]" << id
+               << (m_askGrantedId != 0 ? "granted message over:" : "no longer asks:")
+               << why;
+    m_askWaitingId = m_askGrantedId = 0;
+    m_askWaitReason.clear();
+    sendNetworkMessage("TX.ASK", "",
+                       {{"_ID", QVariant(-1)},
+                        {"ASK_ID", QVariant(id)},
+                        {"ASKING", false}});
+}
+
 void UI_Constructor::prepareSending(qint64 nowMS) {
     // TX Duration in seconds.
     const double tx_duration = JS8::Submode::txDuration(m_nSubMode);
@@ -4646,10 +4662,45 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
         m_lastTxStartTime.msecsTo(DriftingDateTime::currentDateTimeUtc())
             >= MIN_ARQ_PTT_INTERVAL_MS;
 
+    // [study askgrant 2026-11-20] Ask before transmitting. While the asking
+    // is on (TX.SET_ASK, a lease the Arbiter renews), the first frame of a
+    // message does not key until TX.GRANT names its ASK_ID; the grant covers
+    // every frame of the message and ends in stopTxMechanical. Not asked:
+    // Tune, and any frame while an ARQ session is in flight or being
+    // negotiated (operator 2026-11-20: ARQ is not part of the scheme yet).
+    // No Arbiter: the lease runs out, the waiting frame keys at its slot as
+    // before, and the ask is taken back. While a frame waits for its grant
+    // there is no flrig reservation and no TX.PENDING: nothing is claimed
+    // before the grant.
+    bool const askArq = m_chunkedArq && (m_chunkedArq->hasActiveSession() ||
+                                         m_chunkedArq->isNegotiating());
+    bool const askApplies =
+        !m_askLease.hasExpired() && !m_tune && !askArq && msgLength > 0;
+    if (m_iptt == 0 && askApplies && m_askGrantedId == 0 &&
+        m_askWaitingId == 0) {
+        m_askWaitingId = ++m_askSerial;
+        qint64 const keyupInMs =
+            (arqFullRelax || jttyAsync || time_is_in_tx_delay)
+                ? 0
+                : std::llround((period - tx_delay - seconds_into_the_period) *
+                               1000.0);
+        qWarning() << "[TX-ASK]" << m_askWaitingId
+                   << "asks, key-up in" << keyupInMs << "ms";
+        sendNetworkMessage("TX.ASK", "",
+                           {{"_ID", QVariant(-1)},
+                            {"ASK_ID", QVariant(m_askWaitingId)},
+                            {"ASKING", true},
+                            {"KEYUP_IN_MS", QVariant(keyupInMs)}});
+    } else if (m_askWaitingId != 0 && !askApplies && msgLength > 0) {
+        askEnd(m_askLease.hasExpired() ? "the asking ran out, the frame keys at its slot"
+                                       : "ARQ or Tune began");
+    }
+    bool const askOk = !askApplies || m_askGrantedId != 0;
+
     // [operator 2026-10-25] flrig PTT reservation, slotted sends: a slotted
     // key-up happens at (period - tx_delay) into the period, so it can be
     // announced kFlrigReserveLeadS ahead -- once per slot.
-    if (m_iptt == 0 && msgLength > 0 && !m_tune && !arqFullRelax &&
+    if (m_iptt == 0 && askOk && msgLength > 0 && !m_tune && !arqFullRelax &&
         !jttyAsync && !time_is_in_tx_delay && !m_pttHeldBetweenFrames &&
         period - tx_delay - kFlrigReserveLeadS <= seconds_into_the_period) {
         qint64 const slot = nowMS / periodMS;
@@ -4668,7 +4719,7 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     // Not for un-slotted sends (ARQ relax, JTTY, Tune): they key at once and
     // RIG.PTT is their notice. Never while TX is off: a held station sends
     // nothing, so it claims nothing.
-    if (m_iptt == 0 && msgLength > 0 && !m_tune && !arqFullRelax &&
+    if (m_iptt == 0 && askOk && msgLength > 0 && !m_tune && !arqFullRelax &&
         !jttyAsync && ensureCanTransmit()) {
         qint64 const slot = nowMS / periodMS;
         if (!m_txPendingAnnounced || slot != m_txPendingSlot) {
@@ -4692,7 +4743,7 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     // Non-ARQ TX (arqFullRelax=false) keeps original period-aligned
     // behaviour unchanged — the AND-with-arqIntervalOK only short-
     // circuits the floor enforcement when ARQ is active anyway.
-    if (m_iptt == 0 &&
+    if (m_iptt == 0 && askOk &&
         (m_tune || (arqFullRelax && msgLength > 0 && arqIntervalOK) ||
          // [audit L1] the un-slotted JTTY send keys at once, ahead of
          // the once-per-second WSPR guard: it checks the band itself
@@ -5276,6 +5327,14 @@ void UI_Constructor::guiUpdate() {
                 tx_status_label.setStyleSheet(
                     "QLabel{background-color: #ffbf00; color:#000}");
                 tx_status_label.setText(QStringLiteral("TX disabled by %1").arg(m_txHoldReason));
+            } else if (m_askWaitingId != 0) {
+                // [study askgrant] the message waits for the Arbiter's grant
+                tx_status_label.setStyleSheet(
+                    "QLabel{background-color: #ffbf00; color:#000}");
+                tx_status_label.setText(
+                    m_askWaitReason.isEmpty()
+                        ? QStringLiteral("TX waits for the Arbiter")
+                        : QStringLiteral("TX waits for %1").arg(m_askWaitReason));
             } else if (m_autoDisabledRemote && !ui->actionModeAutoreply->isChecked()) {
                 // [autoset] the soft hold: no auto-replies on an outside
                 // program's order, the operator may still send
@@ -12584,6 +12643,7 @@ void UI_Constructor::stopTxMechanical()
         auto_tx_mode(false);
     m_btxok = false;
     announceTxPending(false); // [txpending] halted: nothing waits now
+    askEnd("message over or halted"); // [study askgrant]
 
     resetMessage();
 }
