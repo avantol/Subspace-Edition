@@ -581,6 +581,8 @@ UI_Constructor::UI_Constructor(QString const &program_info,
             &UI_Constructor::handle_audio_device_gone);
     connect(m_audioWatch, &AudioDeviceWatch::deviceBack, this,
             &UI_Constructor::handle_audio_device_back);
+    connect(m_audioWatch, &AudioDeviceWatch::playbackDevicesChanged, this,
+            &UI_Constructor::handle_playback_devices_changed);
     connect(this, &UI_Constructor::rebuildAudioInput, m_soundInput,
             &SoundInput::rebuild);
     connect(this, &UI_Constructor::rebuildAudioOutput, m_soundOutput,

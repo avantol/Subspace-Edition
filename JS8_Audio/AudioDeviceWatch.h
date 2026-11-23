@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QElapsedTimer>
 
 #include "JS8_Audio/AudioDeviceInfo.h"
@@ -51,10 +52,24 @@ class AudioDeviceWatch : public QObject {
 
     Q_SIGNAL void deviceGone(QString what, int seconds) const;
     Q_SIGNAL void deviceBack(QString what) const;
+    // [field 2026-11-20, W5TTA] The LIST of playback devices changed while
+    // the configured one stayed present (devices on a USB hub left and
+    // came back; the radio's codec is on another port). From 09:33 to
+    // 12:31 CST every transmission keyed the radio with no audio: the one
+    // playback stream opened the evening before took the frames and
+    // nothing reached the codec, with no error and no device missing.
+    // A Tune press that opened a new stream cured it. So a change of the
+    // list retires the playback stream the same way a returned device
+    // does: flagged at once (no warm start on it), then this signal every
+    // poll until the main window has rebuilt the playback stream and
+    // called acknowledge(). The capture stream is not touched: its own
+    // check (stopped device) covers it, and a rebuild costs received audio.
+    Q_SIGNAL void playbackDevicesChanged(QString what) const;
 
   private:
     Q_SLOT void poll();
     bool present(AudioDeviceInfo const &info, bool playback);
+    QStringList playbackNames();   // sorted; empty = cannot tell now
 
     SoundInput  *m_input;
     SoundOutput *m_output;
@@ -66,6 +81,9 @@ class AudioDeviceWatch : public QObject {
     bool          m_gone = false;
     QElapsedTimer m_goneSince;
     QString       m_what;
+    QStringList   m_playNames;      // the playback devices at the last poll
+    bool          m_changed = false;
+    QString       m_changedWhat;
 };
 
 #endif

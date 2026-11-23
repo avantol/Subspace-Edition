@@ -35,8 +35,10 @@ void AudioDeviceWatch::setDevices(AudioDeviceInfo const &capture,
     m_capture  = capture;
     m_playback = playback;
     m_gone     = false;
+    m_changed  = false;
     if (m_output) m_output->setDeviceGone(false);
     if (!m_ctxOk) return;
+    m_playNames = playbackNames();   // the list these streams were opened under
     if (!m_timer) {
         m_timer = new QTimer{this};
         connect(m_timer, &QTimer::timeout, this, &AudioDeviceWatch::poll);
@@ -46,7 +48,25 @@ void AudioDeviceWatch::setDevices(AudioDeviceInfo const &capture,
 
 void AudioDeviceWatch::acknowledge() {
     m_gone = false;
+    m_changed = false;
     if (m_output) m_output->setDeviceGone(false);
+}
+
+// Every playback device the audio system lists now, by name and id.
+QStringList AudioDeviceWatch::playbackNames() {
+    ma_device_info *playInfos = nullptr, *capInfos = nullptr;
+    ma_uint32 playCount = 0, capCount = 0;
+    if (ma_context_get_devices(&m_ctx, &playInfos, &playCount, &capInfos,
+                               &capCount) != MA_SUCCESS)
+        return {};                    // cannot tell: never a false alarm
+    QStringList names;
+    for (ma_uint32 i = 0; i < playCount; ++i)
+        names << QString::fromUtf8(playInfos[i].name) + " ["
+                     + QString::fromLatin1(QByteArray(
+                           reinterpret_cast<char const *>(&playInfos[i].id),
+                           sizeof(ma_device_id)).toHex().left(16)) + "]";
+    names.sort();
+    return names;
 }
 
 // The same match SoundInput/SoundOutput use to open a device: the
@@ -82,7 +102,27 @@ void AudioDeviceWatch::poll() {
         if (!inPresent)       what = tr("capture %1 gone").arg(m_capture.description);
         else if (!outPresent) what = tr("playback %1 gone").arg(m_playback.description);
         else if (!inStarted)  what = tr("capture %1 stopped").arg(m_capture.description);
-        if (what.isEmpty()) return;
+        // The configured devices are there. Did the list of playback
+        // devices change since the last poll? Then the playback stream is
+        // retired (see playbackDevicesChanged in the header).
+        QStringList const names = playbackNames();
+        if (!names.isEmpty()) {
+            if (what.isEmpty() && !m_playNames.isEmpty() && names != m_playNames) {
+                QStringList gone, come;
+                for (QString const &n : m_playNames) if (!names.contains(n)) gone << n;
+                for (QString const &n : names) if (!m_playNames.contains(n)) come << n;
+                m_changed = true;
+                m_changedWhat = (gone.isEmpty() ? QString() : "gone: " + gone.join(", "))
+                                + (gone.isEmpty() || come.isEmpty() ? "" : "; ")
+                                + (come.isEmpty() ? QString() : "new: " + come.join(", "));
+                if (m_output) m_output->setDeviceGone(true);   // no warm start on this stream
+            }
+            m_playNames = names;
+        }
+        if (what.isEmpty()) {
+            if (m_changed) Q_EMIT playbackDevicesChanged(m_changedWhat);   // every poll until acknowledged
+            return;
+        }
         m_gone = true;
         m_what = what;
         m_goneSince.start();

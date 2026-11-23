@@ -755,6 +755,7 @@ class UI_Constructor : public QMainWindow {
     void handle_transceiver_not_answering(bool stalled, int seconds); // [#332]
     void handle_audio_device_gone(QString what, int seconds);          // [#335]
     void handle_audio_device_back(QString what);                       // [#335]
+    void handle_playback_devices_changed(QString what);                // [W5TTA 11-20]
     void band_changed();
     void monitor(bool);
     void end_tuning();

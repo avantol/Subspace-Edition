@@ -13165,6 +13165,21 @@ void UI_Constructor::handle_audio_device_back(QString what) {
     audio_status_label.hide();
 }
 
+// [field 2026-11-20, W5TTA] The list of playback devices changed while the
+// configured one stayed present: the playback stream is retired and a new
+// one warmed, never under a send (the watch asks again at its next poll).
+// The capture stream is left alone. See AudioDeviceWatch.h.
+void UI_Constructor::handle_playback_devices_changed(QString what) {
+    if (m_transmitting || m_tune || m_iptt) {
+        return; // the watch asks again at its next poll
+    }
+    Q_EMIT rebuildAudioOutput();
+    Q_EMIT warmStartAudioOutput(m_soundOutput, m_config.audio_output_channel());
+    Q_EMIT audioDevicesRebuilt();
+    qWarning() << "[AUDIO] playback devices changed (" << what
+               << "); playback stream rebuilt";
+}
+
 void UI_Constructor::handle_transceiver_failure(QString const &reason) {
     rig_status_label.hide(); // [#332] the failure box takes over
     update_dynamic_property(ui->readFreq, "state", "error");
