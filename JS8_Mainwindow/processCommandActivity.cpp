@@ -116,6 +116,11 @@ void UI_Constructor::processCommandActivity() {
         if (toMe)
             markOffsetDirected(d.offset, /*isAllCall=*/false, &d.from,
                                /*exact=*/false);
+        // [study replywait] a whole message addressed to us is in: a
+        // standing reply wait is over (whoever sent it; CHOSEN for this
+        // study: the sender is not compared with the station we asked)
+        if (toMe)
+            replyWait(false, "a message addressed to us is complete");
 
         // log call activity BEFORE the command-allowed gate so even
         // unrecognized directed commands refresh the sender's SNR in the

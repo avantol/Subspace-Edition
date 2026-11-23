@@ -4488,18 +4488,91 @@ void UI_Constructor::announceTxPending(bool pending, qint64 keyupInMs) {
 
 // [study askgrant 2026-11-20] TX.ASK (_ID -1) with ASKING false: the message
 // that waited no longer asks, or the granted message is over. Sent once.
-void UI_Constructor::askEnd(char const *why) {
+// [study replywait 2026-11-21] The end report of a granted message says how
+// long its reply is waited for (REPLY_MS, 0 = none); the client keeps the
+// radio ours for that long.
+void UI_Constructor::askEnd(char const *why, int replyMs) {
     qint64 const id = m_askWaitingId != 0 ? m_askWaitingId : m_askGrantedId;
     if (id == 0) return;
+    bool const granted = m_askGrantedId != 0;
+    if (!granted) replyMs = 0;
     qWarning() << "[TX-ASK]" << id
-               << (m_askGrantedId != 0 ? "granted message over:" : "no longer asks:")
-               << why;
+               << (granted ? "granted message over:" : "no longer asks:")
+               << why << "reply wait" << replyMs << "ms";
     m_askWaitingId = m_askGrantedId = 0;
     m_askWaitReason.clear();
-    sendNetworkMessage("TX.ASK", "",
+    m_replyWaitId = replyMs > 0 ? id : 0;
+    m_replyWaitUntil.setRemainingTime(replyMs);
+    QVariantMap params{{"_ID", QVariant(-1)},
+                       {"ASK_ID", QVariant(id)},
+                       {"ASKING", false}};
+    if (granted) params["REPLY_MS"] = QVariant(replyMs);
+    sendNetworkMessage("TX.ASK", "", params);
+}
+
+// [study replywait 2026-11-21, operator: a message that expects a reply
+// keeps the radio for its reply allowance] THE one place that says whether
+// a message just sent expects a reply, and for how long from the end of our
+// transmission. Expects one (operator's choice 2026-11-21): a CQ; a directed
+// command the addressed station answers by itself (Varicode's autoreply
+// set: the queries, and MSG / MSG TO: which draw an ACK). Expects none:
+// ACK and NACK (they are replies), a heartbeat, plain text, and a relayed
+// message (CHOSEN for this study: its answer returns over several hops,
+// minutes later, see kQCallReplyWindowMs). The time is the one-frame reply
+// budget every other reply wait uses (ChunkedArq::ackTimeoutMsForSubmode);
+// a reply longer than one frame renews it frame by frame (replyWait).
+int UI_Constructor::replyWaitMsFor(QString const &sent) const {
+    QString msg = sent.toUpper().simplified();
+    static QRegularExpression const kSelfPrefix{
+        QStringLiteral(R"(^[A-Z0-9/]+:\s*)")};
+    if (auto const pm = kSelfPrefix.match(msg); pm.hasMatch())
+        msg = msg.mid(pm.capturedLength()).trimmed();
+    int const budget = ChunkedArq::ackTimeoutMsForSubmode(m_nSubMode);
+    QString body = msg;
+    if (body.startsWith(QStringLiteral("@ALLCALL ")))
+        body = body.mid(9);
+    if (Varicode::startsWithCQ(body))
+        return budget;
+    QString const to = msg.section(' ', 0, 0);
+    if (to.isEmpty() || to.contains('>'))
+        return 0;
+    if (to.endsWith('?')) // "CALL?", the short form of SNR?
+        return budget;
+    QStringList const words = msg.section(' ', 1).split(' ', Qt::SkipEmptyParts);
+    for (int n = qMin(2, int(words.size())); n >= 1; --n) {
+        QString const cmd = ' ' + words.mid(0, n).join(' ');
+        if (!Varicode::isCommandAllowed(cmd))
+            continue;
+        if (cmd == QStringLiteral(" ACK") || cmd == QStringLiteral(" NACK"))
+            return 0;
+        return Varicode::isCommandAutoreply(cmd) ? budget : 0;
+    }
+    return 0;
+}
+
+// While a reply wait stands: a frame addressed to us came in (more: the
+// wait runs one more budget from now, so a reply of several frames is heard
+// to its end), or a whole message addressed to us is in (over). Nothing is
+// sent when no wait stands, so every caller may call unconditionally.
+void UI_Constructor::replyWait(bool more, char const *why) {
+    if (m_replyWaitId == 0) return;
+    qint64 const id = m_replyWaitId;
+    int ms = 0;
+    if (m_replyWaitUntil.hasExpired()) {
+        m_replyWaitId = 0;
+        return; // the client's own clock ended it
+    }
+    if (more) {
+        ms = ChunkedArq::ackTimeoutMsForSubmode(m_nSubMode);
+        m_replyWaitUntil.setRemainingTime(ms);
+    } else {
+        m_replyWaitId = 0;
+    }
+    qWarning() << "[TX-ASK]" << id << "reply wait:" << why << ms << "ms";
+    sendNetworkMessage("TX.REPLY", "",
                        {{"_ID", QVariant(-1)},
                         {"ASK_ID", QVariant(id)},
-                        {"ASKING", false}});
+                        {"REPLY_MS", QVariant(ms)}});
 }
 
 void UI_Constructor::prepareSending(qint64 nowMS) {
@@ -4679,6 +4752,7 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     if (m_iptt == 0 && askApplies && m_askGrantedId == 0 &&
         m_askWaitingId == 0) {
         m_askWaitingId = ++m_askSerial;
+        m_replyWaitId = 0; // [study replywait] we send again: that wait is over
         qint64 const keyupInMs =
             (arqFullRelax || jttyAsync || time_is_in_tx_delay)
                 ? 0
@@ -6262,6 +6336,13 @@ void UI_Constructor::stopTx() {
         if (m_nSubMode == Varicode::JS8CallJTTY && !m_currentMessage.isEmpty())
             qCWarning(mainwindow_js8) << "[JTTY-TX] done:" << m_currentMessage;
 #endif
+        // [study replywait] the message went out whole (not halted): its
+        // end report says how long its reply is waited for. The COMPOSED
+        // text, for the reason given below at the query capture.
+        askEnd("message over",
+               replyWaitMsFor(m_lastComposedMessage.isEmpty()
+                                  ? m_totalTxMessage
+                                  : m_lastComposedMessage));
         stopTxMechanical();
         tryRestoreFreqOffset();
 

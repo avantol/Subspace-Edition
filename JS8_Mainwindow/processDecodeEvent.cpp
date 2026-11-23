@@ -643,6 +643,10 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
                             << "buffering data" << d.dial << d.offset << d.text;
                         d.isBuffered = true;
                         m_messageBuffer[d.offset].msgs.append(d);
+                        // [study replywait] next frame of a message to us
+                        if (m_messageBuffer[d.offset].cmd.to ==
+                            m_config.my_callsign())
+                            replyWait(true, "next frame of a message to us");
 
                         // Update the originating call's SNR in the callsign
                         // list on every data frame of a buffered directed
@@ -1102,6 +1106,9 @@ void UI_Constructor::processDecodeEvent(JS8::Event::Variant const &event) {
 
                         if (cmd.to == m_config.my_callsign()) {
                             d.shouldDisplay = true;
+                            // [study replywait] first frame of a longer
+                            // message to us: a standing reply wait goes on
+                            replyWait(true, "first frame of a message to us");
                         }
 
                         m_messageBuffer[cmd.offset].cmd = cmd;

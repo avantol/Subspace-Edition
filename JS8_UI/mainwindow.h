@@ -2481,7 +2481,15 @@ class UI_Constructor : public QMainWindow {
     // client (the Arbiter) keeps the asking switched on (TX.SET_ASK, a lease
     // it renews), the first frame of a message waits in prepareSending for
     // TX.GRANT; the grant lasts until the message is over (stopTxMechanical)
-    void askEnd(char const *why);     // TX.ASK, ASKING false
+    void askEnd(char const *why, int replyMs = 0); // TX.ASK, ASKING false
+    // [study replywait 2026-11-21] a granted message that expects a reply
+    // keeps the radio after its end: the end report carries REPLY_MS, and
+    // TX.REPLY {ASK_ID, REPLY_MS} follows when a reply's frame comes in (a
+    // new time) or the reply is complete (0)
+    int replyWaitMsFor(QString const &sent) const; // 0 = it expects no reply
+    void replyWait(bool more, char const *why);    // TX.REPLY, while a wait stands
+    qint64 m_replyWaitId = 0;         // the message whose reply is waited for (0 = none)
+    QDeadlineTimer m_replyWaitUntil;
     QDeadlineTimer m_askLease;        // the asking is on until this runs out
     qint64 m_askSerial = 0;           // the last ASK_ID given out
     qint64 m_askWaitingId = 0;        // the message that waits for its grant (0 = none)
