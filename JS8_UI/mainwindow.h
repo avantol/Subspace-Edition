@@ -2480,8 +2480,9 @@ class UI_Constructor : public QMainWindow {
     qint64 m_txPendingSlot = -1;      // slot last announced
     // [study askgrant 2026-11-20] ask before transmitting: while an API
     // client (the Arbiter) keeps the asking switched on (TX.SET_ASK, a lease
-    // it renews), the first frame of a message waits in prepareSending for
-    // TX.GRANT; the grant lasts until the message is over (stopTxMechanical)
+    // it renews), the first frame of a message, or a pressed Tune [study
+    // tuneask 2026-11-24], waits in prepareSending for TX.GRANT; the grant
+    // lasts until the message or the Tune is over (stopTxMechanical)
     void askEnd(char const *why, int replyMs = 0); // TX.ASK, ASKING false
     // [study replywait 2026-11-21] a granted message that expects a reply
     // keeps the radio after its end: the end report carries REPLY_MS, and

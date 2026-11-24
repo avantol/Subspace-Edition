@@ -908,13 +908,14 @@ if(type == "STATION.SET_SPOT") {
      * switches the asking on for LEASE_MS (sent again = renewed; ASK false
      * or no renewal = off, and a frame that waits keys at its slot as
      * before). Reply TX.ASKING with OK, ASK. While it is on, the first
-     * frame of a message waits in prepareSending and the event TX.ASK
+     * frame of a message (or a pressed Tune, KEYUP_IN_MS 0 [study tuneask
+     * 2026-11-24]) waits in prepareSending and the event TX.ASK
      * (_ID -1) {ASK_ID, ASKING true, KEYUP_IN_MS} says so; TX.ASK
      * {ASK_ID, ASKING false} follows when that message no longer asks or,
      * once granted, is over. TX.GRANT {ASK_ID, GRANT true} lets the
      * message key; {GRANT false, REASON} only names what it waits for
      * (status bar). Reply TX.GRANT with OK (false: no message with that
-     * ASK_ID waits), ASK_ID, GRANTED. Not asked: Tune and ARQ.
+     * ASK_ID waits), ASK_ID, GRANTED. Not asked: ARQ.
      */
     if (type == "TX.SET_ASK") {
         int const leaseMs = message.params().value("LEASE_MS").toInt();

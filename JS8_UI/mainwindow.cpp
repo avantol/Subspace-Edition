@@ -4739,35 +4739,43 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     // is on (TX.SET_ASK, a lease the Arbiter renews), the first frame of a
     // message does not key until TX.GRANT names its ASK_ID; the grant covers
     // every frame of the message and ends in stopTxMechanical. Not asked:
-    // Tune, and any frame while an ARQ session is in flight or being
-    // negotiated (operator 2026-11-20: ARQ is not part of the scheme yet).
+    // any frame while an ARQ session is in flight or being negotiated
+    // (operator 2026-11-20: ARQ is not part of the scheme yet).
+    // [study tuneask 2026-11-24, operator: "make tune ask"; WM8Q 11-24
+    // 18:39:35Z, four Tune presses keyed with no ask] Tune asks as a message
+    // does: it is a transmission. The pressed Tune waits here (key-up in 0 ms:
+    // it keys the moment it is granted), the grant ends when Tune ends
+    // (end_tuning -> stopTxMechanical), and un-pressing a waiting Tune takes
+    // the ask back the same way. A Tune pressed while a message waits or is
+    // granted uses that message's ask.
     // No Arbiter: the lease runs out, the waiting frame keys at its slot as
     // before, and the ask is taken back. While a frame waits for its grant
     // there is no flrig reservation and no TX.PENDING: nothing is claimed
     // before the grant.
     bool const askArq = m_chunkedArq && (m_chunkedArq->hasActiveSession() ||
                                          m_chunkedArq->isNegotiating());
-    bool const askApplies =
-        !m_askLease.hasExpired() && !m_tune && !askArq && msgLength > 0;
+    bool const askWanted = m_tune || msgLength > 0;
+    bool const askApplies = !m_askLease.hasExpired() && !askArq && askWanted;
     if (m_iptt == 0 && askApplies && m_askGrantedId == 0 &&
         m_askWaitingId == 0) {
         m_askWaitingId = ++m_askSerial;
         m_replyWaitId = 0; // [study replywait] we send again: that wait is over
         qint64 const keyupInMs =
-            (arqFullRelax || jttyAsync || time_is_in_tx_delay)
+            (m_tune || arqFullRelax || jttyAsync || time_is_in_tx_delay)
                 ? 0
                 : std::llround((period - tx_delay - seconds_into_the_period) *
                                1000.0);
         qWarning() << "[TX-ASK]" << m_askWaitingId
-                   << "asks, key-up in" << keyupInMs << "ms";
+                   << (m_tune ? "asks (Tune), key-up in" : "asks, key-up in")
+                   << keyupInMs << "ms";
         sendNetworkMessage("TX.ASK", "",
                            {{"_ID", QVariant(-1)},
                             {"ASK_ID", QVariant(m_askWaitingId)},
                             {"ASKING", true},
                             {"KEYUP_IN_MS", QVariant(keyupInMs)}});
-    } else if (m_askWaitingId != 0 && !askApplies && msgLength > 0) {
+    } else if (m_askWaitingId != 0 && !askApplies && askWanted) {
         askEnd(m_askLease.hasExpired() ? "the asking ran out, the frame keys at its slot"
-                                       : "ARQ or Tune began");
+                                       : "ARQ began");
     }
     bool const askOk = !askApplies || m_askGrantedId != 0;
 
