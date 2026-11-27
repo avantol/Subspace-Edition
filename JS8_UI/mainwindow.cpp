@@ -6461,8 +6461,24 @@ void UI_Constructor::stopTx() {
 // ONE rule for "PTT stays down into the next frame": stopTx2 applies it,
 // and stopTx uses it to decide whether an unkey (and its flrig
 // reservation) is coming at all.
+// [study heldask 2026-11-27, TODO 369; WM8Q 19:15:43Z: message 5 ended, an
+// API client queued "@ALLCALL ACK" 90 ms later, inside TX_SWITCHOFF_DELAY;
+// Hold PTT kept the radio keyed for the new message's frames, the new message
+// asked, the Arbiter answered "waits (radio keyed)" -- keyed by us -- and the
+// radio stayed keyed and silent for 1 min 55 s] PTT is held into the next
+// frame only when that frame is already cleared to key: the asking is not in
+// force (no Arbiter), or its message holds a grant, or it is a frame of our
+// own ARQ session entered under a grant. A frame that still has to ask gets
+// its key-up after its grant, on a radio we have un-keyed.
+bool UI_Constructor::nextFrameClearedToKey() const {
+    return m_askLease.hasExpired() || m_askGrantedId != 0 ||
+           (m_arqEntryGranted && m_chunkedArq &&
+            m_chunkedArq->hasActiveTxSession());
+}
+
 bool UI_Constructor::holdPttForNextFrame() const {
-    return !m_tune && m_config.hold_ptt() && m_txFrameCount > 0;
+    return !m_tune && m_config.hold_ptt() && m_txFrameCount > 0 &&
+           nextFrameClearedToKey();
 }
 
 void UI_Constructor::stopTx2() {

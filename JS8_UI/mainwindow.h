@@ -2500,6 +2500,7 @@ class UI_Constructor : public QMainWindow {
     QString m_askWaitReason;          // what it waits for, as the client said
     bool m_pttHeldBetweenFrames = false; // stopTx2 kept PTT down (Hold PTT)
     bool holdPttForNextFrame() const;  // stopTx2's rule, shared
+    bool nextFrameClearedToKey() const; // [study heldask] no ask still owed for it
     // [TODO #314, operator 2026-10-21] JTTY mode: the "Directed to" button
     // LATCHES (its checked state is the latch, the one authority). The box
     // carries "<CALL> <MYCALL> " exactly while latched AND a call is
