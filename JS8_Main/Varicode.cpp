@@ -2418,8 +2418,18 @@ Varicode::buildMessageFrames(QString const &mycall, QString const &mygrid,
                     qCDebug(varicode_js8) << "before:" << line;
 
 #if 1
+                    // [APRSIS CMD CHECKSUM, Build 526] Only @APRSIS MSG goes
+                    // out without a checksum. @APRSIS CMD (APRS email
+                    // "CMD :EMAIL-2", SMS "CMD :SMSGTE") must carry its
+                    // 16-bit checksum: the gateway station takes the last 3
+                    // characters as the checksum and drops the message when
+                    // it fails ("Buffered message failed checksum").
+                    // Skipping it for every @APRSIS command silently broke
+                    // email and SMS (forum, AB8FJ and N0AER, 27 Nov 2026).
+                    // Same fix as JS8Call-improved #298 (8bee47e6, 19 May 2026).
                     bool skipAprsChecksum =
-                        (dirTo.compare("@APRSIS", Qt::CaseInsensitive) == 0);
+                        (dirTo.compare("@APRSIS", Qt::CaseInsensitive) == 0 &&
+                         (dirCmd == " MSG" || dirCmd == " MSG TO:"));
                     // ARQ chunked-DATA wire frames carry their own per-
                     // chunk CRC in the trailing #NN.CC/TT.HHHH marker.
                     // The JS8 MSG-TO buffered-cmd checksum (added below)
