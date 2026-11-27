@@ -2496,6 +2496,7 @@ class UI_Constructor : public QMainWindow {
     qint64 m_askSerial = 0;           // the last ASK_ID given out
     qint64 m_askWaitingId = 0;        // the message that waits for its grant (0 = none)
     qint64 m_askGrantedId = 0;        // the granted message, until it is over (0 = none)
+    bool m_arqEntryGranted = false;   // [study arqask] our ARQ send session's first key-up was granted
     QString m_askWaitReason;          // what it waits for, as the client said
     bool m_pttHeldBetweenFrames = false; // stopTx2 kept PTT down (Hold PTT)
     bool holdPttForNextFrame() const;  // stopTx2's rule, shared

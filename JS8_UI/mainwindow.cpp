@@ -4752,8 +4752,21 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
     // before, and the ask is taken back. While a frame waits for its grant
     // there is no flrig reservation and no TX.PENDING: nothing is claimed
     // before the grant.
-    bool const askArq = m_chunkedArq && (m_chunkedArq->hasActiveSession() ||
-                                         m_chunkedArq->isNegotiating());
+    // [study arqask 2026-11-27, operator's rule, TODO 370: "we have to check
+    // with arbiter to start the negotiation phase of ARQ", "each ACK asks by
+    // itself"; WM8Q 19:23:14Z, "K9AVT QUERY ARQ?" keyed with no ask because
+    // the negotiating flag was already up] Not asked: only the frames of OUR
+    // send session (negotiation included) AFTER its first key-up was granted.
+    // That first key-up -- the capability query, or the first chunk when the
+    // peer's level is known -- asks as any message does. From then on the
+    // Arbiter holds the others by our reported state (STATION.GET_BUSY
+    // arq_negotiating / arq_tx), so the session keeps the radio to its end.
+    // An INCOMING transfer exempts nothing: each ACK / NACK, and anything
+    // else sent meanwhile, asks. (Before: hasActiveSession() || negotiating,
+    // which was also true while we only received.)
+    bool const arqOurs = m_chunkedArq && m_chunkedArq->hasActiveTxSession();
+    if (!arqOurs) m_arqEntryGranted = false;
+    bool const askArq = arqOurs && m_arqEntryGranted;
     bool const askWanted = m_tune || msgLength > 0;
     bool const askApplies = !m_askLease.hasExpired() && !askArq && askWanted;
     if (m_iptt == 0 && askApplies && m_askGrantedId == 0 &&
@@ -4875,6 +4888,14 @@ void UI_Constructor::prepareSending(qint64 nowMS) {
             pttReleaseTimer.stop();
             qWarning() << "[TX-PTT] key-up while the previous release was"
                           " pending: release cancelled, PTT stays on";
+        }
+        // [study arqask] our ARQ session's first key-up went out under a
+        // grant: its later frames no longer ask (see askArq above).
+        if (arqOurs && m_askGrantedId != 0 && !m_arqEntryGranted) {
+            m_arqEntryGranted = true;
+            qWarning() << "[TX-ASK]" << m_askGrantedId
+                       << "ARQ session entered under this grant; its later"
+                          " frames do not ask";
         }
         m_iptt = 1;
         m_generateAudioWhenPttConfirmedByTX = true;
