@@ -41,8 +41,6 @@ jobs:
           ninja:p
           boost:p
           fftw:p
-          qt6-base:p
-          qt6-tools:p
 
     # [2026-10-15] MSYS2 dropped libusb for mingw64 from its package
     # database (ucrt64/clang64 only; "target not found", run 38824655859
@@ -61,14 +59,49 @@ jobs:
     # mingw-w64-x86_64-qt6-serialport" (run 45097485930, twice) on the day
     # MSYS2 moved mingw64 to Qt 6.12.0. qt6-base 6.12.0-2 and qt6-tools
     # 6.12.0-1 are in the package database; the serialport file of the same
-    # Qt version is on the file server. It MUST match qt6-base's Qt version:
-    # when the database has it again, put qt6-serialport:p back in the list
-    # above and remove this step.
-    - name: Install qt6-serialport (by file, same Qt version as qt6-base)
+    # Qt version is on the file server. It MUST match qt6-base's Qt version.
+    #
+    # [2026-11-27] It stopped matching five days later: MSYS2 moved
+    # qt6-base to 6.12.1 while qt6-serialport stayed at 6.12.0 (no 6.12.1
+    # file exists). The build stayed green and the installers for 528 and
+    # 529 would not start ("entry point not found in Qt6SerialPort.dll").
+    # So ALL THREE Qt packages are now installed by file, at ONE Qt
+    # version, and the next step refuses to go on when they differ.
+    # To move to a newer Qt: change the three file names together, to a
+    # version the file server has for all three. When the database lists
+    # qt6-serialport again, the three can go back into the pacboy list
+    # above (qt6-base:p qt6-tools:p qt6-serialport:p); keep the check.
+    - name: Install Qt (three packages by file, one Qt version)
       shell: msys2 {0}
       run: |
-        pacman -Q mingw-w64-x86_64-qt6-base
-        pacman -U --noconfirm https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-qt6-serialport-6.12.0-1-any.pkg.tar.zst
+        pacman -U --noconfirm \
+          https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-qt6-base-6.12.0-2-any.pkg.tar.zst \
+          https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-qt6-tools-6.12.0-1-any.pkg.tar.zst \
+          https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-qt6-serialport-6.12.0-1-any.pkg.tar.zst
+
+    - name: Check that every Qt package has the same Qt version
+      shell: msys2 {0}
+      run: |
+        # "name version-release" -> version, release number dropped
+        qtver() { pacman -Q "mingw-w64-x86_64-$1" | awk '{print $2}' | sed 's/-[0-9]*$//'; }
+        base=$(qtver qt6-base)
+        tools=$(qtver qt6-tools)
+        serial=$(qtver qt6-serialport)
+        echo "qt6-base=$base qt6-tools=$tools qt6-serialport=$serial"
+        if [ -z "$base" ] || [ "$base" != "$tools" ] || [ "$base" != "$serial" ]; then
+            echo "::error::Qt packages are not all the same Qt version (base=$base tools=$tools serialport=$serial). The program would not start on Windows."
+            exit 1
+        fi
+        # every other installed Qt 6 package is listed, and a different
+        # version is flagged (a warning: these come in as build-time
+        # dependencies; what ships is proven by the start test below)
+        pacman -Q | awk '$1 ~ /^mingw-w64-x86_64-qt6-/ {print $1, $2}' | while read name ver; do
+            v=$(echo "$ver" | sed 's/-[0-9]*$//')
+            echo "  $name $v"
+            if [ "$v" != "$base" ]; then
+                echo "::warning::$name is Qt $v, qt6-base is Qt $base"
+            fi
+        done
 
     # Build 135: dropped jurplel/install-qt-action — aqt's metadata
     # consistently lagged Qt's new per-toolchain Updates.xml layout for
@@ -190,6 +223,32 @@ jobs:
         echo "=== Bundled DLLs ==="
         ls build/JS8Call/*.dll | wc -l
         ls build/JS8Call/*.dll
+
+    # [2026-11-27] A green build said nothing about whether the program
+    # starts: a mismatched DLL only shows when Windows loads the program.
+    # So the packaged program -- the exact folder that goes into the
+    # installer -- is started once here. "--version" loads every DLL the
+    # program links, creates the Qt application (platform plugin
+    # included), prints the version and exits. A program Windows refuses
+    # to load, or one that hangs, fails the build.
+    - name: Start the packaged program once
+      shell: msys2 {0}
+      env:
+        # the version goes to the console, never into a message box
+        QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES: 1
+      run: |
+        cd build/JS8Call
+        set +e
+        # PATH holds Windows' own folders only, as on a user's PC: a DLL
+        # missing from the package is not quietly found in /mingw64/bin
+        env PATH="/c/Windows/System32:/c/Windows" /usr/bin/timeout 120 ./JS8Call.exe --version
+        rc=$?
+        set -e
+        echo "exit code: $rc"
+        if [ "$rc" -ne 0 ]; then
+            echo "::error::The packaged JS8Call.exe did not start (exit code $rc; 124 = no exit within 120 s). The installer would be broken."
+            exit 1
+        fi
 
     - name: Extract Version
       id: version
