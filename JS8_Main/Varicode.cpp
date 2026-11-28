@@ -2334,7 +2334,7 @@ Varicode::buildMessageFrames(QString const &mycall, QString const &mygrid,
                 // data-frame remainder, producing a doubled space on
                 // RX (header renderer adds its own separator + the
                 // data frame begins with one). Same shape applies to
-                // useCmp / useDir / useDat below.
+                // useCmp / useDir below -- NOT to useDat (Build 529).
                 line = lstrip(line.mid(l));
             }
 
@@ -2536,10 +2536,17 @@ Varicode::buildMessageFrames(QString const &mycall, QString const &mygrid,
                 // use the standard data frame
                 lineFrames.append({frame, fastDataFrame ? Varicode::JS8CallData
                                                         : Varicode::JS8Call});
-                // Build 146: lstrip — see useBcn branch above. Less
-                // likely to matter here (data frames typically consume
-                // the rest of the line) but uniform for safety.
-                line = lstrip(line.mid(m));
+                // [Build 529] NO lstrip here, as in JS8Call. Build 146
+                // stripped the rest of the line after a data frame too,
+                // "for uniformity" with the header frames above. A data
+                // frame is not a header: the receiver joins data frames
+                // exactly as sent and adds no separator, so a leading
+                // space in the rest of the line is the operator's own
+                // text. Stripping it ate part of any run of spaces that
+                // a frame cut fell inside -- the APRS addressee padding
+                // (":WM8Q     :" went out as ":WM8Q   :"), after the
+                // checksum had been computed over the typed text.
+                line = line.mid(m);
             }
         }
 
